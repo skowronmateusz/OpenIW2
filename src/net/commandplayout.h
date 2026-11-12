@@ -17,7 +17,7 @@ class CommandPlayout {
 public:
     DelayWindow window;
     int referenceMs = 500;     // a packet is late against the least delayed one of this long before it
-    int maxHoldMs = 250;       // the hold never exceeds this
+    int maxHoldMs = 100;       // the hold never exceeds this (every shot, use and turret command waits as long)
     int riseDivisor = 2;       // the hold rises by at most 1 / riseDivisor of the real time that passes
     int fallDivisor = 10;      // and falls by at most 1 / fallDivisor of it
     size_t maxQueue = 64;      // more waiting commands than this run at the next frame whatever their time (a 1.3 client keeps 128)

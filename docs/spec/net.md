@@ -682,6 +682,20 @@ and then moved at once). A real iw2view walking through the `radio` relay path f
 14 leapt, 625 past the newest snapshot of 4266; with the window and the slew 5, 0 and 14 of 4100 (command time 229 ms
 behind the newest snapshot at the median, 127 ms before).
 
+**Limits (both mechanisms).** Everything the client does not predict comes from the server's state of him and is
+drawn on the client's clock: his shots and their hits, a kill, a turret he uses and fires, the HUD of those. Measured
+from a client on the internet against a dedicated server on a home connection whose ping varied a lot (5 to 200 ms,
+38 ms on average): the server held that client's commands, so his command was acknowledged 215 ms after it was sent
+at the median (49 ms with `IW2_CMD_PLAIN=1`), and his clock drew the other players 160 to 174 ms before the newest
+snapshot (57 ms with `IW2_CLOCK_PLAIN=1`). The two add up for a shot: the server runs it later by the hold, and the
+client draws its result later by the window. So both are limited now: the window never puts the clock more than 100 ms
+(`ClientClock::maxBehindMs`) behind the window's least delayed snapshot, and the hold never exceeds 100 ms
+(`CommandPlayout::maxHoldMs`, 250 before). 100 ms keeps the spikes of 85 ms (the measured radio path) smooth: the
+`spike` and `radio` relay profiles still pass and the clock never stands or leaps; the 220 ms dark stretches out of
+every 520 ms are only partly smoothed: the clock runs past the newest snapshot in 129 of 750 frames there (112 with
+the plain rule, none without the limit) and the hold covers 100 of the 220 ms. Against the same server, the client
+with the limit drew the others 73 ms before the newest snapshot.
+
 Spikes below 100 ms, measured between two machines on one LAN (the server and one client wired, the other client on
 a radio path whose ping to the gateway was 2 to 4 ms with spikes of 70 to 95 ms about twice a second, no loss; 149 s,
 both walking): the snapshots reached the radio client up to 126 ms late in 99 of 100 cases (292 at most), 270 gaps over
@@ -737,7 +751,8 @@ by the size of his late stretches and runs them on an even schedule.
   the commands run on arrival as in the original.
 - While the path is bursty the accepted commands (the command loop's tests are made on arrival) wait in the client's
   queue. Before each game frame the server runs those whose time is not after `frame time - least delay - hold`
-  (the least delay of the last 500 ms). The hold moves towards the largest lateness in the window (250 ms at most): up by at most half of the
+  (the least delay of the last 500 ms). The hold moves towards the largest lateness in the window (100 ms at most, see
+  "Limits" below; 250 before): up by at most half of the
   real time that passes, down by a tenth, so the player is never stopped or moved at once by the hold itself. When the
   path is even again the hold runs down to 0 and the commands run on arrival again.
 - A jump of the server's own time runs the waiting commands at once and starts the window again; a new map and a

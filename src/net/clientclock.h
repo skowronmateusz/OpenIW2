@@ -25,12 +25,16 @@ public:
     int windowMs = 1500;
     int spreadMs = 40; // a snapshot this much later than the window's least delayed one is late (above a frame's read delay)
     int slewDivisor = 4;
+    // The window never puts the clock more than this far behind the window's least delayed snapshot: every drawn
+    // thing the client does not predict (other players, hits, deaths, a turret) is that much later as well.
+    int maxBehindMs = 100;
 
     // A gamestate: no server time yet.
     void restart() {
-        const int spread = spreadMs;
+        const int spread = spreadMs, behind = maxBehindMs;
         *this = ClientClock{windowMs, slewDivisor};
         spreadMs = spread;
+        maxBehindMs = behind;
     }
     ClientClock() = default;
     ClientClock(int window, int slew) : windowMs(window), slewDivisor(slew) {}

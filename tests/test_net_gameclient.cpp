@@ -273,11 +273,22 @@ void burstyClockTests() {
                 plain.holds, plain.leaps, plain.starved, plain.lagMin, plain.lagMax);
     CHECK(plain.holds + plain.leaps > 10);
     CHECK(plain.starved > 50);
+    // Without the limit on how far the window puts the clock behind (maxBehindMs), it settles behind the most delayed
+    // snapshots and never runs past the newest one. With the default limit of 100 ms the clock stays at most that far
+    // behind the window's least delayed snapshot: it runs evenly, and past the newest snapshot only at the ends of the
+    // dark stretches (everything drawn from snapshots would be that much later otherwise).
+    ClientClock unlimited;
+    unlimited.maxBehindMs = 100000;
+    const ClockRun full = runClock(unlimited, 520, 220, 4000, 16000);
+    std::printf("bursty path, openiw2 clock without the limit: %d frames, %d held, %d leaps, %d past the newest snapshot, lag %d..%d ms\n",
+                full.frames, full.holds, full.leaps, full.starved, full.lagMin, full.lagMax);
+    CHECK(full.frames > 500 && full.holds == 0 && full.leaps == 0 && full.starved == 0);
+    CHECK(full.lagMax <= 220 + 50 + 70);
     const ClockRun ours = runClock(ClientClock{}, 520, 220, 4000, 16000);
     std::printf("bursty path, openiw2 clock: %d frames, %d held, %d leaps, %d past the newest snapshot, lag %d..%d ms\n", ours.frames,
                 ours.holds, ours.leaps, ours.starved, ours.lagMin, ours.lagMax);
-    CHECK(ours.frames > 500 && ours.holds == 0 && ours.leaps == 0 && ours.starved == 0);
-    CHECK(ours.lagMax <= 220 + 50 + 70);
+    CHECK(ours.frames > 500 && ours.holds == 0 && ours.leaps == 0); // past the newest snapshot about as often as the plain rule
+    CHECK(ours.lagMax <= 55 + 100 + 16);
     // One dark stretch of 300 ms on a steady path: the plain rule stands still (the half-way step), ours slows down
     // and comes back without a frame that stands or leaps.
     const ClockRun plainOne = runClock(ClientClock{0, 0}, 0, 300, 3000, 12000, 6000);

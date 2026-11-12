@@ -98,9 +98,10 @@ struct PlayoutRun {
     size_t waitingAtEnd = 0;
     int ran = 0, sent = 0;
 };
-PlayoutRun runPlayout(bool playout, int periodMs, int darkMs, int fromMs, int toMs, int evenFromMs = 1 << 30) {
+PlayoutRun runPlayout(bool playout, int periodMs, int darkMs, int fromMs, int toMs, int evenFromMs = 1 << 30, int maxHoldMs = -1) {
     PlayoutRun r;
     CommandPlayout p;
+    if (maxHoldMs >= 0) p.maxHoldMs = maxHoldMs;
     std::vector<std::pair<int, int>> path; // (arrival, command time), in order
     for (int t = 0; t < toMs; t += 8) {
         int at = t + 2;
@@ -158,9 +159,14 @@ void playoutTests() {
     CHECK(ours.minStep >= 40 && ours.maxStep <= 60);
     CHECK(ours.maxHold >= 60 && ours.maxHold <= 100);
     CHECK(ours.ran == ours.sent && plain.ran == plain.sent);
-    // 220 ms dark out of every 520 ms: the same, the hold near the dark stretch.
-    const PlayoutRun radio = runPlayout(true, 520, 220, 5000, 16000);
+    // 220 ms dark out of every 520 ms: with a hold limit of 250 ms the same, the hold near the dark stretch. The default
+    // limit (100 ms: every shot and use command waits as long as the hold) smooths only part of it, never holding more.
+    const PlayoutRun radio = runPlayout(true, 520, 220, 5000, 16000, 1 << 30, 250);
     CHECK(radio.minStep >= 40 && radio.maxStep <= 60 && radio.maxHold <= 250);
+    const PlayoutRun radioDefault = runPlayout(true, 520, 220, 5000, 16000);
+    std::printf("commands through 220 ms dark stretches with the default limit: per frame %d..%d ms, hold up to %d ms\n",
+                radioDefault.minStep, radioDefault.maxStep, radioDefault.maxHold);
+    CHECK(radioDefault.maxHold <= 100 && radioDefault.ran == radioDefault.sent);
     // The path gets even again: the hold runs down (a tenth of real time: the player a tenth faster, never at once)
     // and the commands run on arrival again.
     const PlayoutRun back = runPlayout(true, 500, 85, 8000, 16000, 8000);

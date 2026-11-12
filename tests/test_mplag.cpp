@@ -375,6 +375,7 @@ struct Stats {
     std::vector<int> drawnLead;
     int snapGaps = 0, snapGapsLong = 0; // snapshots received while measuring, those more than one frame after the previous
     int presses = 0, selectFlips = 0, serverWeaponChanges = 0; // IW2_LAG_ASWITCH
+    std::vector<int> shotAck, shotHit, shotDrawnDead; // B's press to: its snapshot with the shot, A's damage, B drawing A dead
     std::vector<int> ackDelay; // B's command sent to B's snapshot acknowledging it (ms of wall time)
     std::vector<int> hitDelay; // B's fire press to A's snapshot with less health (ms of wall time) // the newest snapshot's time minus B's drawn time
     float maxOf(const std::vector<float>& v) const { return v.empty() ? 0.0f : *std::max_element(v.begin(), v.end()); }
@@ -396,7 +397,12 @@ struct Run {
     int64_t hitPressMs = 0;
     int hitPressCmd = 0, aHealth = 0;
     int64_t aDeadMs = 0; // A's own snapshot first shows health 0
-    std::map<int, int64_t> ackWait; // B's command time -> wall time sent
+    std::map<int, int64_t> ackWait;
+    std::deque<std::pair<int, int64_t>> bPresses; // B's fire presses: command time, wall time
+    bool bPrevBtn = false;
+    int bSeq = -1, shotCmd = 0;
+    int64_t shotWall = 0, deathShotWall = 0, aDamageWall = 0;
+    bool aDamageKilled = false; // the press of B's last fired shot; of the shot that killed A // B's command time -> wall time sent
     game::Vec obsLast{};
     int64_t obsLegOk = -1;
 
@@ -410,7 +416,9 @@ struct Run {
         c->gc->name = name;
         c->gc->connectTimeoutMs = 30000;  // the level load of the other client holds this one's frames
         net::NetAddress a;
-        net::NetAddress::parse("127.0.0.1:" + std::to_string(port), a, 28960);
+        // IW2_LAG_REMOTE=<host:port>: the clients go straight to that server (a real path), no relay.
+        const char* remote = std::getenv("IW2_LAG_REMOTE");
+        net::NetAddress::parse(remote ? std::string(remote) : "127.0.0.1:" + std::to_string(port), a, 28960);
         c->gc->connect(a, nowMs() - gStart);
         clients.push_back(std::move(c));
     }
@@ -504,7 +512,7 @@ struct Run {
             wi.weapon = c.pweapon.name();
             c.pweapon.update(0.016f, wi);
         }
-        const float fwd = c.menuStack.empty() ? forward : 0.0f;
+        const float fwd = c.menuStack.empty() && !std::getenv("IW2_LAG_ASTILL") ? forward : 0.0f;
         const int clientTime = c.gc->commandTime(netNow);
         int weaponByte = 0;
         const std::string cmdWeapon = aSwitch && i == 0 ? c.select : c.pweapon.name();
@@ -516,6 +524,11 @@ struct Run {
         static const bool bFire = std::getenv("IW2_LAG_BFIRE") != nullptr;
         const uint32_t btn = bFire && gFireOn && i == 1 && (netNow / 150) % 2 ? 1u : 0u;
         if (i == 1 && btn && (!hitPressMs || now - hitPressMs > 1500)) hitPressMs = now, hitPressCmd = clientTime;
+        if (i == 1) {
+            if (btn && !bPrevBtn) bPresses.emplace_back(clientTime, now);
+            bPrevBtn = btn != 0;
+            while (bPresses.size() > 64) bPresses.pop_front();
+        }
         if (i == 0 && measuring) {
             const int dt = int(netNow - st.clockLastMs), dc = clientTime - st.clockLastCmd;
             if (st.clockLastMs && dt >= 4 && dt < 60) {
@@ -560,6 +573,27 @@ struct Run {
         }
         c.lastSnapMsg = last->messageNum;
 
+        if (i == 1 && newSnap) { // B's shots the server fired: the press of the command that fired
+            int added = (f.eventSequence - bSeq) & 0xff;
+            if (bSeq < 0 || added > 4) added = 0;
+            for (int k = 0; k < added; ++k) {
+                const int ev = f.events[(f.eventSequence - 1 - k) & 3];
+                if (ev != netgame::kEvFireWeapon && ev != netgame::kEvFireWeaponLastShot) continue;
+                for (auto it = bPresses.rbegin(); it != bPresses.rend(); ++it)
+                    if (it->first <= f.commandTime) {
+                        shotWall = it->second, shotCmd = it->first;
+                        st.shotAck.push_back(int(now - it->second));
+                        if (aDamageWall && std::llabs(now - aDamageWall) < 200) {
+                            st.shotHit.push_back(int(aDamageWall - shotWall));
+                            if (std::getenv("IW2_LAG_TRACE")) std::printf("shot hit t=%lld: A's snapshot shows the damage %lld ms after B's press (cmd %d)\n", (long long)(now - gStart), (long long)(aDamageWall - shotWall), shotCmd);
+                            if (aDamageKilled) deathShotWall = shotWall;
+                            aDamageWall = 0;
+                        }
+                        break;
+                    }
+            }
+            bSeq = f.eventSequence;
+        }
         if (i == 1 && newSnap) { // B's commands: the wall time from sending one to the snapshot that acknowledges it
             for (auto it = ackWait.begin(); it != ackWait.end() && it->first <= f.commandTime;) {
                 st.ackDelay.push_back(int(now - it->second));
@@ -570,6 +604,8 @@ struct Run {
         if (i == 0 && newSnap) { // A's health against B's first fire press since the last hit (IW2_LAG_BFIRE)
             int hp = 0;
             std::memcpy(&hp, last->ps.data() + 300, 4);
+            // Matched with B's shot when B reads the same server frame (B's frame may come after A's).
+            if (hp < aHealth) aDamageWall = now, aDamageKilled = hp <= 0;
             if (hp < aHealth && hitPressMs) {
                 st.hitDelay.push_back(int(now - hitPressMs));
                 if (std::getenv("IW2_LAG_TRACE")) std::printf("hit t=%lld health %d -> %d, %lld ms after the press (cmd %d, snap %d)\n", (long long)(now - gStart), aHealth, hp, (long long)(now - hitPressMs), hitPressCmd, last->serverTime);
@@ -648,6 +684,16 @@ struct Run {
                         std::printf("death: B's snapshot %d shows A dead %lld ms after A's own snapshot showed health 0\n", last->serverTime, (long long)(now - aDeadMs));
                         aDeadMs = 0;
                     }
+            if (deathShotWall) {
+                bool drawnAlive = false;
+                for (const auto& p : netgame::RemoteView::players(*a, *b, frac, c.gc->clientNum, c.gc->configstrings))
+                    if (p.client == aNum && !p.dead && !p.hidden) drawnAlive = true;
+                if (!drawnAlive) {
+                    st.shotDrawnDead.push_back(int(now - deathShotWall));
+                    if (std::getenv("IW2_LAG_TRACE")) std::printf("shot kill t=%lld: B draws A dead %lld ms after the press\n", (long long)(now - gStart), (long long)(now - deathShotWall));
+                    deathShotWall = 0;
+                }
+            }
             for (const auto& p : netgame::RemoteView::players(*a, *b, frac, c.gc->clientNum, c.gc->configstrings)) {
                 if (p.client != aNum || p.dead || p.hidden) continue;
                 const game::Vec o{p.origin[0], p.origin[1], p.origin[2]};
@@ -689,7 +735,9 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
     int64_t prevIter = 0;
     ServerProcess server;
     setenv("IW2_NET_TRACE", "1", 1);
-    if (!server.start(serverExe, {mainDir, std::getenv("IW2_LAG_MAP") ? std::getenv("IW2_LAG_MAP") : "mp_toujane", "dm", "--port", "0", "--bots", std::getenv("IW2_LAG_BOTS") ? std::getenv("IW2_LAG_BOTS") : "0", "--maxclients", "20", "+set", "scr_dm_timelimit", "0",
+    if (std::getenv("IW2_LAG_REMOTE")) {
+        server.port = 28960; // not started: the clients connect to the remote server
+    } else if (!server.start(serverExe, {mainDir, std::getenv("IW2_LAG_MAP") ? std::getenv("IW2_LAG_MAP") : "mp_toujane", "dm", "--port", "0", "--bots", std::getenv("IW2_LAG_BOTS") ? std::getenv("IW2_LAG_BOTS") : "0", "--maxclients", "20", "+set", "scr_dm_timelimit", "0",
                                   "+set", "scr_dm_scorelimit", "0"})) {
         std::cerr << "cannot start the server\n";
         return false;
@@ -753,7 +801,7 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
             server.collect = true;
             server.command("status");
         }
-        if (!server.alive()) break;
+        if (!std::getenv("IW2_LAG_REMOTE") && !server.alive()) break;
         bool dropped = false;
         for (auto& c : run.clients) dropped |= c->gc->state() == net::ClientState::Disconnected;
         if (dropped) {
@@ -806,20 +854,14 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
                     prof.name.c_str(), s.drawnFrames, s.drawnStands, double(kDrawnJump), s.drawnJumps, double(s.drawnMax), lead.empty() ? 0 : lead[lead.size() / 2]);
     }
     std::printf("%s: snapshots: %d, %d of them more than one server frame (50 ms) after the previous one\n", prof.name.c_str(), s.snapGaps, s.snapGapsLong);
-    if (std::getenv("IW2_LAG_ASWITCH")) {
-        // The weapon run checks only the selection (the walk with weapon changes and the rate limit is not the
-        // movement measurement above).
-        ok = s.presses > 0 && gSelectCommands > 0;
-        std::printf("%s: selection commands from the server: %d\n", prof.name.c_str(), gSelectCommands);
-        if (!ok) std::printf("FAIL %s: no weapon change pressed or no selection command (the spawn weapon) received\n", prof.name.c_str());
-    }
-    if (s.presses > 0) {
-        std::printf("%s: A's weapon: %d presses, %d selection changes without a press, %d weapon changes in the snapshots\n", prof.name.c_str(), s.presses, s.selectFlips, s.serverWeaponChanges);
-        if (s.selectFlips > 0) {
-            std::printf("FAIL %s: the selection changed without a press\n", prof.name.c_str());
-            ok = false;
-        }
-    }
+    auto pct = [&](const char* what, std::vector<int> h) {
+        if (h.empty()) return;
+        std::sort(h.begin(), h.end());
+        std::printf("%s: %s: %zu, median %d ms, 90%% %d ms, max %d ms\n", prof.name.c_str(), what, h.size(), h[h.size() / 2], h[h.size() * 9 / 10], h.back());
+    };
+    pct("B's press to its snapshot with the shot", s.shotAck);
+    pct("B's press to A's snapshot with the damage", s.shotHit);
+    pct("B's press to B drawing A dead", s.shotDrawnDead);
     if (!s.ackDelay.empty()) {
         std::vector<int> h = s.ackDelay;
         std::sort(h.begin(), h.end());
@@ -851,6 +893,20 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
     if (s.maxOf(s.predErr) > kMaxSnap || s.maxOf(s.serverBack) > kMaxSnap || s.maxOf(s.selfBack) > kMaxSnap || s.maxOf(s.otherBack) > kMaxSnap) {
         std::printf("FAIL %s: a position snap over %.0f units\n", prof.name.c_str(), double(kMaxSnap));
         ok = false;
+    }
+    if (std::getenv("IW2_LAG_ASWITCH")) {
+        // The weapon run checks only the selection (the walk with weapon changes under the rate limits, often on a
+        // loaded machine, is not the movement measurement above): its result replaces the others.
+        ok = s.presses > 0 && gSelectCommands > 0;
+        std::printf("%s: selection commands from the server: %d\n", prof.name.c_str(), gSelectCommands);
+        if (!ok) std::printf("FAIL %s: no weapon change pressed or no selection command (the spawn weapon) received\n", prof.name.c_str());
+    }
+    if (s.presses > 0) {
+        std::printf("%s: A's weapon: %d presses, %d selection changes without a press, %d weapon changes in the snapshots\n", prof.name.c_str(), s.presses, s.selectFlips, s.serverWeaponChanges);
+        if (s.selectFlips > 0) {
+            std::printf("FAIL %s: the selection changed without a press\n", prof.name.c_str());
+            ok = false;
+        }
     }
     return ok;
 }

@@ -89,7 +89,7 @@ bool ClientClock::snapshot(int snapTime, int oldSnapTime, bool first, int64_t no
     // Only for a path that keeps doing it (DelayWindow::bursty): ordinary jitter runs evenly with the plain rule, and
     // a single late burst (or the first snapshots of a level) is left to the plain rule and the slew: the window
     // would only keep the clock behind for its whole length.
-    const int worst = window_.bursty() ? window_.worst() : offset;
+    const int worst = window_.bursty() ? std::max(window_.worst(), window_.best() - maxBehindMs) : offset;
     const int before = delta_;
     int keepFloor = floor_;
     if (adjust(delta_, extrapolated_, keepFloor, snapTime, oldSnapTime, static_cast<int64_t>(snapTime) - worst)) {
