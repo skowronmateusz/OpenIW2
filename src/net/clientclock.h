@@ -36,7 +36,7 @@ public:
         fresh.arrivals_.clear();
         fresh.delta_ = 0, fresh.floor_ = 0, fresh.extrapolated_ = false;
         fresh.evenDelta_ = fresh.target_ = fresh.time_ = 0;
-        fresh.movedAt_ = -1, fresh.cover_ = 0, fresh.interval_ = 0;
+        fresh.movedAt_ = -1, fresh.cover_ = 0, fresh.interval_ = 0, fresh.stepInterval_ = 0;
         *this = fresh;
     }
     ClientClock() = default;
@@ -77,6 +77,7 @@ private:
     int64_t movedAt_ = -1;         // real time the delta was last moved at
     int cover_ = 0;
     int interval_ = 0;
+    int stepInterval_ = 0; // the interval the delta was last stepped for (a change of the snapshot rate)
 };
 
 } // namespace iw2::net

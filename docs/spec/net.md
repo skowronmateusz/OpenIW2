@@ -671,9 +671,9 @@ The even clock keeps the 1.3 rule's reset and replaces the rest (`ClientClock`, 
   it. Over the snapshots of the last 1500 ms of real time: `best` is the largest offset (the least delayed snapshot),
   `interval` the second largest of the last five known intervals (one lost snapshot does not change it; another
   snapshot rate, or a server that leaves out every other snapshot of a remote client, is followed within two
-  snapshots, by the longer interval; a change of the interval by 10 ms or more moves the delta by the difference at
-  once, so the start of a killcam, with its one snapshot per game frame, does not leave the clock past the newest
-  snapshot while it slews), and `cover` the delay (`best - offset`) that 90 % of the snapshots with a delay
+  snapshots, by the longer interval; a change of the interval by 10 ms or more that the last three intervals all show
+  puts the delta on the new target at once, so the start of a killcam, with its one snapshot per game frame, does not
+  leave the clock past the newest snapshot while it slews; lost snapshots lengthen single intervals and are slewed), and `cover` the delay (`best - offset`) that 90 % of the snapshots with a delay
   of at most 40 ms (`spreadMs`) stay within. The target delta is `best - interval - cover - 3 ms`: the clock runs one
   interval behind the arrivals, plus the path's usual jitter, plus a margin. The few snapshots later than `cover` are
   drawn past the newest snapshot for a moment ("Past the newest snapshot" below).

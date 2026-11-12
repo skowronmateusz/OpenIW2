@@ -114,11 +114,26 @@ bool ClientClock::evenSnapshot(int snapTime, int oldSnapTime, bool first, int64_
     int cover = small.empty() ? 0 : small[std::min(small.size() - 1, small.size() * static_cast<size_t>(coverPercent) / 100)];
     if (stretches >= 2) cover = std::max(cover, std::min(large, maxBehindMs));
     cover_ = cover;
-    // Another snapshot rate (a killcam's one snapshot per game frame, and back): the clock takes the difference of the
-    // intervals at once. Slewed, it would run past the newest snapshot for a third of a second.
-    if (interval_ > 0 && (nominal - interval_ >= 10 || interval_ - nominal >= 10)) evenDelta_ -= static_cast<double>(nominal - interval_);
     interval_ = nominal;
     target_ = static_cast<double>(best - nominal - cover - safetyMs);
+    // Another snapshot rate (a killcam's one snapshot per game frame, and back): the clock goes to the new target at
+    // once; slewed, it would run past the newest snapshot for a third of a second. Only when the last three intervals
+    // all have the new length: lost snapshots also lengthen intervals, but not three in a row, and what they change
+    // is slewed like everything else.
+    {
+        int n = 0;
+        bool all = true;
+        for (auto it = arrivals_.rbegin(); it != arrivals_.rend() && n < 3; ++it)
+            if (it->interval > 0) {
+                all = all && it->interval - nominal < 10 && nominal - it->interval < 10;
+                ++n;
+            }
+        if (stepInterval_ == 0) stepInterval_ = nominal;
+        if (n == 3 && all && (nominal - stepInterval_ >= 10 || stepInterval_ - nominal >= 10)) {
+            evenDelta_ = target_;
+            stepInterval_ = nominal;
+        }
+    }
     return false;
 }
 

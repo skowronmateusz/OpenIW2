@@ -377,9 +377,31 @@ void evenClockTests() {
         std::printf("even clock, one lost snapshot: the clock moves by %.2f ms at most\n", worst);
         CHECK(worst < 1.0);
     }
+    // Two snapshots lost within five (at 60 and at 20 a second): the interval grows for a while, but that is no change
+    // of the rate; the clock slews (never slower than 10 % or faster than 5 % against real time) and does not stand
+    // or leap.
+    for (int interval : {17, 50}) {
+        ClientClock c;
+        int prevSnap = 0, newest = -1;
+        double prevT = 0, lo = 1e9, hi = -1e9;
+        for (int now = 0, n = 0; now < 9000; now += 8) {
+            for (; n * interval + 5 <= now; ++n) {
+                if (n % 100 == 50 || n % 100 == 52) continue; // lost
+                const int st = 1000 + n * interval;
+                c.snapshot(st, prevSnap, newest < 0, n * interval + 5);
+                prevSnap = newest = st;
+            }
+            if (newest < 0) continue;
+            const double t = double(c.time(now, newest)) + c.fraction();
+            if (now >= 3000) lo = std::min(lo, t - prevT), hi = std::max(hi, t - prevT);
+            prevT = t;
+        }
+        std::printf("even clock, two snapshots lost within five at %d ms: step %.3f..%.3f ms per 8 ms frame\n", interval, lo, hi);
+        CHECK(lo > 7.19 && hi < 8.41);
+    }
     // Snapshots 17 and 33 ms apart in turn (a remote client whose rate limit leaves out steps), then one per 50 ms
     // (a killcam): the clock keeps the longer interval between itself and the arrivals, and takes the change of the
-    // rate at once, with the second snapshot of the new rate.
+    // rate at once, with the third snapshot of the new rate.
     {
         ClientClock c;
         int prevSnap = 0, newest = -1, st = 1000, at = 5, n = 0, past = 0, pastSlow = 0, frames = 0;
@@ -393,7 +415,7 @@ void evenClockTests() {
             if (newest < 0) continue;
             const double t = double(c.time(now, newest)) + c.fraction();
             if (now >= 3000 && now < 8000) ++frames, past += t > newest ? 1 : 0;
-            if (now >= 8110) pastSlow += t > newest ? 1 : 0;
+            if (now >= 8200) pastSlow += t > newest ? 1 : 0;
         }
         std::printf("even clock, 17 / 33 ms in turn: past the newest snapshot in %d of %d frames; after the change to 50 ms: %d\n", past, frames, pastSlow);
         CHECK(past == 0 && pastSlow == 0);
