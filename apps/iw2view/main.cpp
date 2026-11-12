@@ -9346,6 +9346,8 @@ int main(int argc, char** argv) {
                     const int port = lp ? std::atoi(lp) : !np.empty() ? std::atoi(np.c_str()) : 28960;
                     const std::string mc = world->cvars["sv_maxclients"];
                     listenServer->maxClients = mc.empty() ? 8 : std::clamp(std::atoi(mc.c_str()), 1, 64);
+                    // sv_snaps (docs/spec/net.md section 10 "Snapshot rate").
+                    if (const std::string sn = menuEnv.getCvar("sv_snaps"); !sn.empty()) listenServer->snapshotHz = std::clamp(std::atoi(sn.c_str()), 20, 100);
                     // NET_OpenIP (docs/spec/net.md section 11, "Server socket"): the next free port of ten, written back to net_port.
                     if (const uint16_t got = listenServer->openFirstFree(uint16_t(port))) {
                         menuEnv.setCvar("net_port", std::to_string(got));
@@ -9501,7 +9503,11 @@ int main(int argc, char** argv) {
                                      &netPredictedWeapon.ammo);
                     // Grenades, rockets and falling weapons move along their trajectory in the drawn time (docs/spec/net.md
                     // section 11 "Trajectories"); evaluated from the older snapshot of the pair, as the cgame does.
-                    if (snapA && snapB) netgame::RemoteView::placeTrajectories(*world, *snapA, *snapB, netClient->renderTime(nowNet), last);
+                    // ... a part of a game frame behind the players when the snapshots come more often than the frames.
+                    if (snapA && snapB) {
+                        const int trajTime = netClient->renderTime(nowNet) - netgame::RemoteView::trajectoryDelayMs(netClient->snapshotIntervalMs());
+                        netgame::RemoteView::placeTrajectories(*world, netClient->snapshotsFrom(trajTime), trajTime);
+                    }
                     // Other players' shots, reloads and throws: sounds, impacts, animations (docs/spec/net.md section 13).
                     remoteView.playerEvents(*world, *last, netClient->configstrings, netClient->clientNum);
                     // The followed client's shots in a killcam (the player state's event ring).

@@ -327,8 +327,10 @@ void NetCombat::think(World& w, int client, const net::UserCmd& cmd, game::Playe
         if (!e) return;
         e->obj->set("$weapon", script::Value(wn));
         w.fireAntilagTime = antilagTime;
+        w.fireAntilagFine = antilagFine;
         const game::Vec3 kick = w.clientFire(*e, eye, fwd, last, spread);
         w.fireAntilagTime = -1;
+        w.fireAntilagFine = false;
         for (int k = 0; k < 3; ++k) ps.velocity[size_t(k)] -= kick[size_t(k)];
         ring_.push(last ? kEvFireWeaponLastShot : kEvFireWeapon, windex);
         ++shots_;

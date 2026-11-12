@@ -36,7 +36,7 @@ public:
         fresh.arrivals_.clear();
         fresh.delta_ = 0, fresh.floor_ = 0, fresh.extrapolated_ = false;
         fresh.evenDelta_ = fresh.target_ = fresh.time_ = 0;
-        fresh.movedAt_ = -1, fresh.cover_ = 0;
+        fresh.movedAt_ = -1, fresh.cover_ = 0, fresh.interval_ = 0;
         *this = fresh;
     }
     ClientClock() = default;
@@ -57,7 +57,8 @@ public:
     int delta() const { return windowMs > 0 ? static_cast<int>(evenDelta_) : delta_; }
     int floor() const { return floor_; }
     bool extrapolating() const { return extrapolated_; }
-    int coverMs() const { return cover_; } // what the window's delays add to one snapshot interval + safetyMs
+    int coverMs() const { return cover_; }
+    int intervalMs() const { return interval_; } // the snapshot interval the even clock runs behind by (0: none yet) // what the window's delays add to one snapshot interval + safetyMs
 
 private:
     bool evenSnapshot(int snapTime, int oldSnapTime, bool first, int64_t nowMs, bool lateRead);
@@ -75,6 +76,7 @@ private:
     double evenDelta_ = 0, target_ = 0, time_ = 0;
     int64_t movedAt_ = -1;         // real time the delta was last moved at
     int cover_ = 0;
+    int interval_ = 0;
 };
 
 } // namespace iw2::net

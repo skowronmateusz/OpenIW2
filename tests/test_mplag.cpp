@@ -396,6 +396,7 @@ struct Run {
     int64_t aSpawnMs = 0;
     int aPm = -1;
     bool haveSelf = false, haveOther = false;
+    int obsLastTime = 0; // the snapshot time of obsLast
     std::deque<std::pair<int64_t, float>> selfTrail; // A's own drawn place along the walk, by wall time
     game::Vec lastSelf{}, lastOther{};
     Retreat rSelf, rOther, rServer;
@@ -422,6 +423,12 @@ struct Run {
         c->vfs = &vfs;
         c->gc = std::make_unique<net::GameClient>();
         c->gc->name = name;
+        // IW2_LAG_SNAPS=<A>[,<B>]: the snapshots a second each client asks for (docs/debug-flags.md).
+        if (const char* sn = std::getenv("IW2_LAG_SNAPS")) {
+            int sa = 0, sb = 0;
+            const int got = std::sscanf(sn, "%d,%d", &sa, &sb);
+            if (got >= 1) c->gc->snaps = name == "lagB" && got >= 2 ? sb : sa;
+        }
         c->gc->connectTimeoutMs = 30000;  // the level load of the other client holds this one's frames
         net::NetAddress a;
         // IW2_LAG_REMOTE=<host:port>: the clients go straight to that server (a real path), no relay.
@@ -711,7 +718,10 @@ struct Run {
             if (newSnap && measuring && now - dirChangeMs > 900 && clients[0]->menuStack.empty())
                 for (const auto& p : netgame::RemoteView::players(*last, *last, 0.0f, c.gc->clientNum, c.gc->configstrings)) {
                     if (p.client != aNum || p.dead || p.hidden) continue;
-                    const float d = std::hypot(p.origin[0] - obsLast[0], p.origin[1] - obsLast[1]);
+                    // Per 50 ms of snapshot time (the snapshots between the frames are 16 or 17 ms apart).
+                    const int span = last->serverTime - obsLastTime;
+                    const float d = std::hypot(p.origin[0] - obsLast[0], p.origin[1] - obsLast[1]) * (span > 0 && span < 50 ? 50.0f / float(span) : 1.0f);
+                    obsLastTime = last->serverTime;
                     if (obsLegOk == dirChangeMs && d < 200.0f) {
                         st.obsStep.push_back(d);
                         if (d < 0.5f) {
@@ -811,7 +821,7 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
     setenv("IW2_NET_TRACE", "1", 1);
     if (std::getenv("IW2_LAG_REMOTE")) {
         server.port = 28960; // not started: the clients connect to the remote server
-    } else if (!server.start(serverExe, {mainDir, std::getenv("IW2_LAG_MAP") ? std::getenv("IW2_LAG_MAP") : "mp_toujane", "dm", "--port", "0", "--bots", std::getenv("IW2_LAG_BOTS") ? std::getenv("IW2_LAG_BOTS") : "0", "--maxclients", "20", "+set", "scr_dm_timelimit", "0",
+    } else if (!server.start(serverExe, {mainDir, std::getenv("IW2_LAG_MAP") ? std::getenv("IW2_LAG_MAP") : "mp_toujane", "dm", "--port", "0", "--bots", std::getenv("IW2_LAG_BOTS") ? std::getenv("IW2_LAG_BOTS") : "0", "--maxclients", "20", "+set", "sv_snaps", std::getenv("IW2_LAG_SVSNAPS") ? std::getenv("IW2_LAG_SVSNAPS") : "60", "+set", "scr_dm_timelimit", "0",
                                   "+set", "scr_dm_scorelimit", "0"})) {
         std::cerr << "cannot start the server\n";
         return false;
@@ -934,6 +944,9 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
                     prof.name.c_str(), s.drawnFrames, s.drawnStands, double(kDrawnJump), s.drawnJumps, double(s.drawnMax), lead.empty() ? 0 : lead[lead.size() / 2]);
     }
     std::printf("%s: snapshots: %d, %d of them more than one server frame (50 ms) after the previous one\n", prof.name.c_str(), s.snapGaps, s.snapGapsLong);
+    for (const auto& c : run.clients) // the whole connection: how many came as a delta of an earlier one, how many could not be read
+        std::printf("%s: %s got %d snapshots, %d of them deltas, %d dropped\n", prof.name.c_str(), c->gc->name.c_str(), c->gc->snapshots, c->gc->deltaSnapshots,
+                    c->gc->droppedSnapshots);
     auto pct = [&](const char* what, std::vector<int> h) {
         if (h.empty()) return;
         std::sort(h.begin(), h.end());

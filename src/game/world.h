@@ -492,6 +492,10 @@ public:
     // The antilag time of the next clientFire calls (-1: none): a network client's last command time (0x80f546e passes
     // it to the fire with g_antilag on); only bullets are rewound (0x8120484).
     int fireAntilagTime = -1;
+    // The shooter drew the snapshots sent between the frames: the rewind takes the places of mpRecordSentPlaces
+    // (docs/spec/net.md section 10 "Snapshot rate") instead of the frame archive.
+    bool fireAntilagFine = false;
+    void mpRecordSentPlaces(int timeMs, std::vector<std::pair<int, Vec3>> places);
     // The archived origin of an MP client at `timeMs`, interpolated between the two server frames around it (0x8099dac).
     bool mpArchivedClientOrigin(int client, int timeMs, Vec3& out) const;
     const MpArchive* mpArchive() const { return mp_ ? &mp_->archive : nullptr; }

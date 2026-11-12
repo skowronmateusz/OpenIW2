@@ -623,7 +623,10 @@ struct Soak {
         bool newSnap = false;
         if (last) {
             c.rv.apply(*c.view, *last, c.gc->configstrings, c.gc->clientNum, c.view->timeMs(), &c.predictedWeapon.ammo);
-            if (a && b) netgame::RemoteView::placeTrajectories(*c.view, *a, *b, c.gc->renderTime(netNow), c.gc->latest());
+            if (a && b) {
+                const int trajTime = c.gc->renderTime(netNow) - netgame::RemoteView::trajectoryDelayMs(c.gc->snapshotIntervalMs());
+                netgame::RemoteView::placeTrajectories(*c.view, c.gc->snapshotsFrom(trajTime), trajTime);
+            }
             c.rv.playerEvents(*c.view, *last, c.gc->configstrings, c.gc->clientNum);
             c.rv.followEvents(*c.view, *last, c.gc->configstrings, c.view->timeMs());
             newSnap = last->messageNum != c.lastSnapMsg;

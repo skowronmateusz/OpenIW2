@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <utility>
 #include <vector>
 
 #include "netgame/eventrack.h"
@@ -163,6 +164,38 @@ int main() {
         t.add(990, {9, 9, 9});
         EvenTrack::Vec at{};
         check(t.sample(1050, at) && at[0] == 1 && at[1] == 2 && at[2] == 3, "a command not newer than the last one is ignored");
+    }
+    // Snapshots between the game frames (docs/spec/net.md section 10 "Snapshot rate"): three per 50 ms, 16 or 17 ms
+    // apart. The places are his walk at those times: the same distance per millisecond in every step, and the lag
+    // falls by 1 ms per 50 ms of snapshot time as with one snapshot per frame. A time sampled again gives the same
+    // place and does not move the lag.
+    {
+        EvenTrack t;
+        double next = 0;
+        std::vector<std::pair<int, float>> places;
+        std::vector<int> lags;
+        for (int s = 1; s <= 900; ++s) {
+            const int snapshotTime = 1000 + s * 50 / 3;
+            for (;; next += 1000.0 / 119.0) {
+                if (1000 + next + 3 > snapshotTime) break;
+                const int commandTime = 940 + static_cast<int>(next);
+                t.add(commandTime, {0.2f * static_cast<float>(commandTime - 940), 0, 0});
+            }
+            EvenTrack::Vec at{}, again{};
+            if (!t.sample(snapshotTime, at)) continue;
+            const int lag = t.lagMs();
+            check(t.sample(snapshotTime, again) && again[0] == at[0] && t.lagMs() == lag, "a snapshot time sampled twice");
+            places.emplace_back(snapshotTime, at[0]);
+            lags.push_back(lag);
+        }
+        float lo = 1e9f, hi = -1e9f;
+        for (size_t i = 211; i < places.size(); ++i) {
+            const float perMs = (places[i].second - places[i - 1].second) / static_cast<float>(places[i].first - places[i - 1].first);
+            lo = std::min(lo, perMs), hi = std::max(hi, perMs);
+        }
+        std::printf("60 snapshots a second: %.4f..%.4f units per ms of snapshot time (0.2 = his walk), lag %d ms\n", double(lo), double(hi), lags.back());
+        check(std::fabs(lo - 0.2f) < 0.002f && std::fabs(hi - 0.2f) < 0.002f, "the places between the frames are his walk at the snapshot times");
+        for (size_t i = 3; i < lags.size(); ++i) check(lags[i] >= lags[i - 3] - 1, "the lag falls by 1 ms per 50 ms at most");
     }
     std::printf(failures ? "eventrack: FAILED\n" : "eventrack: OK\n");
     return failures ? 1 : 0;

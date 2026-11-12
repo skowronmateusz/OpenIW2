@@ -115,7 +115,11 @@ void Server::applyUserinfo(Client& c) {
     c.rate = r.empty() ? 5000 : std::clamp(std::atoi(r.c_str()), 1000, 90000);
     if (isLanAddress(c.address) && !publicServer) c.rate = 99999;
     const std::string s = infoValueForKey(c.userinfo, "snaps");
-    c.snapshotMs = s.empty() ? 50 : 1000 / std::clamp(std::atoi(s.c_str()), 1, 30);
+    // openiw2: a client that asks for more than the 1.3 limit of 30 gets the snapshots between the frames, up to
+    // sv_snaps a second (docs/spec/net.md section 10 "Snapshot rate"); every other client is treated as before.
+    const int asked = s.empty() ? 20 : std::atoi(s.c_str());
+    c.subFrame = subSteps() > 1 && asked > 30;
+    c.snapshotMs = 1000 / std::clamp(asked, 1, c.subFrame ? snapshotHz : 30);
 }
 
 void Server::updatePing(Client& c) {
@@ -168,6 +172,15 @@ void Server::poll(int64_t nowMs, int waitMs) {
     // run with it, so a longer wait would start the frame late by up to the rest of the wait (docs/spec/net.md section
     // 10 "Server cadence"; the 1.3 server sleeps until its next frame is due).
     if (waitMs > 0 && nextFrameMs_ - nowMs < waitMs) waitMs = static_cast<int>(std::max<int64_t>(0, nextFrameMs_ - nowMs));
+    // ... and at the next snapshot time between two frames.
+    const int subSteps = this->subSteps();
+    if (waitMs > 0 && subSteps > 1) {
+        const int64_t sub = nowMs - (nextFrameMs_ - frameMs);
+        if (sub >= 0 && sub < frameMs) {
+            const int64_t nextStep = (sub * subSteps / frameMs + 1) * frameMs / subSteps;
+            waitMs = static_cast<int>(std::clamp<int64_t>(nextStep - sub, 0, waitMs));
+        }
+    }
     for (int wait = waitMs;; wait = 0) {
         int n = sock_.receive(buf, kMaxPacketLen, from, wait);
         if (n <= 0) break;
@@ -205,6 +218,23 @@ void Server::poll(int64_t nowMs, int waitMs) {
         for (Client& c : clients_) c.clockResetAllowed = false;
         clockResetUntilMs_ = -1;
     }
+    // With snapshots between the frames the held commands run when they are due, not only before a game frame.
+    if (subSteps > 1 && !framesRan && !timeJump) runDueCommands(nowMs);
+    // The snapshot time between two frames: the frame's time plus the part of the frame that has passed, on a grid of
+    // subSteps per frame (docs/spec/net.md section 10 "Snapshot rate").
+    int subMs = 0;
+    if (subSteps > 1) {
+        const int own = game_.subFrameMs(nowMs);
+        const int64_t sub = std::clamp<int64_t>(own >= 0 ? own : nowMs - (nextFrameMs_ - frameMs), 0, frameMs - 1);
+        subMs = static_cast<int>(sub * subSteps / frameMs) * frameMs / subSteps;
+        const int subTime = game_.serverTime() + subMs;
+        if (subTime != lastSubTime_) {
+            bool any = false;
+            for (const Client& c : clients_) any |= c.state == ServerClientState::Active && c.subFrame;
+            if (any) game_.prepareSubFrame(subMs);
+            lastSubTime_ = subTime;
+        }
+    }
     for (int i = 0; i < maxClients; ++i) {
         Client& c = clients_[static_cast<size_t>(i)];
         if (c.state == ServerClientState::Free) continue;
@@ -229,7 +259,8 @@ void Server::poll(int64_t nowMs, int waitMs) {
         // A snapshot follows every game frame (the message loop runs after the frame; docs/spec/net.md section 10
         // "Server cadence"): one per new server time, so the snapshot times keep the frame spacing whatever the poll
         // rate is. A host that stops stepping its world still gets a message every second (its server commands).
-        const int serverTime = game_.serverTime();
+        const bool sub = c.subFrame && c.state == ServerClientState::Active && game_.subFrameAllowed(i);
+        const int serverTime = game_.serverTime() + (sub ? subMs : 0);
         const bool lan = isLanAddress(c.address);
         // Delay until the next message: nothing on LAN, otherwise the rate and snaps limits (section 4a).
         auto nextDelay = [&](int bytes) {
@@ -242,11 +273,13 @@ void Server::poll(int64_t nowMs, int waitMs) {
         // (0x809ad66; the time advances by whole frames at 0x8096dc3): a delay of one frame is due at the next frame.
         // Counted in real time it fell a few ms after the frame now and then and the snapshot waited a whole frame
         // more. A server time that went back (a new level) is due at once.
-        if (serverTime < c.lastSnapshotServerTime) c.nextSnapshotServerTime = serverTime;
+        // (A client that left the snapshots between the frames, for a killcam, waits for the next frame.)
+        if (serverTime <= c.lastSnapshotServerTime - frameMs) c.nextSnapshotServerTime = serverTime;
         if (c.state == ServerClientState::Active &&
-            ((serverTime >= c.nextSnapshotServerTime && serverTime != c.lastSnapshotServerTime) || nowMs - c.lastSnapshotMs >= 1000)) {
+            ((serverTime >= c.nextSnapshotServerTime && (serverTime > c.lastSnapshotServerTime || serverTime <= c.lastSnapshotServerTime - frameMs)) ||
+             nowMs - c.lastSnapshotMs >= 1000)) {
             const int messageNum = c.chan->outgoingSequence();
-            const int bytes = sendSnapshot(i);
+            const int bytes = sendSnapshot(i, sub ? subMs : -1);
             if (frameTrace_) {  // IW2_NET_TRACE=2: what this snapshot carries of the client's own commands
                 std::printf("NETTRACE snap slot=%d t=%d bytes=%d cmdlag=%d cmds=%d pkts=%d hold=%d\n", i, serverTime, bytes,
                             serverTime - c.lastUsercmdTime, c.traceCmds, c.tracePackets, c.playout.holdMs());
@@ -264,7 +297,8 @@ void Server::poll(int64_t nowMs, int waitMs) {
             sent.ackMs = -1;
             c.lastSnapshotServerTime = serverTime;
             c.lastSnapshotMs = nowMs;
-            c.nextSnapshotServerTime = serverTime + nextDelay(bytes);
+            // Between the frames the client's own interval applies on every address (2 ms for the grid's rounding).
+            c.nextSnapshotServerTime = serverTime + (sub ? std::max(nextDelay(bytes), c.snapshotMs - 2) : nextDelay(bytes));
         } else if (c.state != ServerClientState::Active && nowMs >= c.nextSnapshotMs) {
             // A client without the world gets a message with no operation but the end mark: a client that lost the
             // gamestate acknowledges a later message and so gets it again (0x809adea). The pending server commands
@@ -557,13 +591,13 @@ void Server::sendGamestate(int slot) {
     transmit(slot, ops);
 }
 
-int Server::sendSnapshot(int slot) {
+int Server::sendSnapshot(int slot, int subMs) {
     Client& c = clients_[static_cast<size_t>(slot)];
     const int messageNum = c.chan->outgoingSequence();
     Client::Frame& frame = c.frames[static_cast<size_t>(messageNum & 31)];
     frame.messageNum = messageNum;
-    frame.view = game_.snapshot(slot);
-    frame.view.serverTime = game_.serverTime();
+    frame.view = subMs >= 0 ? game_.snapshotAt(slot, subMs) : game_.snapshot(slot);
+    frame.view.serverTime = game_.serverTime() + std::max(subMs, 0);
     c.currentPs = frame.view.ps;
 
     const Client::Frame* old = nullptr;

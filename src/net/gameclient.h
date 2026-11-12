@@ -42,6 +42,12 @@ public:
     ~GameClient();
 
     std::string name = "player";
+    // Userinfo `snaps` and `rate` (docs/spec/net.md section 4a). openiw2 asks for the snapshots between the game
+    // frames (section 10 "Snapshot rate"; a 1.3 client sends 20); IW2_SNAPS overrides.
+    int snaps = 60;
+    // The server's limit (90000 bytes a second): at 25000, the 1.3 client's highest menu value, a full server's
+    // snapshots are too large for 60 a second (measured: 43 a second with 12 bots).
+    int rate = 90000;
     std::string error;        // why the client disconnected
     // The reason for the error dialog (docs/spec/net.md section 14): a localization key, parameters behind 0x15, or plain
     // text. dropFromServer: the server ended the connection (`w` server command), else the connection was refused or lost.
@@ -120,6 +126,11 @@ public:
     // t may carry a fraction of a millisecond (openiw2: the drawn frame's real time below the millisecond, so that the
     // fraction moves on by the frame's real length and not by 8 or 9 whole ms).
     bool interpolation(double t, const ClientSnapshot*& a, const ClientSnapshot*& b, float& frac) const;
+    // The kept snapshots from the one drawn at t on: the newest one at or before t first (the oldest kept one when t
+    // lies before all), then every later one in time order. Empty without a snapshot.
+    std::vector<const ClientSnapshot*> snapshotsFrom(double t) const;
+    // The interval between the snapshots as the clock has it (the newest two with the plain rule); 0: not known.
+    int snapshotIntervalMs() const;
     int snapshots = 0;
     int deltaSnapshots = 0;
     int droppedSnapshots = 0;

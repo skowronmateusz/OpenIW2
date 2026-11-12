@@ -138,6 +138,7 @@ public:
     std::function<int(const std::string&)> weaponIndex;
     // The client's antilag time for its shots (the owner sets it before think; -1: the current positions).
     int antilagTime = -1;
+    bool antilagFine = false; // the shooter draws the snapshots sent between the frames (World::fireAntilagFine)
 
 private:
     void wire(game::World& w, int client);

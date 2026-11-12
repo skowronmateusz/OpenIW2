@@ -141,10 +141,11 @@ void run(fs::Vfs& vfs) {
         g.clientStep();
         const net::ClientSnapshot *s0 = nullptr, *s1 = nullptr;
         float frac = 0;
-        const int t = g.client->renderTime(g.now);
-        if (!g.client->interpolation(t, s0, s1, frac)) continue;
+        if (!g.client->interpolation(g.client->renderTime(g.now), s0, s1, frac)) continue;
+        // The time the models with a trajectory are drawn at (docs/spec/net.md section 11 "Trajectories").
+        const int t = g.client->renderTime(g.now) - netgame::RemoteView::trajectoryDelayMs(g.client->snapshotIntervalMs());
         rv.apply(view, *g.client->latest(), g.client->configstrings, a, view.timeMs());
-        netgame::RemoteView::placeTrajectories(view, *s0, *s1, t, g.client->latest());
+        netgame::RemoteView::placeTrajectories(view, g.client->snapshotsFrom(t), t);
         ++frames;
         if (!gren.grenade || gren.grenade->trType != 5) continue;  // airborne on the server only
         for (const auto& e : view.entities()) {
@@ -212,10 +213,11 @@ void run(fs::Vfs& vfs) {
         g.clientStep();
         const net::ClientSnapshot *s0 = nullptr, *s1 = nullptr;
         float frac = 0;
-        const int t = g.client->renderTime(g.now);
-        if (!g.client->interpolation(t, s0, s1, frac)) continue;
+        if (!g.client->interpolation(g.client->renderTime(g.now), s0, s1, frac)) continue;
+        // The time the models with a trajectory are drawn at (docs/spec/net.md section 11 "Trajectories").
+        const int t = g.client->renderTime(g.now) - netgame::RemoteView::trajectoryDelayMs(g.client->snapshotIntervalMs());
         rv.apply(view, *g.client->latest(), g.client->configstrings, a, view.timeMs());
-        netgame::RemoteView::placeTrajectories(view, *s0, *s1, t, g.client->latest());
+        netgame::RemoteView::placeTrajectories(view, g.client->snapshotsFrom(t), t);
         if (!lob->grenade || lob->grenade->trType != 5) continue;
         if (lob->grenade->trTime != lastTrTime) ++rebases, lastTrTime = lob->grenade->trTime;
         for (const auto& e : view.entities()) {

@@ -328,7 +328,9 @@ VAs in the 1.3 Linux dedicated server.
 Implemented: `World::mpAntilagRewind` / `mpAntilagRestore` / `mpArchivedClientOrigin` (src/game/mpkillcam.cpp; the
 archive keeps each client's origin), called around the bullet traces of `World::clientFire` when a network client fires
 (src/netgame/worldgame.cpp keeps the antilag time). The port's archive stores each frame under its own server time, so
-the lookups are the original's. The bots and the host fire with the level time (nothing to rewind). The openiw2 client
+the lookups are the original's. The bots and the host fire with the level time (nothing to rewind). A shooter who gets the snapshots between the
+game frames is rewound through the places of those snapshots instead of the frame archive, also within the last
+frame (`game::PlaceHistory`, docs/spec/net.md section 10 "Snapshot rate"). The openiw2 client
 sends the time it draws the other players at as the command's server time (docs/spec/net.md section 10).
 `TODO(spec)`: the 1.3 client's command time (the original client side is not analysed here).
 

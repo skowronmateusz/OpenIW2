@@ -177,6 +177,11 @@ public:
     void runFrame(int frameMs) override;
     int serverTime() const override;
     net::SnapshotView snapshot(int slot) override;
+    // Snapshots between the game frames (docs/spec/net.md section 10 "Snapshot rate").
+    void prepareSubFrame(int subMs) override;
+    net::SnapshotView snapshotAt(int slot, int subMs) override;
+    bool subFrameAllowed(int slot) override;
+    int subFrameMs(int64_t nowMs) override;
     // The weapon side of a network slot (tests); nullptr when the slot has no client.
     const NetCombat* combat(int slot) const;
     // User-command weapon byte <-> weapon name: the weapon configstring index + 1, 0 none (docs/spec/net.md section 13).
@@ -206,6 +211,7 @@ private:
         EvenTrack track;      // his places by command time, for the other clients' snapshots (eventrack.h)
         int trackSampledAt = -1; // the snapshot time the track was last sampled for
         int lastServerTime = 0;  // the antilag time (0x80f5614)
+        bool subFrame = false;   // his last snapshot was one of those sent between the frames
         bool turretMoved = false; // on a map turret at the last think, or the turret code moved the client since
         float viewPitch = 0, viewYaw = 0;
         std::shared_ptr<NetCombat> combat = std::make_shared<NetCombat>();  // the weapon side (netcombat.h)
@@ -220,6 +226,22 @@ private:
         int32_t lastCmdAngles[3] = {0, 0, 0};
         int viewAngleSetsSeen = 0;
     };
+    // A client's place and yaw at the end of a game frame, for the clients the frame moves (bots): the snapshots
+    // between two frames carry them on the way from the frame before to the last one.
+    struct FramePlace {
+        script::Vec3 origin{};
+        float yaw = 0;
+        int spawnCount = -1;
+    };
+    std::map<int, FramePlace> framePrev_, frameCur_;
+    int frameLenMs_ = 50;
+    int64_t frameSeenTime_ = -1;  // the world time the frame places were last taken at
+    int64_t frameSeenAtMs_ = 0;   // a host-owned world: the real time its last step was seen at
+    void noteFrame();
+    // The snapshot being built is one between the frames (snapshotAt), its time and the clients' places in it.
+    bool subSnapshot_ = false;
+    int subTime_ = -1;
+    std::map<int, FramePlace> subPlaces_;
     struct Event {
         int number = 0;
         int time = 0;

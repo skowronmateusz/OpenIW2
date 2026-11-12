@@ -13,7 +13,8 @@ namespace iw2::netgame {
 class EvenTrack {
 public:
     using Vec = std::array<float, 3>;
-    static constexpr int kWindow = 60;      // snapshots whose distance to the last command sets the lag (3 s)
+    static constexpr int kWindowMs = 3000;  // the snapshots of this long set the lag by their distance to the last command
+    static constexpr int kFallMs = 50;      // the lag falls by 1 ms per this much snapshot time
     static constexpr int kMaxSpreadMs = 35; // the lag never exceeds the window's smallest distance by more than this
     static constexpr int kKeepMs = 400;     // places older than this before the newest one are dropped
 
@@ -28,21 +29,31 @@ public:
         track_.clear();
         lags_.clear();
         lag_ = 0;
+        fallRest_ = 0;
     }
-    // Once per snapshot time: the place for it. False when there is nothing to sample (no command yet).
+    // The place for a snapshot time. False when there is nothing to sample (no command yet). The lag is brought up to
+    // date once per snapshot time, in rising order; an earlier or repeated time is sampled with the lag as it is.
     bool sample(int snapshotTime, Vec& out) {
         if (track_.empty()) return false;
-        const int distance = snapshotTime - track_.back().time;
-        lags_.push_back(distance);
-        if (lags_.size() > size_t(kWindow)) lags_.pop_front();
-        const auto [lo, hi] = std::minmax_element(lags_.begin(), lags_.end());
-        // The distance swings by one command interval as his frame rate beats against the snapshots, also while the
-        // window happens to hold only one end of the swing: the lag covers the whole swing from the start.
-        const int interval = track_.size() > 1 ? (track_.back().time - track_.front().time + static_cast<int>(track_.size()) - 2) /
-                                                     (static_cast<int>(track_.size()) - 1)
-                                               : 0;
-        const int want = std::min(std::max(*hi, *lo + interval), *lo + kMaxSpreadMs);
-        lag_ = lags_.size() == 1 || want > lag_ ? want : std::max(want, lag_ - 1);
+        if (lags_.empty() || snapshotTime > lags_.back().time) {
+            const int distance = snapshotTime - track_.back().time;
+            const int passed = lags_.empty() ? 0 : snapshotTime - lags_.back().time;
+            lags_.push_back({snapshotTime, distance});
+            while (lags_.front().time <= snapshotTime - kWindowMs) lags_.pop_front();
+            int lo = distance, hi = distance;
+            for (const Lag& l : lags_) lo = std::min(lo, l.distance), hi = std::max(hi, l.distance);
+            // The distance swings by one command interval as his frame rate beats against the snapshots, also while
+            // the window happens to hold only one end of the swing: the lag covers the whole swing from the start.
+            const int interval = track_.size() > 1 ? (track_.back().time - track_.front().time + static_cast<int>(track_.size()) - 2) /
+                                                         (static_cast<int>(track_.size()) - 1)
+                                                   : 0;
+            const int want = std::min(std::max(hi, lo + interval), lo + kMaxSpreadMs);
+            // It rises at once and falls by 1 ms per kFallMs of snapshot time.
+            fallRest_ += passed;
+            const int fall = fallRest_ / kFallMs;
+            fallRest_ -= fall * kFallMs;
+            lag_ = lags_.size() == 1 || want > lag_ ? want : std::max(want, lag_ - fall);
+        }
         const int t = snapshotTime - lag_;
         if (t >= track_.back().time) {  // nothing newer than his last command is known: his newest place
             out = track_.back().origin;
@@ -67,8 +78,12 @@ private:
         Vec origin;
     };
     std::deque<Point> track_;
-    std::deque<int> lags_;
+    struct Lag {
+        int time, distance;
+    };
+    std::deque<Lag> lags_;
     int lag_ = 0;
+    int fallRest_ = 0;
 };
 
 } // namespace iw2::netgame

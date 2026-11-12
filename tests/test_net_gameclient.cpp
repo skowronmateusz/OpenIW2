@@ -359,8 +359,7 @@ void evenClockTests() {
         CHECK(r.past * 20 < r.frames && r.behindMin > -13);
         CHECK(r.behindMax <= 50 + 12 + 8 + 3 + 1);
     }
-    // One lost snapshot does not move the clock (the interval is the middle one of the last five); another snapshot
-    // rate is followed within a few snapshots.
+    // One lost snapshot does not move the clock (the interval is the second largest of the last five).
     {
         ClientClock c;
         int prevSnap = 0, newest = 0;
@@ -377,6 +376,27 @@ void evenClockTests() {
             }
         std::printf("even clock, one lost snapshot: the clock moves by %.2f ms at most\n", worst);
         CHECK(worst < 1.0);
+    }
+    // Snapshots 17 and 33 ms apart in turn (a remote client whose rate limit leaves out steps), then one per 50 ms
+    // (a killcam): the clock keeps the longer interval between itself and the arrivals, and takes the change of the
+    // rate at once, with the second snapshot of the new rate.
+    {
+        ClientClock c;
+        int prevSnap = 0, newest = -1, st = 1000, at = 5, n = 0, past = 0, pastSlow = 0, frames = 0;
+        for (int now = 0; now < 12000; now += 8) {
+            for (; at <= now; ++n) {
+                c.snapshot(st, prevSnap, n == 0, at);
+                prevSnap = newest = st;
+                const int step = now < 8000 ? (n % 2 ? 33 : 17) : 50;
+                st += step, at += step;
+            }
+            if (newest < 0) continue;
+            const double t = double(c.time(now, newest)) + c.fraction();
+            if (now >= 3000 && now < 8000) ++frames, past += t > newest ? 1 : 0;
+            if (now >= 8110) pastSlow += t > newest ? 1 : 0;
+        }
+        std::printf("even clock, 17 / 33 ms in turn: past the newest snapshot in %d of %d frames; after the change to 50 ms: %d\n", past, frames, pastSlow);
+        CHECK(past == 0 && pastSlow == 0);
     }
 }
 
@@ -529,6 +549,7 @@ void smoothnessTest() {
     NetAddress addr;
     NetAddress::parse("127.0.0.1:" + std::to_string(server.port()), addr, 28960);
     GameClient c;
+    c.snaps = 20; // one snapshot per game frame, as a 1.3 client gets (the game here has one place per frame)
     int64_t now = 5000;
     CHECK(c.connect(addr, now));
     for (int i = 0; i < 400 && c.state() != ClientState::Active; ++i) {
@@ -639,6 +660,7 @@ void remoteCadenceTest() {
     NetAddress addr;
     NetAddress::parse("127.0.0.1:" + std::to_string(server.port()), addr, 28960);
     GameClient c;
+    c.snaps = 20; // as a 1.3 client asks
     int64_t now = 5000;
     CHECK(c.connect(addr, now));
     for (int i = 0; i < 2000 && c.state() != ClientState::Active; ++i) {
@@ -725,6 +747,7 @@ int main() {
     NetAddress addr;
     NetAddress::parse("127.0.0.1:" + std::to_string(server.port()), addr, 28960);
     GameClient a, b;
+    b.snaps = 20; // b checks the per-frame cadence; a gets the snapshots between the frames (docs/spec/net.md section 10 "Snapshot rate")
     a.name = "alpha";
     b.name = "bravo";
     CHECK(a.connect(addr, nowMs()));

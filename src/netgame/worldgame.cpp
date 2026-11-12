@@ -324,6 +324,8 @@ void WorldGame::setWorld(World* w, std::string map, std::string gametype, int se
     otherRings_.clear();
     turretRings_.clear();
     sentOffhand_.clear();
+    framePrev_.clear(), frameCur_.clear(), subPlaces_.clear();
+    frameSeenTime_ = -1, subTime_ = -1;
     printsSent_ = chatSent_ = obituariesSeen_ = explosionsSeen_ = clientCommandsSent_ = 0;
     for (ConfigstringRange* r : {&weapons_, &materials_, &strings_, &models_, &effects_, &sounds_, &hints_, &headIcons_}) r->clear();
     // The game registers the default weapon first, so it is weapon 1, then every precached item in order; models,
@@ -762,6 +764,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         const int t = std::max(cmd.serverTime, now - 1000);
         if (!(t < m.lastServerTime && now > t)) m.lastServerTime = t;
         m.combat->antilagTime = w_->cvarFloat("g_antilag", 1.0f) != 0 ? m.lastServerTime : now;
+        m.combat->antilagFine = m.subFrame;
     }
     if (!onTurret) m.combat->think(*w_, it->second, cmd, m.ps, usercmdMsec(prevTime, cmd.serverTime), cmdWeapon);
     // A script's weapon change goes to the client as the selection command (docs/spec/net.md section 10 "Weapon
@@ -856,7 +859,96 @@ void WorldGame::runFrame(int frameMs) {
         w_->mpSetSentOrigin(client, script::Vec3{live[0], live[1], live[2]}, script::Vec3{at[0], at[1], at[2]});
     }
     if (!worldOwnedByHost) w_->frame();
+    frameLenMs_ = frameMs;
+    if (!worldOwnedByHost) noteFrame();
     forwardToClients();
+}
+
+// The places the last game frame left the clients at (the bots' way between two frames, prepareSubFrame), taken once
+// per world time: after the frame, or when a host-owned world is seen to have stepped.
+void WorldGame::noteFrame() {
+    if (w_->timeMs() == frameSeenTime_) return;
+    frameSeenTime_ = w_->timeMs();
+    framePrev_ = std::move(frameCur_);
+    frameCur_.clear();
+    const auto& st = w_->mpState();
+    for (size_t n = 0; n < st.clients.size(); ++n) {
+        const auto& cl = st.clients[n];
+        if (cl.state == game::MpClientState::Free || !cl.ent) continue;
+        const Value o = cl.ent->obj->get("origin"), a = cl.ent->obj->get("angles");
+        frameCur_[int(n)] = {o.isVector() ? o.asVector() : script::Vec3{}, a.isVector() ? a.asVector()[1] : 0.0f, cl.spawnCount};
+    }
+}
+
+int WorldGame::subFrameMs(int64_t nowMs) {
+    if (!worldOwnedByHost) return -1;
+    if (w_->timeMs() != frameSeenTime_) {
+        noteFrame();
+        frameSeenAtMs_ = nowMs;
+    }
+    return int(std::clamp<int64_t>(nowMs - frameSeenAtMs_, 0, frameLenMs_ - 1));
+}
+
+// docs/spec/net.md section 10 "Snapshot rate": the clients' places at `serverTime() + subMs`. A network client's walk
+// is sampled at that time (EvenTrack); a client the game frame moves (a bot) is on the way from the frame before to
+// the last frame, by the part of the frame that has passed; the host's own player and a client without a track are
+// where they are. The places are kept for the antilag rewind.
+void WorldGame::prepareSubFrame(int subMs) {
+    static const bool plainPlayers = std::getenv("IW2_PLAYER_PLAIN") != nullptr;
+    subTime_ = serverTime() + subMs;
+    subPlaces_.clear();
+    std::vector<std::pair<int, script::Vec3>> record;
+    const auto& st = w_->mpState();
+    const float f = std::clamp(float(subMs) / float(std::max(frameLenMs_, 1)), 0.0f, 1.0f);
+    for (size_t n = 0; n < st.clients.size(); ++n) {
+        const auto& cl = st.clients[n];
+        if (cl.state == game::MpClientState::Free || !cl.ent) continue;
+        const Value o = cl.ent->obj->get("origin"), a = cl.ent->obj->get("angles");
+        FramePlace p{o.isVector() ? o.asVector() : script::Vec3{}, a.isVector() ? a.asVector()[1] : 0.0f, cl.spawnCount};
+        Move* mv = nullptr;
+        for (const auto& [slot, client] : mp_)
+            if (client == int(n))
+                if (auto it = moves_.find(slot); it != moves_.end()) mv = &it->second;
+        if (mv) {
+            EvenTrack::Vec at{};
+            const auto& live = mv->lastOrigin;
+            const bool moved = std::fabs(p.origin[0] - live[0]) + std::fabs(p.origin[1] - live[1]) + std::fabs(p.origin[2] - live[2]) > 0.01f;
+            if (!plainPlayers && mv->havePs && !moved && mv->track.sample(subTime_, at)) p.origin = {at[0], at[1], at[2]};
+        } else if (int(n) != st.localClient) {
+            const auto prev = framePrev_.find(int(n));
+            const auto cur = frameCur_.find(int(n));
+            // Only while he stands where the frame left him and did not spawn in it, and not over a placement.
+            if (prev != framePrev_.end() && cur != frameCur_.end() && prev->second.spawnCount == cl.spawnCount &&
+                cur->second.spawnCount == cl.spawnCount && cur->second.origin == p.origin) {
+                const script::Vec3& a0 = prev->second.origin;
+                const script::Vec3& a1 = cur->second.origin;
+                const float d2 = (a1[0] - a0[0]) * (a1[0] - a0[0]) + (a1[1] - a0[1]) * (a1[1] - a0[1]) + (a1[2] - a0[2]) * (a1[2] - a0[2]);
+                if (d2 < 100.0f * 100.0f) {
+                    for (size_t k = 0; k < 3; ++k) p.origin[k] = a0[k] + (a1[k] - a0[k]) * f;
+                    float dy = std::fmod(cur->second.yaw - prev->second.yaw, 360.0f);
+                    if (dy > 180.0f) dy -= 360.0f;
+                    if (dy < -180.0f) dy += 360.0f;
+                    p.yaw = prev->second.yaw + dy * f;
+                }
+            }
+        }
+        subPlaces_[int(n)] = p;
+        if (cl.state == game::MpClientState::Active) record.emplace_back(int(n), p.origin);
+    }
+    w_->mpRecordSentPlaces(subTime_, std::move(record));
+}
+
+bool WorldGame::subFrameAllowed(int slot) {
+    const auto it = mp_.find(slot);
+    return it == mp_.end() || !killcamFrame(it->second).frame;
+}
+
+net::SnapshotView WorldGame::snapshotAt(int slot, int subMs) {
+    if (subTime_ != serverTime() + subMs) prepareSubFrame(subMs);
+    subSnapshot_ = true;
+    net::SnapshotView v = snapshot(slot);
+    subSnapshot_ = false;
+    return v;
 }
 
 int WorldGame::serverTime() const { return static_cast<int>(w_->timeMs()); }
@@ -916,10 +1008,15 @@ void WorldGame::writePlayerEntity(std::vector<uint8_t>& es, int client, const En
     re.clientNum = client;
     // The place the other clients get: his walk sampled evenly (docs/spec/net.md section 10 "Player positions in a
     // snapshot"), or the entity's origin.
-    const auto o = w_->mpSnapshotOrigin(client);
+    auto o = w_->mpSnapshotOrigin(client);
     const auto a = e.obj->get("angles");
-    for (int i = 0; i < 3; ++i) re.origin[i] = o[size_t(i)];
     if (a.isVector()) re.angles[1] = a.asVector()[1];
+    if (subSnapshot_)  // a snapshot between the frames: the place at its time ("Snapshot rate")
+        if (const auto sp = subPlaces_.find(client); sp != subPlaces_.end()) {
+            o = sp->second.origin;
+            re.angles[1] = sp->second.yaw;
+        }
+    for (int i = 0; i < 3; ++i) re.origin[i] = o[size_t(i)];
     writeEntity(es, re);
     for (const auto& [s, n] : mp_)
         if (n == client)
@@ -981,7 +1078,7 @@ void WorldGame::writePlayerEntity(std::vector<uint8_t>& es, int client, const En
     // world) on the ground. openiw2: trTime is the snapshot time, not the player's command time, so the trajectory
     // evaluates to the origin (no 50 ms lead along the velocity).
     putI(es, 12, 3);
-    putI(es, 16, serverTime());
+    putI(es, 16, subSnapshot_ ? subTime_ : serverTime());
     putI(es, 20, 50);
     putI(es, 48, 1);
     // The top follows the client's stance (its move box, docs/spec/mp-pmove.md "Players against each other").
@@ -1177,7 +1274,8 @@ void WorldGame::writeKillcamPlayerState(std::vector<uint8_t>& ps, const KillcamF
 
 net::SnapshotView WorldGame::snapshot(int slot) {
     net::SnapshotView v;
-    v.serverTime = serverTime();
+    v.serverTime = subSnapshot_ ? subTime_ : serverTime();
+    if (auto mv = moves_.find(slot); mv != moves_.end()) mv->second.subFrame = subSnapshot_;
     v.ps.assign(size_t(net::kPlayerStateSize), 0);
     const int self = mp_.count(slot) ? mp_[slot] : -1;
     static const Move noMove{};

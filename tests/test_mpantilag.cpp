@@ -18,6 +18,7 @@
 #include "net/server.h"
 #include "netgame/netcombat.h"
 #include "netgame/netmove.h"
+#include "netgame/remoteview.h"
 #include "netgame/worldgame.h"
 
 namespace {
@@ -55,7 +56,10 @@ struct Game {
     std::vector<int> lag;
     int64_t now = 1000;
 
-    Game(fs::Vfs& vfs, const char* gt) : host(vfs, "mp_toujane", true), game(nullptr, "", "", 7, 8), server(game, 5) {
+    int snaps = 20; // what the clients ask for (docs/spec/net.md section 10 "Snapshot rate")
+
+    Game(fs::Vfs& vfs, const char* gt, int snapsAsked = 20) : host(vfs, "mp_toujane", true), game(nullptr, "", "", 7, 8), server(game, 5), snaps(snapsAsked) {
+        server.snapshotHz = 60;
         host.vm().setLoopGuardIterations(200000u);
         host.cvars["mapname"] = "mp_toujane";
         host.mpStart(gt);
@@ -72,6 +76,7 @@ struct Game {
     int connect(const std::string& name) {
         auto c = std::make_unique<net::GameClient>();
         c->name = name;
+        c->snaps = snaps;
         net::NetAddress a;
         net::NetAddress::parse("127.0.0.1:" + std::to_string(server.port()), a, 28960);
         c->connect(a, now);
@@ -199,8 +204,8 @@ bool shot(Game& g, int a, int b, const Lane& lane, int lagMs, bool antilag, floa
     return hits > 0;
 }
 
-void run(fs::Vfs& vfs) {
-    Game g(vfs, "dm");
+void run(fs::Vfs& vfs, int snaps) {
+    Game g(vfs, "dm", snaps);
     g.host.mpAutoJoin(0);
     if (!g.server.open(0)) {
         std::cerr << "cannot open a UDP port\n";
@@ -272,6 +277,98 @@ void run(fs::Vfs& vfs) {
     }
 }
 
+// docs/spec/net.md section 10 "Snapshot rate": with snapshots between the game frames, the place the server rewinds
+// a player to for a shooter's command time is the place that shooter's client drew him at, between the two
+// snapshots around that time. A network client walks, a bot runs; the watching client's snapshots are compared with
+// the server's place history at times between them.
+void subFrameTest(fs::Vfs& vfs) {
+    Game g(vfs, "dm", 60);
+    g.host.mpAutoJoin(0);
+    if (!g.server.open(0)) {
+        ++failures;
+        return;
+    }
+    const int a = g.connect("watcher");
+    const int b = g.connect("walker");
+    CHECK(a > 0 && b > 0 && a != b);
+    if (a <= 0 || b <= 0) return;
+    g.host.mpAutoJoin(a);
+    g.host.mpAutoJoin(b);
+    const int bot = g.host.mpAddBot();
+    CHECK(bot >= 0);
+    for (int i = 0; i < 60; ++i) g.frame();
+    g.cmds[1].forwardmove = 127;
+    // 50 ms of real time in polls 10 ms apart: the world steps, then the server is polled five times.
+    struct Seen {
+        int time;
+        std::map<int, Vec3> places; // MP client (the wire's client number) -> the place in the watcher's snapshot
+    };
+    std::vector<Seen> seen;
+    float worstWalker = 0, worstBot = 0, walked = 0, botMoved = 0;
+    int compared = 0;
+    // The pair of snapshots that just became complete, against the server's history (which keeps 1200 ms).
+    const auto compare = [&](const Seen& s0, const Seen& s1) {
+        if (s1.time - s0.time > 17) return; // a snapshot the watcher did not get in time: he drew across two steps
+        for (const auto& [client, p0] : s0.places) {
+            const auto it1 = s1.places.find(client);
+            if (it1 == s1.places.end() || (client != b && client != bot)) continue;
+            const Vec3& p1 = it1->second;
+            const float step = std::hypot(p1[0] - p0[0], p1[1] - p0[1]);
+            if (step > 30.0f) continue; // a spawn
+            for (int t = s0.time; t <= s1.time; t += 4) {
+                const float f = float(t - s0.time) / float(s1.time - s0.time);
+                const Vec3 drawn{p0[0] + (p1[0] - p0[0]) * f, p0[1] + (p1[1] - p0[1]) * f, p0[2] + (p1[2] - p0[2]) * f};
+                Vec3 rewound{};
+                if (!g.host.mpState().sentPlaces.at(client, t, rewound)) continue;
+                const float d = std::sqrt((drawn[0] - rewound[0]) * (drawn[0] - rewound[0]) + (drawn[1] - rewound[1]) * (drawn[1] - rewound[1]) +
+                                          (drawn[2] - rewound[2]) * (drawn[2] - rewound[2]));
+                (client == b ? worstWalker : worstBot) = std::max(client == b ? worstWalker : worstBot, d);
+                ++compared;
+            }
+            (client == b ? walked : botMoved) += step;
+        }
+    };
+    int lastTime = -1;
+    for (int frame = 0; frame < 120; ++frame) {
+        g.server.poll(g.now, 0);
+        g.host.frame();
+        if (frame % 20 == 0) g.cmds[1].angles[1] = angleShort(float(frame) * 4.5f); // he turns now and then
+        for (int k = 0; k < 5; ++k) {
+            for (size_t i = 0; i < g.clients.size(); ++i) {
+                const net::ClientSnapshot* ls = g.clients[i]->latest();
+                net::UserCmd c = ls ? netgame::viewCommand(g.cmds[i], ls->ps) : g.cmds[i];
+                c.serverTime = int(g.host.timeMs()) + k * 10 - 40; // a clock 40 ms behind the server's time
+                g.clients[i]->sendCommand(c, g.now);
+            }
+            g.server.poll(g.now, 0);
+            for (auto& c : g.clients) {
+                c->poll(g.now, 0);
+                (void)c->takeServerCommands();
+            }
+            if (const net::ClientSnapshot* s = g.clients[0]->latest(); s && s->serverTime != lastTime) {
+                lastTime = s->serverTime;
+                Seen e{s->serverTime, {}};
+                for (const auto& p : netgame::RemoteView::players(*s, *s, 0.0f, g.clients[0]->clientNum, g.clients[0]->configstrings))
+                    e.places[netgame::RemoteView::worldSlot(p.client, g.clients[0]->clientNum)] = {p.origin[0], p.origin[1], p.origin[2]};
+                seen.push_back(std::move(e));
+                if (seen.size() > 60) compare(seen[seen.size() - 2], seen.back());
+            }
+            g.now += 10;
+        }
+    }
+    CHECK(seen.size() > 300); // three snapshots per frame
+    int steps = 0;
+    for (size_t i = 1; i < seen.size(); ++i) steps += (seen[i].time - seen[i - 1].time == 16 || seen[i].time - seen[i - 1].time == 17) ? 1 : 0;
+    CHECK(steps > int(seen.size()) * 9 / 10);
+    std::cout << "snapshots between the frames: " << seen.size() << " snapshots, " << compared << " places compared; the walker moved " << walked
+              << " units, drawn against rewound " << worstWalker << " at most; the bot moved " << botMoved << ", " << worstBot << " at most\n";
+    CHECK(compared > 500);
+    CHECK(walked > 300.0f);
+    // The wire carries whole-unit-fraction origins: within a fraction of a unit.
+    CHECK(worstWalker < 0.2f);
+    CHECK(worstBot < 0.2f);
+}
+
 } // namespace
 
 int main() {
@@ -282,7 +379,9 @@ int main() {
     }
     fs::Vfs vfs;
     vfs.mountDirectory(main);
-    run(vfs);
+    run(vfs, 20);
+    run(vfs, 60); // the same through the place history of the snapshots between the frames
+    subFrameTest(vfs);
     if (failures) std::cerr << failures << " check(s) failed\n";
     else std::cout << "mpantilag: ok\n";
     return failures ? 1 : 0;

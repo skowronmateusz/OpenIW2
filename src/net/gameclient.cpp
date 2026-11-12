@@ -41,6 +41,7 @@ const char* clientStateName(ClientState s) {
 GameClient::GameClient() {
     // Debug (docs/debug-flags.md): the plain 1.3 time delta rule instead of the even clock.
     if (std::getenv("IW2_CLOCK_PLAIN")) clock_ = ClientClock{0, 0};
+    if (const char* e = std::getenv("IW2_SNAPS")) snaps = std::atoi(e); // docs/debug-flags.md
     if (const char* spread = std::getenv("IW2_CLOCK_SPREAD")) clock_.spreadMs = std::atoi(spread); // docs/debug-flags.md
 }
 GameClient::~GameClient() = default;
@@ -243,8 +244,8 @@ void GameClient::poll(int64_t nowMs, int waitMs) {
                 std::string info;
                 infoSetValueForKey(info, "cl_punkbuster", "0");
                 infoSetValueForKey(info, "cl_anonymous", "0");
-                infoSetValueForKey(info, "snaps", "20");
-                infoSetValueForKey(info, "rate", "25000");
+                infoSetValueForKey(info, "snaps", std::to_string(snaps));
+                infoSetValueForKey(info, "rate", std::to_string(rate));
                 infoSetValueForKey(info, "name", name);
                 if (!password.empty()) infoSetValueForKey(info, "password", password);
                 infoSetValueForKey(info, "protocol", std::to_string(kProtocolVersion));
@@ -517,6 +518,29 @@ bool GameClient::interpolation(double t, const ClientSnapshot*& a, const ClientS
     else if (!b) b = a;   // t past the newest: its state is held
     if (a != b) frac = static_cast<float>((t - a->serverTime) / static_cast<double>(b->serverTime - a->serverTime));
     return true;
+}
+
+std::vector<const ClientSnapshot*> GameClient::snapshotsFrom(double t) const {
+    std::vector<const ClientSnapshot*> out;
+    if (!latest_.valid) return out;
+    const ClientSnapshot* first = nullptr;
+    for (const ClientSnapshot& f : frames_) {
+        if (!f.valid || f.serverTime > latest_.serverTime) continue;
+        if (f.serverTime <= t) {
+            if (!first || f.serverTime > first->serverTime) first = &f;
+        } else {
+            out.push_back(&f);
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const ClientSnapshot* x, const ClientSnapshot* y) { return x->serverTime < y->serverTime; });
+    if (first) out.insert(out.begin(), first);
+    if (out.empty()) out.push_back(&latest_);
+    return out;
+}
+
+int GameClient::snapshotIntervalMs() const {
+    if (const int i = clock_.intervalMs(); i > 0) return i;
+    return latest_.valid && prev_.valid && latest_.serverTime > prev_.serverTime ? latest_.serverTime - prev_.serverTime : 0;
 }
 
 } // namespace iw2::net

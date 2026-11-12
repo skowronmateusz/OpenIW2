@@ -45,13 +45,17 @@ public:
     // objectives, new obituary events and script models. worldTimeMs: the time the HUD and shell shock times are
     // read on, at the moment of snap.serverTime (they are shifted from server time by the difference).
     // Models with a trajectory (docs/spec/net.md section 11 "Trajectories") placed at time t, per rendered frame
-    // (after apply placed them at the snapshot time), from the older snapshot a of the pair around t; when the newer
-    // snapshot b carries a re-based trajectory (a bounce, a stop), a's trajectory ends where it reaches b's base and
-    // the model waits there until b's start time, as it did on the server.
-    // newest: the snapshot apply was given, when it is a later one than b (the drawn time lies more than one snapshot
-    // back): a model that only it holds (thrown since b) waits at the start of its path until its start time.
-    static void placeTrajectories(game::World& w, const net::ClientSnapshot& a, const net::ClientSnapshot& b, int t,
-                                  const net::ClientSnapshot* newest = nullptr);
+    // (after apply placed them at the snapshot time). snaps: the snapshot drawn at t first (the newest one at or
+    // before t), then every later one the client holds, in time order (GameClient::snapshotsFrom). A model's path is
+    // the one of the first snapshot; when a later snapshot carries a re-based trajectory (a bounce, a stop; the first
+    // one that differs), the path ends where it reaches the new base and the model waits there until the new start
+    // time, as it did on the server. A model the first snapshot lacks (thrown since) waits at the start of the path
+    // of the first snapshot that holds it.
+    static void placeTrajectories(game::World& w, const std::vector<const net::ClientSnapshot*>& snaps, int t);
+    // How far behind the players' drawn time the models with a trajectory are drawn (docs/spec/net.md section 11
+    // "Trajectories"): with snapshots between the game frames, the part of a game frame the snapshot interval does not
+    // cover, so that the frame that re-bases a path has been received when the drawn time reaches the hit.
+    static int trajectoryDelayMs(int snapshotIntervalMs);
     // The position of such a model at time t from the pair's two entity states (exposed for the tests). spanMs: the time
     // between the two snapshots, the span in which the server may have re-based the path.
     static void trajectoryAt(const std::vector<uint8_t>& ea, const std::vector<uint8_t>* eb, int t, float out[3], int spanMs);

@@ -80,8 +80,9 @@ bool ClientClock::evenSnapshot(int snapTime, int oldSnapTime, bool first, int64_
     }
     while (!arrivals_.empty() && arrivals_.front().atMs < nowMs - windowMs) arrivals_.pop_front();
     arrivals_.push_back({nowMs, offset, static_cast<unsigned>(period) <= 500 ? period : 0});
-    // The least delayed snapshot of the window, and the snapshot interval: the middle one of the last five known (a
-    // single missing snapshot does not change it; another rate does within a few snapshots).
+    // The least delayed snapshot of the window, and the snapshot interval: the second largest of the last five known
+    // (a single missing snapshot does not change it; a server that leaves out every other snapshot, or another rate,
+    // is followed within two snapshots, and by the longer interval).
     int best = offset;
     for (const Arrival& a : arrivals_) best = std::max(best, a.offset);
     int nominal = 50;
@@ -90,7 +91,7 @@ bool ClientClock::evenSnapshot(int snapTime, int oldSnapTime, bool first, int64_
         for (auto it = arrivals_.rbegin(); it != arrivals_.rend() && last.size() < 5; ++it)
             if (it->interval > 0) last.push_back(it->interval);
         std::sort(last.begin(), last.end());
-        if (!last.empty()) nominal = last[last.size() / 2];
+        if (!last.empty()) nominal = last[last.size() >= 2 ? last.size() - 2 : 0];
     }
     // How much later than that the others came. The clock runs behind by the delay that coverPercent of them stayed
     // within (ordinary jitter; the few beyond it are drawn past the newest snapshot for a moment). Delays over
@@ -113,6 +114,10 @@ bool ClientClock::evenSnapshot(int snapTime, int oldSnapTime, bool first, int64_
     int cover = small.empty() ? 0 : small[std::min(small.size() - 1, small.size() * static_cast<size_t>(coverPercent) / 100)];
     if (stretches >= 2) cover = std::max(cover, std::min(large, maxBehindMs));
     cover_ = cover;
+    // Another snapshot rate (a killcam's one snapshot per game frame, and back): the clock takes the difference of the
+    // intervals at once. Slewed, it would run past the newest snapshot for a third of a second.
+    if (interval_ > 0 && (nominal - interval_ >= 10 || interval_ - nominal >= 10)) evenDelta_ -= static_cast<double>(nominal - interval_);
+    interval_ = nominal;
     target_ = static_cast<double>(best - nominal - cover - safetyMs);
     return false;
 }

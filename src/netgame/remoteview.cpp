@@ -532,44 +532,53 @@ void RemoteView::trajectoryAt(const std::vector<uint8_t>& ea, const std::vector<
     else std::memcpy(out, pb.base, sizeof pb.base);
 }
 
-void RemoteView::placeTrajectories(game::World& w, const net::ClientSnapshot& a, const net::ClientSnapshot& b, int t,
-                                   const net::ClientSnapshot* newest) {
-    if (!b.valid) return;
-    // A model the drawn pair does not hold yet (the newest snapshot is a later one than b): at its path's start.
-    if (newest && newest != &b && newest->valid && newest->serverTime > b.serverTime)
-        for (const auto& [number, es] : newest->entities) {
+int RemoteView::trajectoryDelayMs(int snapshotIntervalMs) {
+    return snapshotIntervalMs > 0 && snapshotIntervalMs < game::kServerFrameMs ? game::kServerFrameMs - snapshotIntervalMs : 0;
+}
+
+void RemoteView::placeTrajectories(game::World& w, const std::vector<const net::ClientSnapshot*>& snaps, int t) {
+    if (snaps.empty() || !snaps.front()->valid) return;
+    // A re-basing happened in the game frame that ends at the new path's start time: the hit is searched over one
+    // frame before it, or over the span of the two snapshots when that is longer (a lost snapshot).
+    const auto sameType = [](const std::vector<uint8_t>& es, int type) { return (getI(es, 4) & 0xff) == type; };
+    const auto samePath = [](const Trajectory& x, const Trajectory& y) {
+        return x.type == y.type && x.time == y.time && std::memcmp(x.base, y.base, sizeof x.base) == 0;
+    };
+    std::set<int> placed;
+    for (size_t first = 0; first < snaps.size(); ++first) {
+        // first == 0: the models of the drawn snapshot; later ones: models thrown since, at their path's start.
+        for (const auto& [number, es] : snaps[first]->entities) {
             const int type = getI(es, 4) & 0xff;
-            if ((type != kEtGeneral && type != kEtItem) || b.entities.count(number)) continue;
-            const Trajectory p = readTrajectory(es, kPosTrajectory);
-            if (!trajectoryMoves(p)) continue;
+            if ((type != kEtGeneral && type != kEtItem) || !placed.insert(number).second) continue;
+            const Trajectory pa = readTrajectory(es, kPosTrajectory);
+            // The next snapshot that carries another path for it.
+            const std::vector<uint8_t>* next = nullptr;
+            int span = game::kServerFrameMs;
+            for (size_t k = first + 1; k < snaps.size() && !next; ++k) {
+                const auto it = snaps[k]->entities.find(number);
+                if (it == snaps[k]->entities.end() || !sameType(it->second, type)) break; // gone: nothing follows
+                if (!samePath(readTrajectory(it->second, kPosTrajectory), pa)) {
+                    next = &it->second;
+                    span = std::max(span, snaps[k]->serverTime - snaps[k - 1]->serverTime);
+                }
+            }
+            if (!trajectoryMoves(pa) && !(next && trajectoryMoves(readTrajectory(*next, kPosTrajectory)))) continue;
             float o[3];
-            evaluateTrajectory(p, std::max(t, p.time), o);
-            w.mpPlaceRemoteModel(number, {o[0], o[1], o[2]}, nullptr);
+            // A model thrown since the drawn snapshot waits at its path's start until the drawn time reaches it.
+            const int at = first == 0 ? t : std::max(t, pa.time);
+            trajectoryAt(es, next, at, o, span);
+            game::Vec3 angles{};
+            // The angles turn along the current path (TODO(spec): a bounce's new spin before its snapshot time).
+            const Trajectory pb = next ? readTrajectory(*next, kPosTrajectory) : pa;
+            const Trajectory apos = readTrajectory(next && t >= pb.time ? *next : es, kAposTrajectory);
+            const bool turns = trajectoryMoves(apos);
+            if (turns) {
+                float an[3];
+                evaluateTrajectory(apos, std::max(t, apos.time), an);
+                angles = {an[0], an[1], an[2]};
+            }
+            w.mpPlaceRemoteModel(number, {o[0], o[1], o[2]}, turns ? &angles : nullptr);
         }
-    // The server's frame length is not known here (sv_fps): the snapshots themselves give the span.
-    const int spanMs = a.valid && b.serverTime > a.serverTime ? b.serverTime - a.serverTime : game::kServerFrameMs;
-    // Over the newer snapshot's entities: one the older snapshot lacks (just thrown) starts its path at its start time.
-    for (const auto& [number, es] : b.entities) {
-        const int type = getI(es, 4) & 0xff;
-        if (type != kEtGeneral && type != kEtItem) continue;
-        const std::vector<uint8_t>* ea = nullptr;
-        if (a.valid && &a != &b)
-            if (const auto it = a.entities.find(number); it != a.entities.end() && (getI(it->second, 4) & 0xff) == type) ea = &it->second;
-        const Trajectory pb = readTrajectory(es, kPosTrajectory);
-        if (!trajectoryMoves(pb) && !(ea && trajectoryMoves(readTrajectory(*ea, kPosTrajectory)))) continue;
-        float o[3];
-        if (ea) trajectoryAt(*ea, &es, t, o, spanMs);
-        else evaluateTrajectory(pb, std::max(t, pb.time), o);
-        game::Vec3 angles{};
-        // The angles turn along the current path (TODO(spec): a bounce's new spin before its snapshot time).
-        const Trajectory apos = readTrajectory(ea && t < pb.time ? *ea : es, kAposTrajectory);
-        const bool turns = trajectoryMoves(apos);
-        if (turns) {
-            float an[3];
-            evaluateTrajectory(apos, std::max(t, apos.time), an);
-            angles = {an[0], an[1], an[2]};
-        }
-        w.mpPlaceRemoteModel(number, {o[0], o[1], o[2]}, turns ? &angles : nullptr);
     }
 }
 

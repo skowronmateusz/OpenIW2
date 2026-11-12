@@ -238,7 +238,8 @@ the original; openiw2 does not send any more after the single drop message.
 1000..90000. A LAN address (0x80d5638: loopback, 10/8, 127/8, 169.254/16, 172.16/12, 192.168/16 and the addresses of
 local interfaces) gets 99999 instead, unless the dvar at 0x84a8780 is 2 (`TODO(spec)`: taken to be `dedicated`, 2 = internet; the registration was not read). `snaps`: absent
 → 50 ms between snapshots; else clamped to 1..30 and the delay is `1000 / snaps` integer ms. A `sv_maxRate` other
-than 0 (raised to 1000 if below) lowers the rate used.
+than 0 (raised to 1000 if below) lowers the rate used. openiw2: a `snaps` above 30 asks for the snapshots between
+the game frames (section 10 "Snapshot rate"; clamped to `sv_snaps` there).
 
 **Cadence** after a client message (0x809aba2..0x809adb8): for a loopback or LAN address the next message is due at
 once (time - 1), so it follows the next server frame whatever the rate. Otherwise the delay is
@@ -668,8 +669,11 @@ The even clock keeps the 1.3 rule's reset and replaces the rest (`ClientClock`, 
   (a long frame of the client) are left out, as they say nothing about the path.
 - Target. Per snapshot the clock notes `offset = snapshot time - arrival time` and the interval to the snapshot before
   it. Over the snapshots of the last 1500 ms of real time: `best` is the largest offset (the least delayed snapshot),
-  `interval` the middle one of the last five known intervals (one lost snapshot does not change it, another snapshot
-  rate does within a few snapshots), and `cover` the delay (`best - offset`) that 90 % of the snapshots with a delay
+  `interval` the second largest of the last five known intervals (one lost snapshot does not change it; another
+  snapshot rate, or a server that leaves out every other snapshot of a remote client, is followed within two
+  snapshots, by the longer interval; a change of the interval by 10 ms or more moves the delta by the difference at
+  once, so the start of a killcam, with its one snapshot per game frame, does not leave the clock past the newest
+  snapshot while it slews), and `cover` the delay (`best - offset`) that 90 % of the snapshots with a delay
   of at most 40 ms (`spreadMs`) stay within. The target delta is `best - interval - cover - 3 ms`: the clock runs one
   interval behind the arrivals, plus the path's usual jitter, plus a margin. The few snapshots later than `cover` are
   drawn past the newest snapshot for a moment ("Past the newest snapshot" below).
@@ -825,6 +829,8 @@ earlier build of the hold (late against the whole window): 1 step, the command t
 quiet radio path no client was held and the command times stayed where they were (69 ms). Only the dedicated server
 was measured; a listen server reads its socket once per drawn frame, so a host below about 33 frames a second leaves
 every packet out (the 30 ms rule) and never holds.
+A long frame of the client itself is no late packet: the packet after it carries a command with the client's time of
+the moment it was sent, so nothing is held (`playoutTests`: 300 ms without a packet, twice).
 Tests: tests/test_net_server.cpp (`playoutTests`: 85 ms
 dark out of every 500 ms, the last command run moves on by 0 to 104 ms per server frame on arrival and by 48 to 56 ms
 with the hold; an even path never holds, nor one whose client clock slides by 60 ms in 2 s; the hold runs down when
@@ -887,8 +893,110 @@ the original. `IW2_NET_TRACE=1` prints it per press (`NETTRACE shot`).
 
 A snapshot goes to every active client after each game frame (the message pass follows the frame; one snapshot per
 server time, so their serverTimes are spaced by the frame, 50 ms at sv_fps 20, and a late server frame yields one
-snapshot with the caught-up time, never two with the same time). openiw2 sends a message every second to a client
+snapshot with the caught-up time, never two with the same time). A client that asks for more gets snapshots between the frames
+("Snapshot rate" below). openiw2 sends a message every second to a client
 whose host stopped stepping its world (its pending server commands). `TODO(spec)`: the `snaps` / rate limits.
+
+### Snapshot rate
+
+openiw2 (src/net/server.cpp, src/netgame/worldgame.cpp; no 1.3 counterpart: the 1.3 server sends at most one snapshot
+per game frame, "Server cadence" above, and clamps `snaps` to 30). The game frame stays 50 ms (`sv_fps` 20: the
+scripts' waits, the think times, the bots, the missiles and the animation all step with it), but a client may get
+snapshots between two game frames. What a player does is not tied to the frame: his commands run when they arrive
+("Command steps" below) and move him, fire his weapon and change his player state at once. Only the snapshot made the
+other clients, and himself, wait for the end of the frame: 0 to 50 ms, 25 on average, before the 50 ms the receiving
+client then needs between two snapshots.
+
+- `sv_snaps` (server dvar, openiw2; default 60, 20 to 100) is the snapshot rate the server offers. The frame is cut
+  into `sv_snaps * frame / 1000` equal steps (3 at 60: 0, 16 and 33 ms after the frame; whole milliseconds), and the
+  server's wait for packets also ends at the next step.
+- A client asks with the userinfo key `snaps` as before (openiw2's client: 60, `IW2_SNAPS` overrides; a 1.3 client
+  sends 20 and can ask for 30 at most, section 4a). A client that asks for more than 30 gets, while `sv_snaps` gives
+  more than one step per frame, a snapshot at every step that is at least `1000 / snaps - 2` ms after its last one
+  (`snaps` clamped to `sv_snaps`), on every address; for a remote address the rate limit of section 4a applies on
+  top. Every other client gets one snapshot per game frame, exactly as before, and nothing below applies to it: the
+  two kinds can play on one server.
+- The snapshot's `serverTime` is the frame's time plus the step's offset. Event entities and the event rings are
+  numbered, so a snapshot that repeats them is no new event.
+- Missiles and falling weapons move in the game frame, and a bounce re-bases their trajectory when the frame that
+  holds it has run: up to 50 ms after the hit. A client that draws 20 ms behind the newest snapshot would run the old
+  path through the wall until that frame's snapshot comes. So the client draws the models with a trajectory
+  `50 ms - snapshot interval` behind the players' drawn time (`RemoteView::trajectoryDelayMs`; nothing with one
+  snapshot per frame), which is as far behind the frames as a client with one snapshot per frame draws them, and
+  looks for the re-basing through all later snapshots it holds, not only the next one (section 11 "Trajectories").
+- The player's own state in his snapshot is the state after his last command, as always: his command is now
+  acknowledged within one step, not one frame (so his prediction replays fewer commands, and what he does not
+  predict, a hit, a kill, the turret he took, reaches him sooner).
+- The other players in such a snapshot (`WorldGame::prepareSubFrame`):
+  - a network client is where his walk was at `snapshot time - lag` ("Player positions in a snapshot" below: the same
+    even sampling, at the step's time; the lag window and its fall are counted in snapshot time, 3 s and 1 ms per
+    50 ms);
+  - a client the game frame moves (a bot) is on the straight way from where the frame before left him to where the
+    last frame left him, by the part of the frame that has passed, his yaw likewise. So a bot is sent one frame later
+    than a per-frame snapshot has him (which the shorter snapshot interval about makes up for: 50 + 17 ms against
+    50 + 5 ms behind the newest snapshot plus the frame he waited in), and moves evenly through the steps. A bot that
+    spawned in the frame, was placed elsewhere since, or moved more than 100 units is sent where he is. Not done: a
+    bot that dies is drawn up to one frame of his way short of where his body then lies;
+  - the listen host's own player is where he is (the host moves him every drawn frame).
+- Held commands ("Commands on a bursty path") run when they are due at every pass of the server's loop, not only
+  before a game frame.
+- A killcam spectator gets the per-frame snapshots (the archive has one frame per game frame); the client's clock
+  follows the change of the interval.
+- Antilag. The frame archive holds one place per client and frame, and a shooter with these snapshots drew the players
+  between two snapshots a step apart. So the places of every such snapshot time are kept for 1200 ms
+  (`game::PlaceHistory`, one entry per step with every active client's place as sent), and the rewind for a shooter
+  whose last snapshot was of this kind takes each client's place between the two entries around the command's time
+  (the newest entry's place for a later time, also within the last frame: the newest snapshot's place is not the live
+  one). Bots, the host and other network clients are all rewound to what was sent. A shooter with per-frame snapshots
+  is rewound through the frame archive as before ("Antilag", docs/spec/mp-hud.md).
+- A listen server reads its socket once per drawn frame and its world steps on the host's clock: the step is the time
+  since the host's last world frame was seen, so its clients get a snapshot per drawn host frame at most.
+
+Not changed: the game frame itself. What only the frame does is still 0 to 50 ms late and stepped at 20 Hz: a bot's
+decisions, a map turret's fire, a missile's bounce, a trigger, a script's reaction to a kill.
+
+Why not a shorter game frame (a real `sv_fps` above 20): the frame length is built into the game on both sides of the
+port (the script waits count 50 ms frames, the animation, the missiles, the turrets and the bots step 0.05 s; about 70
+places, 45 of them on the dedicated server's path, and a frame that does not divide 50 ms makes `wait 0.05` inexact),
+and a game frame with 17 bots takes 6 ms at the median and 19 ms in one frame of a hundred on the measured server
+host, so 60 frames a second do not fit. The snapshots between the frames give the clients what a shorter frame
+would give them for everything a player does, without either cost.
+
+Measured with tests/test_mplag.cpp (a real server, two clients at 125 frames a second; "seen" is the time between the
+walking client drawing himself at a place and the other client drawing him there, median / 90 % / 99 %; "ack" the time
+from sending a command to the snapshot that acknowledges it, median), `sv_snaps` and both clients' `snaps` at:
+
+| path | 20: seen ms | ack | 60: seen ms | ack | 100: seen ms | ack |
+|---|---|---|---|---|---|---|
+| loopback | 66 / 70 / 70 | 42 | 37 / 50 / 55 | 17 | 30 / 38 / 47 | 16 |
+| `wifigood` (2-6 ms each way, jitter 5) | 83 / 87 / 87 | 41 | 53 / 59 / 60 | 25 | 46 / 51 / 54 | 17 |
+| `wan` (40-45 ms each way, jitter 10, 1.5 % loss) | 171 / 176 / 182 | 132 | 137 / 144 / 161 | 99 | 132 / 136 / 140 | 99 |
+
+A watcher with `snaps` 20 on a server that offers 60 sees the walker as on a 20 server (65 ms), whatever the walker
+asked for. Between two machines on one LAN (the server on one, both clients on the other over a radio path while it was
+quiet: ping 3.5 ms, deviation 0.5 ms): 69 ms at 20, 38 to 41 ms at 60 (three runs) and 33 to 34 ms at 100 (two
+runs). A real openiw2 client at 120 frames a second watching a walking client over that path, the build before
+the even clock and this change against this one: its drawn time 37 ms behind the newest snapshot at the median (61 in
+one frame of a hundred) against 11 (19); the drawn speed of the walker on a steady straight walk off its mean by
+0.8 % at the median, 11 % in one frame of twenty and 14 % in one of a hundred, against 0.2 %, 2.1 % and 3.9 %.
+The server's read of a fire command to the snapshot that carries the shot (`NETTRACE shot`): 24 ms at the median and
+49 at most at 20, 8 and 16 at 60.
+
+The cost, with 17 bots on the server: a client's snapshots are 447 to 516 bytes at the median at 20 a second (9 to
+11 kB/s) and 331 at 60 (22 kB/s; a snapshot is a delta of a newer one, so it is smaller), 328 at 100 (31 kB/s, where
+the game frames leave time for 84 of the 100). The client therefore asks for `rate` 90000, the server's limit: with
+25000, the highest value of the 1.3 client's menu, a remote client on a server with 12 bots got 43 snapshots a second.
+The server process with 8 network clients and 9 bots took 22 % of one core at 20 and 33 % at 60. A delta base stays
+within the 28 messages of section 4a also at 100 a second on the `radio` path (220 ms dark: 2696 of 2698 snapshots
+came as deltas). The game frame itself now shows: while it runs (6 ms at the median, up to 32 ms with 17 bots) no
+packet is read and no step is sent, so a step that falls into it is skipped.
+
+Tests: tests/test_net_server.cpp (`snapshotRateTest`: the steps and their times for `snaps` 60 and 20 on one server,
+one preparation per step, a client taken out of the steps and put back), tests/test_eventrack.cpp (the places at the
+steps are the walk at those times), tests/test_placehistory.cpp, tests/test_mpantilag.cpp (every shot of the antilag
+test again with `snaps` 60; `subFrameTest`: on a listen server with a walking client and a bot, the places a watching
+client draws between two snapshots against the place the server rewinds to for that time: equal) and the profiles of
+tests/test_mplag.cpp, which run with 60.
 
 ### Player positions in a snapshot
 
@@ -918,11 +1026,11 @@ the spread there is one packet interval, not one frame.
 openiw2 (src/netgame/eventrack.h, `EvenTrack`; no 1.3 counterpart): the server keeps each network client's last
 positions with their command times and puts into the snapshots (the player's entity as the other clients get it) the
 place he had at `snapshot time - lag`, taken between the two commands around that time. `lag` is the largest
-`snapshot time - last command time` of the last 60 snapshots (3 s), or the smallest one of them plus his mean command
+`snapshot time - last command time` of the snapshot times of the last 3 s, or the smallest one of them plus his mean command
 interval if that is more (the distance swings by one command as the two rates beat, also when the window has seen only
 one end of the swing), at most 35 ms above the smallest (one command of a client at 30 frames a second; a path with
 larger late stretches is the business of the command hold below, and every ms of lag is a ms the others see him
-later); it rises at once and falls by 1 ms per snapshot. So the other clients get his walk sampled every 50 ms of his own command
+later); it rises at once and falls by 1 ms per 50 ms of snapshot time. So the other clients get his walk sampled every 50 ms of his own command
 time, whatever arrived when. Nothing is drawn ahead of his commands: the place is one he was at, at most `lag` minus
 the present distance earlier (4 ms on average for the 120 frames a second above, never over 35 ms). When his newest
 command is older than `snapshot time - lag` (a packet later than everything in the window) the snapshot carries his
@@ -1328,17 +1436,19 @@ flips it on a new map and on a map_restart.
   for the entities below): type 5 gravity (`base + delta * t - 400 t^2` in z, t in seconds since `trTime`) for a flying grenade or
   weapon, type 2 linear for a rocket and for a grenade's angles, type 3 linear stop (the move ends after
   `trDuration`) for a sliding weapon, type 0 at rest with the base at the origin. A network client does not step
-  such a model from snapshot to snapshot: it evaluates the trajectory of the older snapshot of its pair at its drawn
-  time, every rendered frame (`RemoteView::placeTrajectories`), so a thrown grenade flies at the frame rate. A
+  such a model from snapshot to snapshot: it evaluates the trajectory of the snapshot it draws (the newest one at or
+  before the models' drawn time; section 10 "Snapshot rate" has that time) at that time, every rendered frame
+  (`RemoteView::placeTrajectories`), so a thrown grenade flies at the frame rate. A
   bounce or a stop re-bases the trajectory on the server at the hit point with the time of the frame's end (the
-  missile waits there for the rest of that frame); when the newer snapshot of the pair carries such a re-based
-  trajectory, the client ends the old path where it passes closest to the new base (searched over the frame before
-  the new start time) and holds the model there until the new path starts, instead of running the old path through
-  the wall and back (openiw2 rule; `TODO(spec)`: the MP cgame's handling). A model the older snapshot lacks (just
-  thrown) and any path evaluated before its start time stay at the base; so does a model that only a snapshot newer
-  than the drawn pair holds (the drawn time lies more than one snapshot back, as on a path with late stretches: before,
-  such a model was drawn where the newest snapshot has it until the pair reached it, and then went back to its start;
-  tests/test_mpnetgrenade.cpp, the lob's reversals). A grenade held in a hand (cooking) is sent
+  missile waits there for the rest of that frame); when a later snapshot the client holds carries such a re-based
+  trajectory (the first one that differs, searched through every later snapshot), the client ends the old path where
+  it passes closest to the new base (searched over the game frame before the new start time, or over the span of the
+  two snapshots when that is longer) and holds the model there until the new path starts, instead of running the old
+  path through the wall and back (openiw2 rule; `TODO(spec)`: the MP cgame's handling). A model the drawn snapshot
+  lacks (thrown since) waits at the start of the path of the first later snapshot that holds it, and any path
+  evaluated before its start time stays at the base (before, a model only the newest snapshot held was drawn where
+  that snapshot has it until the drawn pair reached it, and then went back to its start; tests/test_mpnetgrenade.cpp,
+  the lob's reversals). A grenade held in a hand (cooking) is sent
   stationary at its origin, not on its throw parabola.
 - Missile explosions: an event entity of type 10 + 0xbc (grenade) or 10 + 0xbd (rocket) at the explosion point
   (pos.trBase), the weapon number in `weapon`, the surface type in `surfaceType`, the direction in origin2, kept 1 s

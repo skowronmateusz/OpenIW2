@@ -3,6 +3,7 @@
 // network layer (or bots) would feed through connect / begin / menu response / command / disconnect.
 #pragma once
 
+#include "game/mpplacehistory.h"
 #include <array>
 #include <cstdint>
 #include <map>
@@ -110,6 +111,7 @@ constexpr int mpTeleportBit(int spawnCount) { return (spawnCount & 1) ? 2 : 0; }
 
 struct MpState {
     std::string gametype;
+    PlaceHistory sentPlaces;         // the clients' places in the snapshots between the frames (mpplacehistory.h)
     std::vector<MpClient> clients;   // sv_maxclients slots
     std::vector<std::string> log;    // logPrint lines (games_mp.log)
     std::vector<std::string> prints; // iprintln / obituary lines, for tests and the console
