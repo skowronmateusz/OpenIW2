@@ -157,6 +157,13 @@ struct ArchivedFrame {
     const ArchivedEntity* find(int number) const;
 };
 
+// The view state drawn between two records (the frame or snapshot before, `prev`, and the shown one, `cur`) at the
+// render frame's fraction `frac` (0 prev, 1 cur), `intervalMs` apart (docs/spec/mp-hud.md "Interpolation of the
+// followed view"): the discrete fields are cur's; the bob cycle (mod 256), velocity, view height, lean and aim fraction
+// are interpolated as CG_InterpolatePlayerState (0x4de7c0) does; the animation time runs from prev's to cur's when both
+// play the same animation, else from cur's start within the interval (cur.animMs - (1 - frac) * intervalMs, not below 0).
+MpViewState lerpMpViewState(const MpViewState& prev, const MpViewState& cur, float frac, int intervalMs);
+
 // One line describing a view state (tests, traces).
 std::string mpViewStateText(const MpViewState& v);
 

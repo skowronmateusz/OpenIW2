@@ -461,6 +461,30 @@ gets the recoil's view kick, the view bob and the aim zoom from the recorded aim
 the crosshair read the record's weapon and aim fraction (so a scoped killer's aim shows the overlay, not the hip
 crosshair). The recoil is the client's own, driven by the recorded shots, as in the original.
 
+### Interpolation of the followed view
+While the follow flag stops prediction (0x4deb14), the client builds its drawn player state with
+CG_InterpolatePlayerState (0x4de7c0, called with grab-angles 0): it copies the newer snapshot's whole player state
+(0x26a8 bytes) and, when the newer snapshot is later than the older one, interpolates by the frame fraction
+(0x1513c28) between the two: the bob cycle (ps+8, the newer value taken 256 higher when it is below the older one,
+rounded), the origin (ps+0x14) and view angles (LerpAngle 0x429b00, ps+0xe8), the velocity (ps+0x20), the current view
+height (ps+0xf8), the lean (ps+0x4c), the aim fraction (ps+0xdc) and one float at ps+0x5d4 (TODO(spec): its meaning;
+openiw2 records nothing there). Every other field is the newer snapshot's. The view weapon's animations run in the
+client's animation tree, advanced by the render frame time (TODO(spec): the exact restart rule from the 1.3 weapon
+state and events), so they never step at the snapshot rate.
+
+openiw2 (`lerpMpViewState`, src/game/mpkillcam.cpp) draws the recorded view state the same way in both killcam paths,
+between the record before and the shown one at the render frame's fraction (the local killcam between the archived
+frames n - 1 and n, the network killcam between the two drawn snapshots): the fields above are interpolated, the
+discrete ones (weapon, weapon state, animation key, aim flag, target view height, spread) are the shown record's. The
+recorded animation time stands in for the client's own animation clock: it runs from the older record's time to the
+newer one's when both name the same animation of the same weapon (and the time did not go back), else the animation
+started within the interval and its time is the newer record's minus the rest of the interval, not below 0. The view
+weapon is posed from that time each rendered frame, so it rises by the render step and joins the next interval without
+a jump. Before this, the killcam rig took the record's time when it changed and added the frame time in between, and
+the aim fraction, bob cycle, velocity and view height were the newer record's, so the view weapon moved in 50 ms steps.
+Other players' bodies are not part of this record: the local killcam advances them from the frame before by the fraction (above),
+the network killcam draws the archived snapshot's entities like live ones.
+
 Divergences found and removed (the network path before this record): no aim fraction at all (a scoped kill replayed
 from the hip, unzoomed), the receiver's own number left in `clientNum`, a network killer archived with pitch 0 and a
 standing eye, the puppets with their live stance and live shots during the replay, and a bot's grenade throw outside

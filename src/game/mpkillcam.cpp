@@ -543,6 +543,27 @@ void World::mpAntilagRestore() {
     antilagSaved_.clear();
 }
 
+MpViewState lerpMpViewState(const MpViewState& prev, const MpViewState& cur, float frac, int intervalMs) {
+    MpViewState v = cur;
+    const float f = std::clamp(frac, 0.0f, 1.0f);
+    if (f >= 1.0f) return v; // the shown record itself (no float round-off)
+    auto lerp = [f](float a, float b) { return a + (b - a) * f; };
+    int nb = cur.bobCycle & 0xff;
+    const int pb = prev.bobCycle & 0xff;
+    if (nb < pb) nb += 256; // the cycle wraps at 256 (0x4de82a)
+    v.bobCycle = (pb + int(std::lround(float(nb - pb) * f))) & 0xff;
+    for (size_t k = 0; k < 3; ++k) v.velocity[k] = lerp(prev.velocity[k], cur.velocity[k]);
+    v.viewHeight = lerp(prev.viewHeight, cur.viewHeight);
+    v.lean = lerp(prev.lean, cur.lean);
+    v.adsFrac = lerp(prev.adsFrac, cur.adsFrac);
+    const bool same = prev.animKey == cur.animKey && prev.viewWeapon == cur.viewWeapon && cur.animMs >= prev.animMs;
+    if (same)
+        v.animMs = int(std::lround(lerp(float(prev.animMs), float(cur.animMs))));
+    else
+        v.animMs = std::max(0, int(std::lround(float(cur.animMs) - (1.0f - f) * float(std::max(0, intervalMs)))));
+    return v;
+}
+
 World::MpKillcamView World::mpKillcamView(float lerpFrac) const { return mp_ ? mpKillcamViewFor(mp_->localClient, lerpFrac) : MpKillcamView{}; }
 
 World::MpKillcamView World::mpKillcamViewFor(int spectator, float lerpFrac) const {
@@ -591,6 +612,7 @@ World::MpKillcamView World::mpKillcamViewFor(int spectator, float lerpFrac) cons
             v.eye[size_t(k)] = p->eye[size_t(k)] + (c.eye[size_t(k)] - p->eye[size_t(k)]) * lerpFrac;
             v.angles[size_t(k)] = lerpAngle(p->viewAngles[size_t(k)], c.viewAngles[size_t(k)], lerpFrac);
         }
+    if (p) v.view = lerpMpViewState(p->view, c.view, lerpFrac, int(cur->timeMs - prev->timeMs));
     return v;
 }
 

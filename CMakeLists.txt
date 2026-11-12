@@ -1084,6 +1084,10 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(mpkillcam PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
 endif()
 
+add_executable(test_mpkillcam_lerp tests/test_mpkillcam_lerp.cpp)
+target_link_libraries(test_mpkillcam_lerp PRIVATE iw2_game)
+add_test(NAME mpkillcam_lerp COMMAND test_mpkillcam_lerp)
+
 add_executable(test_mpkillcam_bots tests/test_mpkillcam_bots.cpp)
 target_link_libraries(test_mpkillcam_bots PRIVATE iw2_game)
 add_test(NAME mpkillcam_bots COMMAND test_mpkillcam_bots)

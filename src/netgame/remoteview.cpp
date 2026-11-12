@@ -241,23 +241,32 @@ game::World::MpKillcamView RemoteView::killcamView(const net::ClientSnapshot& a,
     // The followed client (the copied player state's clientNum) in world slots, and the recorded view state the server
     // wrote into the followed player state (docs/spec/mp-hud.md "The recorded view state").
     v.client = getI(b.ps, 204);
-    const int pmf = getI(b.ps, 12);
-    game::MpViewState& vs = v.view;
-    vs.weapon = v.weapon;
-    vs.weaponState = getI(b.ps, 216) & 31;
-    const int off = getI(b.ps, 208);
-    vs.viewWeapon = vs.weaponState >= 12 && vs.weaponState <= 16 && off > 0 ? weaponNameFromList(cs, off) : v.weapon;
-    vs.animKey = game::viewAnimKeyName(getI(b.ps, 1488));
-    vs.animMs = getI(b.ps, 224);
-    vs.adsFrac = getF(b.ps, 220);
-    vs.adsHeld = (pmf & kPmfAds) != 0;
-    v.ads = vs.adsHeld;
-    vs.bobCycle = getI(b.ps, 8) & 0xff;
-    vs.velocity = {getF(b.ps, 32), getF(b.ps, 36), getF(b.ps, 40)};
-    vs.viewHeightTarget = getI(b.ps, 244);
-    vs.viewHeight = getF(b.ps, 248);
-    vs.lean = getF(b.ps, 76);
-    vs.aimSpread = getF(b.ps, 1492);
+    // The recorded view state the server wrote into a followed player state.
+    auto viewState = [&](const net::ClientSnapshot& snap) {
+        game::MpViewState vs;
+        const int pmf = getI(snap.ps, 12);
+        vs.weapon = weaponNameFromList(cs, getI(snap.ps, 212));
+        vs.weaponState = getI(snap.ps, 216) & 31;
+        const int off = getI(snap.ps, 208);
+        vs.viewWeapon = vs.weaponState >= 12 && vs.weaponState <= 16 && off > 0 ? weaponNameFromList(cs, off) : vs.weapon;
+        vs.animKey = game::viewAnimKeyName(getI(snap.ps, 1488));
+        vs.animMs = getI(snap.ps, 224);
+        vs.adsFrac = getF(snap.ps, 220);
+        vs.adsHeld = (pmf & kPmfAds) != 0;
+        vs.bobCycle = getI(snap.ps, 8) & 0xff;
+        vs.velocity = {getF(snap.ps, 32), getF(snap.ps, 36), getF(snap.ps, 40)};
+        vs.viewHeightTarget = getI(snap.ps, 244);
+        vs.viewHeight = getF(snap.ps, 248);
+        vs.lean = getF(snap.ps, 76);
+        vs.aimSpread = getF(snap.ps, 1492);
+        return vs;
+    };
+    // Between the drawn snapshots as CG_InterpolatePlayerState (0x4de7c0) interpolates the followed player state, so
+    // the view weapon's animation, aim and bob advance with every rendered frame (docs/spec/mp-hud.md).
+    v.view = viewState(b);
+    if (&b == &newer && following(a) && a.serverTime < b.serverTime)
+        v.view = game::lerpMpViewState(viewState(a), v.view, v.lerpFrac, int(b.serverTime - a.serverTime));
+    v.ads = v.view.adsHeld;
     v.ring.sequence = getI(b.ps, 164) & 0xff;
     for (int i = 0; i < 4; ++i) {
         v.ring.events[size_t(i)] = getI(b.ps, 168 + 4 * i);

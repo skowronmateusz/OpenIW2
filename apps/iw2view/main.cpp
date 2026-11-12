@@ -5070,16 +5070,11 @@ int main(int argc, char** argv) {
                 r.fireCount = r.active ? r.fireCount : v.fireCount; // the shots before this killcam are not kicked
                 r.animKey.clear();
             }
-            // The animation clock: the record's time when it changes (a new frame or snapshot), the frame time in between,
-            // and a restart when the record names another animation or started it again.
-            if (vs.animKey != r.animKey || vs.animMs < r.animMsSeen - 100) {
-                r.animKey = vs.animKey;
-                r.animMs = float(vs.animMs);
-            } else if (vs.animMs != r.animMsSeen) {
-                r.animMs = float(vs.animMs);
-            } else {
-                r.animMs += float(dtMs);
-            }
+            // The animation clock: the view state is interpolated between the two records around the drawn time
+            // (lerpMpViewState, as CG_InterpolatePlayerState 0x4de7c0 interpolates the followed player state), so its
+            // animation time already advances with every rendered frame; a record naming another animation restarts it.
+            if (vs.animKey != r.animKey) r.animKey = vs.animKey;
+            r.animMs = float(vs.animMs);
             r.animMsSeen = vs.animMs;
             // Aiming for the aim layers (0x4b2918-0x4b2969): the aim flag, not in the offhand states or a reload.
             const bool offhand = vs.weaponState >= 12 && vs.weaponState <= 16;
