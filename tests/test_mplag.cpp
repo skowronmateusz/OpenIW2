@@ -51,6 +51,7 @@
 #include "netgame/netcombat.h"
 #include "netgame/netmove.h"
 #include "netgame/remoteview.h"
+#include "netgame/weaponselect.h"
 #include "netgame/worldgame.h"
 
 extern char** environ;
@@ -64,6 +65,7 @@ constexpr float kDrawnJump = 2.5f; // B draws A moved by more than this in one f
 constexpr int kMaxDrawnJumps = 3;  // profile spike, per 10 s
 
 int64_t gStart = 0;
+int gSelectCommands = 0; // server commands `a` received (the spawn weapon, a script's switchToWeapon)
 bool gFireOn = false; // IW2_LAG_BFIRE: B fires once the measurement runs
 int64_t nowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -298,6 +300,10 @@ struct NetClient {
     std::map<int, game::Vec> predicted;  // command time -> predicted origin after it
     float yaw = 0;
     int lastSnapMsg = -1;
+    int lastSnapTime = 0;
+    netgame::NetWeaponSelection selection;  // IW2_LAG_ASWITCH
+    std::string select, written, lastServerWeapon;
+    int64_t selectUntil = 0, nextPress = 0;
 };
 
 void respondMenu(NetClient& c, const std::string& response) {
@@ -366,7 +372,11 @@ struct Stats {
     // A as B draws him, frame by frame, while A walks: frames without a move and frames with a step over kDrawnJump.
     int drawnFrames = 0, drawnStands = 0, drawnJumps = 0;
     float drawnMax = 0;
-    std::vector<int> drawnLead; // the newest snapshot's time minus B's drawn time
+    std::vector<int> drawnLead;
+    int snapGaps = 0, snapGapsLong = 0; // snapshots received while measuring, those more than one frame after the previous
+    int presses = 0, selectFlips = 0, serverWeaponChanges = 0; // IW2_LAG_ASWITCH
+    std::vector<int> ackDelay; // B's command sent to B's snapshot acknowledging it (ms of wall time)
+    std::vector<int> hitDelay; // B's fire press to A's snapshot with less health (ms of wall time) // the newest snapshot's time minus B's drawn time
     float maxOf(const std::vector<float>& v) const { return v.empty() ? 0.0f : *std::max_element(v.begin(), v.end()); }
     int over(const std::vector<float>& v, float lim) const { return int(std::count_if(v.begin(), v.end(), [&](float x) { return x > lim; })); }
 };
@@ -383,6 +393,10 @@ struct Run {
     game::Vec lastSelf{}, lastOther{};
     Retreat rSelf, rOther, rServer;
     int64_t drawnLastMs = 0;
+    int64_t hitPressMs = 0;
+    int hitPressCmd = 0, aHealth = 0;
+    int64_t aDeadMs = 0; // A's own snapshot first shows health 0
+    std::map<int, int64_t> ackWait; // B's command time -> wall time sent
     game::Vec obsLast{};
     int64_t obsLegOk = -1;
 
@@ -405,6 +419,8 @@ struct Run {
         for (const std::string& sc : c.gc->takeServerCommands()) {
             const auto tok = net::tokenize(sc);
             if (tok.empty() || tok[0].size() != 1) continue;
+            if (tok[0][0] == 'a') ++gSelectCommands;
+            if (tok[0][0] == 'a' && !std::getenv("IW2_LAG_OLDSELECT")) netgame::NetWeaponSelection::serverCommand(tok, c.gc->configstrings, c.select);
             if (tok[0][0] == 't' && tok.size() >= 2) {
                 const auto cs = c.gc->configstrings.find(netgame::kMenuConfigstrings + std::atoi(tok[1].c_str()));
                 if (cs != c.gc->configstrings.end()) c.menuStack.push_back(cs->second);
@@ -444,8 +460,42 @@ struct Run {
         c.view->frame();
         (void)c.view->takeMpObituaries();
         (void)c.view->takeFxEvents();
-        // The weapon in hand (only its move parameters matter here).
-        if (c.view->player()) {
+        // IW2_LAG_ASWITCH: A changes between its two slot weapons every 1.7 s as iw2view does: the selection follows
+        // the player's presses, the server command `a` and the spawn (NetWeaponSelection; IW2_LAG_OLDSELECT=1: the
+        // earlier rule, every snapshot weapon unlike the one drawn is a scripted change, held off for 2 s after a press
+        // until the snapshot first shows the selection). Counted: presses, other selection changes, the server's weapon.
+        static const bool aSwitch = std::getenv("IW2_LAG_ASWITCH") != nullptr, oldSelect = std::getenv("IW2_LAG_OLDSELECT") != nullptr;
+        if (aSwitch && i == 0 && c.view->player() && last) {
+            const script::Value w = c.view->player()->obj->get("$weapon");
+            const std::string name = w.isString() && w.asString() != "none" ? w.asString() : std::string();
+            const netgame::PsFields sf = netgame::readPs(last->ps);
+            const std::string before = c.select;
+            if (oldSelect) {
+                const bool lag = !c.select.empty() && name != c.select && now < c.selectUntil;
+                if (name == c.select) c.selectUntil = 0;
+                if (!lag && name != c.written) c.select = name, c.written = name;
+            } else {
+                c.selection.snapshot(sf.pmType, c.gc->gamestates, name, c.view->inventory(*c.view->player()).owned, c.select);
+            }
+            const game::Inventory& inv = c.view->inventory(*c.view->player());
+            if (measuring && sf.pmType == 0 && now >= c.nextPress && !inv.slot[1].empty() && !inv.slot[2].empty()) {
+                c.nextPress = now + (std::atoi(std::getenv("IW2_LAG_ASWITCH")) > 0 ? std::atoi(std::getenv("IW2_LAG_ASWITCH")) : 1700);
+                c.select = c.select == inv.slot[1] ? inv.slot[2] : inv.slot[1];
+                c.selectUntil = now + 2000;
+                ++st.presses;
+            } else if (c.select != before && measuring && !before.empty()) {
+                ++st.selectFlips;
+                if (std::getenv("IW2_LAG_TRACE")) std::printf("select t=%lld %s -> %s without a press (snapshot %s)\n", (long long)(now - gStart), before.c_str(), c.select.c_str(), name.c_str());
+            }
+            if (name != c.lastServerWeapon && measuring) ++st.serverWeaponChanges;
+            c.lastServerWeapon = name;
+            if (c.pweapon.name().empty())
+                if (const auto* def = c.view->weapon(c.select)) c.pweapon.equip(c.select, *def);
+            game::PlayerWeapon::Input wi;
+            wi.weapon = c.select;
+            c.pweapon.update(0.016f, wi);
+            if (c.pweapon.equipped()) c.written = c.pweapon.name();
+        } else if (c.view->player()) { // The weapon in hand (only its move parameters matter here).
             const script::Value w = c.view->player()->obj->get("$weapon");
             const std::string name = w.isString() && w.asString() != "none" ? w.asString() : std::string();
             if (!name.empty() && c.pweapon.name() != name)
@@ -457,13 +507,15 @@ struct Run {
         const float fwd = c.menuStack.empty() ? forward : 0.0f;
         const int clientTime = c.gc->commandTime(netNow);
         int weaponByte = 0;
-        for (int wi = 1; wi <= netgame::kWeaponConfigstringCount && !c.pweapon.name().empty(); ++wi)
-            if (netgame::weaponNameFromList(c.gc->configstrings, wi) == c.pweapon.name()) {
+        const std::string cmdWeapon = aSwitch && i == 0 ? c.select : c.pweapon.name();
+        for (int wi = 1; wi <= netgame::kWeaponConfigstringCount && !cmdWeapon.empty(); ++wi)
+            if (netgame::weaponNameFromList(c.gc->configstrings, wi) == cmdWeapon) {
                 weaponByte = wi;
                 break;
             }
         static const bool bFire = std::getenv("IW2_LAG_BFIRE") != nullptr;
         const uint32_t btn = bFire && gFireOn && i == 1 && (netNow / 150) % 2 ? 1u : 0u;
+        if (i == 1 && btn && (!hitPressMs || now - hitPressMs > 1500)) hitPressMs = now, hitPressCmd = clientTime;
         if (i == 0 && measuring) {
             const int dt = int(netNow - st.clockLastMs), dc = clientTime - st.clockLastCmd;
             if (st.clockLastMs && dt >= 4 && dt < 60) {
@@ -499,8 +551,33 @@ struct Run {
         if (const net::UserCmd* lc = c.gc->lastCommand()) c.predicted[lc->serverTime] = c.ps.origin;
         while (c.predicted.size() > 512) c.predicted.erase(c.predicted.begin());
         const bool newSnap = last->messageNum != c.lastSnapMsg;
+        if (newSnap && measuring) { // the server time between snapshots, both clients
+            if (c.lastSnapTime > 0 && last->serverTime > c.lastSnapTime) {
+                ++st.snapGaps;
+                if (last->serverTime - c.lastSnapTime > 50) ++st.snapGapsLong;
+            }
+            c.lastSnapTime = last->serverTime;
+        }
         c.lastSnapMsg = last->messageNum;
 
+        if (i == 1 && newSnap) { // B's commands: the wall time from sending one to the snapshot that acknowledges it
+            for (auto it = ackWait.begin(); it != ackWait.end() && it->first <= f.commandTime;) {
+                st.ackDelay.push_back(int(now - it->second));
+                it = ackWait.erase(it);
+            }
+        }
+        if (i == 1 && measuring && (clientTime % 100) < 16 && (ackWait.empty() || ackWait.rbegin()->first < clientTime)) ackWait[clientTime] = now;
+        if (i == 0 && newSnap) { // A's health against B's first fire press since the last hit (IW2_LAG_BFIRE)
+            int hp = 0;
+            std::memcpy(&hp, last->ps.data() + 300, 4);
+            if (hp < aHealth && hitPressMs) {
+                st.hitDelay.push_back(int(now - hitPressMs));
+                if (std::getenv("IW2_LAG_TRACE")) std::printf("hit t=%lld health %d -> %d, %lld ms after the press (cmd %d, snap %d)\n", (long long)(now - gStart), aHealth, hp, (long long)(now - hitPressMs), hitPressCmd, last->serverTime);
+                hitPressMs = 0;
+            }
+            if (hp <= 0 && aHealth > 0) aDeadMs = now;
+            aHealth = hp;
+        }
         if (i == 0) {
             if (aPm != 0 && f.pmType == 0) aSpawnMs = now;
             aPm = f.pmType;
@@ -553,6 +630,24 @@ struct Run {
                     obsLegOk = dirChangeMs;
                     obsLast = {p.origin[0], p.origin[1], p.origin[2]};
                 }
+            if (newSnap && aDeadMs && now - aDeadMs < 2000) {
+                int corpses = 0, aEt = -1;
+                for (const auto& [num, es] : last->entities) {
+                    int et = 0;
+                    std::memcpy(&et, es.data() + 4, 4);
+                    if (num == clients[0]->gc->clientNum) aEt = et;
+                    if (et == 2) ++corpses;
+                }
+                std::string ev;
+                for (const auto& [num, es] : last->entities) { int et = 0; std::memcpy(&et, es.data() + 4, 4); if (et >= 10) ev += " " + std::to_string(et); }
+                std::printf("deathtrace +%lld ms snap %d: A entity type %d, bodies %d, events%s\n", (long long)(now - aDeadMs), last->serverTime, aEt, corpses, ev.c_str());
+            }
+            if (newSnap && aDeadMs)
+                for (const auto& p : netgame::RemoteView::players(*last, *last, 0.0f, c.gc->clientNum, c.gc->configstrings))
+                    if (p.client == aNum && p.dead) {
+                        std::printf("death: B's snapshot %d shows A dead %lld ms after A's own snapshot showed health 0\n", last->serverTime, (long long)(now - aDeadMs));
+                        aDeadMs = 0;
+                    }
             for (const auto& p : netgame::RemoteView::players(*a, *b, frac, c.gc->clientNum, c.gc->configstrings)) {
                 if (p.client != aNum || p.dead || p.hidden) continue;
                 const game::Vec o{p.origin[0], p.origin[1], p.origin[2]};
@@ -709,6 +804,31 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
         std::sort(lead.begin(), lead.end());
         std::printf("%s: A as B draws him: %d frames, without a move %d, step over %.1f units %d (max %.1f); drawn time %d ms before the newest snapshot (median)\n",
                     prof.name.c_str(), s.drawnFrames, s.drawnStands, double(kDrawnJump), s.drawnJumps, double(s.drawnMax), lead.empty() ? 0 : lead[lead.size() / 2]);
+    }
+    std::printf("%s: snapshots: %d, %d of them more than one server frame (50 ms) after the previous one\n", prof.name.c_str(), s.snapGaps, s.snapGapsLong);
+    if (std::getenv("IW2_LAG_ASWITCH")) {
+        // The weapon run checks only the selection (the walk with weapon changes and the rate limit is not the
+        // movement measurement above).
+        ok = s.presses > 0 && gSelectCommands > 0;
+        std::printf("%s: selection commands from the server: %d\n", prof.name.c_str(), gSelectCommands);
+        if (!ok) std::printf("FAIL %s: no weapon change pressed or no selection command (the spawn weapon) received\n", prof.name.c_str());
+    }
+    if (s.presses > 0) {
+        std::printf("%s: A's weapon: %d presses, %d selection changes without a press, %d weapon changes in the snapshots\n", prof.name.c_str(), s.presses, s.selectFlips, s.serverWeaponChanges);
+        if (s.selectFlips > 0) {
+            std::printf("FAIL %s: the selection changed without a press\n", prof.name.c_str());
+            ok = false;
+        }
+    }
+    if (!s.ackDelay.empty()) {
+        std::vector<int> h = s.ackDelay;
+        std::sort(h.begin(), h.end());
+        std::printf("%s: B's command to its acknowledgement: %zu, median %d ms, 90%% %d ms, max %d ms\n", prof.name.c_str(), h.size(), h[h.size() / 2], h[h.size() * 9 / 10], h.back());
+    }
+    if (!s.hitDelay.empty()) {
+        std::vector<int> h = s.hitDelay;
+        std::sort(h.begin(), h.end());
+        std::printf("%s: B's fire press to A's lower health: %zu hits, median %d ms, max %d ms\n", prof.name.c_str(), h.size(), h[h.size() / 2], h.back());
     }
     if (prof.name == "spike" && s.drawnFrames < int(150 * seconds / 10.0)) {
         std::printf("FAIL %s: too few frames in which B draws the walking A\n", prof.name.c_str());

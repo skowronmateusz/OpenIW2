@@ -762,6 +762,9 @@ add_test(NAME predictedammo COMMAND test_predictedammo)
 add_executable(test_weaponpredict tests/test_weaponpredict.cpp)
 target_link_libraries(test_weaponpredict PRIVATE iw2_netgame)
 add_test(NAME weaponpredict COMMAND test_weaponpredict)
+add_executable(test_weaponselect tests/test_weaponselect.cpp)
+target_link_libraries(test_weaponselect PRIVATE iw2_netgame)
+add_test(NAME weaponselect COMMAND test_weaponselect)
 add_executable(test_mpturretview tests/test_mpturretview.cpp)
 target_link_libraries(test_mpturretview PRIVATE iw2_netgame)
 if(IW2_TEST_MAIN)
@@ -1109,6 +1112,11 @@ if(IW2_TEST_MAIN)
   add_test(NAME mplag COMMAND test_mplag)
   set_tests_properties(mplag PROPERTIES TIMEOUT 240 ENVIRONMENT
     "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache;IW2_LAG_SERVER=$<TARGET_FILE:iw2server>")
+  # The weapon selection through the same path, with the rate limits of an internet client: A changes its weapon
+  # every 150 / 400 ms; the selection must change only by the presses (docs/spec/net.md section 10 "Weapon selection").
+  add_test(NAME mplag_weapon COMMAND test_mplag)
+  set_tests_properties(mplag_weapon PROPERTIES TIMEOUT 240 ENVIRONMENT
+    "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache;IW2_LAG_SERVER=$<TARGET_FILE:iw2server>;IW2_LAG_PROFILE=wan;IW2_LAG_ASWITCH=150;IW2_LAG_SECONDS=12;IW2_NET_WAN=1")
 endif()
 
 add_executable(test_mplanding tests/test_mplanding.cpp)

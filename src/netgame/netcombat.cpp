@@ -267,7 +267,10 @@ void NetCombat::think(World& w, int client, const net::UserCmd& cmd, game::Playe
     }
     const script::Value wv = e->obj->get("$weapon");
     const std::string scripted = wv.isString() && wv.asString() != "none" ? wv.asString() : std::string();
-    if (scripted != written_) select_ = scripted;
+    if (scripted != written_) {
+        select_ = scripted;
+        if (!scripted.empty() && scripted != weapon_.name()) scriptedSelect_ = scripted;
+    }
     if (!cmdWeapon.empty() && cmdWeapon != lastCmdWeapon_ && w.inventory(*e).owned.count(lower(cmdWeapon))) select_ = cmdWeapon;
     lastCmdWeapon_ = cmdWeapon;
     if (!weapon_.equipped() && !weapon_.holstered())

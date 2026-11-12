@@ -753,6 +753,10 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         m.combat->antilagTime = w_->cvarFloat("g_antilag", 1.0f) != 0 ? m.lastServerTime : now;
     }
     if (!onTurret) m.combat->think(*w_, it->second, cmd, m.ps, usercmdMsec(prevTime, cmd.serverTime), cmdWeapon);
+    // A script's weapon change goes to the client as the selection command (docs/spec/net.md section 10 "Weapon
+    // selection"; switchToWeapon 0x80fa1b6 -> 0x8120e0a).
+    if (const std::string sel = m.combat->takeScriptedSelect(); !sel.empty() && sendCommand)
+        if (const int index = weaponByte(sel); index > 0) sendCommand(slot, "a " + std::to_string(index));
     {  // the weapon events of the command follow its movement events in the entity's ring
         const EventRing& r = m.combat->ring();
         int added = (r.sequence - m.combatEventsDone) & 0xff;

@@ -131,7 +131,8 @@ public:
             int64_t ackMs = -1;
         };
         std::array<Frame, 32> frames;
-        int64_t nextSnapshotMs = 0;  // the next message (docs/spec/net.md section 4a)
+        int64_t nextSnapshotMs = 0;  // the next message of a client that is not active (real time)
+        int nextSnapshotServerTime = 0; // the next snapshot of an active client (server time; docs/spec/net.md section 4a)
         int64_t nextReliableMs = 0;  // flood protection of client commands
         int64_t zombieUntilMs = 0;   // a dropped slot: reusable from then on, by others than the same address
         int timeoutCount = 0;        // consecutive failing timeout checks

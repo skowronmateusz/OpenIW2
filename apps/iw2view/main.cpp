@@ -74,6 +74,7 @@
 #include "net/resolve.h"
 #include "net/oob.h"
 #include "netgame/netmove.h"
+#include "netgame/weaponselect.h"
 #include "ui/menu.h"
 #include "ui/iw2options.h"
 #include "ui/menurun.h"
@@ -4751,7 +4752,7 @@ int main(int argc, char** argv) {
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
         std::string weaponSelect, weaponWritten, prevSelect;
-        uint64_t netSelectUntilMs = 0; // network client: own weapon change not yet in the snapshots (syncWeapon)
+        netgame::NetWeaponSelection netWeaponSelection; // network client: when the selection follows the server (syncWeapon)
         auto syncWeapon = [&]() {
             if (!world || !world->player()) return;
             pweapon.lookup = [&](const std::string& n) { return world->weapon(n); };
@@ -4795,11 +4796,17 @@ int main(int argc, char** argv) {
             // No weapon ("none", ps weapon 0) means nothing in hand, as at the start of moscow (only the potato).
             std::string name = w.isString() && !w.asString().empty() && w.asString() != "none" ? w.asString() : std::string();
             if (const char* forced = std::getenv("IW2_WEAPON")) name = forced; // debug override
-            // A network client: the snapshots carry the server's $weapon, which lags behind this client's own weapon change; until
-            // the server shows the selected weapon (or 2 s pass) an older one is not a scripted change.
-            const bool netLag = netClient && !weaponSelect.empty() && name != weaponSelect && SDL_GetTicks() < netSelectUntilMs;
-            if (name == weaponSelect) netSelectUntilMs = 0;
-            if (!netLag && game::takeScriptedWeapon(name, weaponWritten)) weaponSelect = name; // a respawn's same weapon too
+            // A network client: the snapshots carry the server's weapon, which lags behind this client's own change, so it is
+            // no scripted change; the selection follows the server command `a` and, at a spawn, the player state's weapon
+            // (docs/spec/net.md section 10 "Weapon selection").
+            if (netClient) {
+                if (const net::ClientSnapshot* s0 = netClient->latest())
+                    netWeaponSelection.snapshot(netgame::readPs(s0->ps).pmType, netClient->gamestates, name,
+                                                world->inventory(*world->player()).owned, weaponSelect);
+                weaponWritten = name;
+            } else if (game::takeScriptedWeapon(name, weaponWritten)) {
+                weaponSelect = name; // a respawn's same weapon too
+            }
             if (!pweapon.equipped() && !pweapon.holstered()) // the first weapon is in hand at once
                 if (const auto* def = world->weapon(weaponSelect)) pweapon.equip(weaponSelect, *def);
         };
@@ -9215,7 +9222,7 @@ int main(int argc, char** argv) {
             cgOffhand.clear();
             drawnGunAim = {};
             gunAimDelay.reset();
-            netSelectUntilMs = 0;
+            netWeaponSelection.clear();
             hostWeaponStatePrev = 0;
             vmMotion = game::ViewWeaponMotion{};
             recoil.reset();
@@ -9357,6 +9364,7 @@ int main(int argc, char** argv) {
                             netClient->addReliableCommand("mr " + std::to_string(netClient->serverId) + " " + tok[1] + " " + resp);
                         } else menuCommand("popupopen", tok[1]);
                     }
+                    else if (letter == 'a') netgame::NetWeaponSelection::serverCommand(tok, netClient->configstrings, weaponSelect); // 0x4d1bd5
                     else if (letter == 'u') menuCommand("popupclose", ""); // TODO(spec): the close-menu letter
                     else if (letter == 'v' && tok.size() >= 3) menuEnv.setCvar(tok[1], tok[2]);
                     else if (letter == 's' && tok.size() >= 2) { // playLocalSound: sound index, configstring 590 + index
@@ -10205,7 +10213,6 @@ int main(int argc, char** argv) {
                 wi.smoke = (buttons & game::Button::Smoke) != 0;
                 // A new selected weapon ends the toggled aim unless it is the current weapon's altWeapon (cgame 0x4b8360).
                 if (weaponSelect != prevSelect) {
-                    if (netClient) netSelectUntilMs = SDL_GetTicks() + 2000;
                     if (!prevSelect.empty() && !(pweapon.name() == prevSelect && pweapon.field("altWeapon") == weaponSelect))
                         input.clearAds();
                     // Selecting a weapon (0x4b8360) stamps the weapon-change time 0xf796e4 and touches the weapon-info fade (0xf79a40, via 0x4a6130 case 4)

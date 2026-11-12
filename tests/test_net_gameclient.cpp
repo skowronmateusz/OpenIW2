@@ -471,6 +471,61 @@ void smoothnessTest() {
     c.disconnect();
 }
 
+// A remote client (IW2_NET_WAN=1: the loopback peer counts as remote, so the rate and snaps limits apply) with the
+// default snaps 20 and small snapshots: one snapshot per 50 ms server frame, whatever the real time of the server's
+// polls (docs/spec/net.md section 4a "Cadence": the delay counts in server time).
+void remoteCadenceTest() {
+    ConstGame game;
+    Server server(game, 3);
+    server.maxClients = 2;
+    server.serverId = 3;
+    if (!server.open(0)) {
+        std::cerr << "cannot open a UDP port\n";
+        ++failures;
+        return;
+    }
+    NetAddress addr;
+    NetAddress::parse("127.0.0.1:" + std::to_string(server.port()), addr, 28960);
+    GameClient c;
+    int64_t now = 5000;
+    CHECK(c.connect(addr, now));
+    for (int i = 0; i < 2000 && c.state() != ClientState::Active; ++i) {
+        c.poll(now, 1);
+        if (c.state() >= ClientState::Primed) {
+            UserCmd u;
+            u.serverTime = c.commandTime(now);
+            c.sendCommand(u, now);
+        }
+        server.poll(now, 1);
+        now += 16;
+    }
+    CHECK(c.state() == ClientState::Active);
+    setenv("IW2_NET_WAN", "1", 1);  // from here on (the handshake of a remote client is not what this checks)
+    int snaps = 0, longGaps = 0, lastTime = -1, lastMsg = -1;
+    const int startTime = game.serverTime();
+    while (game.serverTime() - startTime < 3000) {
+        c.poll(now, 1);
+        UserCmd u;
+        u.serverTime = c.commandTime(now);
+        c.sendCommand(u, now);
+        server.poll(now, 1);
+        if (const ClientSnapshot* s = c.latest(); s && s->messageNum != lastMsg) {
+            lastMsg = s->messageNum;
+            if (lastTime >= 0) {
+                ++snaps;
+                if (s->serverTime - lastTime > 50) ++longGaps;
+            }
+            lastTime = s->serverTime;
+        }
+        now += 7;  // the polls fall at other real times than the frames
+    }
+    std::cout << "remote cadence: " << snaps << " snapshots in 3 s of server time, " << longGaps << " more than one frame apart\n";
+    CHECK(snaps >= 58);
+    CHECK(longGaps == 0);
+    c.disconnect();
+    unsetenv("IW2_NET_WAN");
+}
+
 } // namespace
 
 int main() {
@@ -478,6 +533,7 @@ int main() {
     timeDeltaTests();
     burstyClockTests();
     smoothnessTest();
+    remoteCadenceTest();
 
     // Connecting to a port nobody answers gives up after the timeout.
     {

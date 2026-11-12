@@ -243,7 +243,13 @@ than 0 (raised to 1000 if below) lowers the rate used.
 **Cadence** after a client message (0x809aba2..0x809adb8): for a loopback or LAN address the next message is due at
 once (time - 1), so it follows the next server frame whatever the rate. Otherwise the delay is
 `(min(bytes,1500) * 1000 + 48000) / rate` ms (0x809aad0; `bytes` is the compressed size plus 4), raised to the client's
-snapshot delay; a client that is not active and has no download pending waits at least 1000 ms. `SV_SendClientMessages`
+snapshot delay; a client that is not active and has no download pending waits at least 1000 ms. The due time is the
+server's own time plus the delay (0x809ad66), and that time advances by whole frames (0x8096dc3): a delay of one
+frame or less is due at the next frame. openiw2 counted the delay from the real time of the send, which lies a few ms
+after the frame; the next frame then often came before the due time and the snapshot waited a frame more (a remote
+client with snaps 20 got about one snapshot in ten 100 ms after the previous one; a LAN client has no delay). Now the
+delay counts in server time as well (tests/test_net_gameclient.cpp, remote cadence: 59 snapshots in 3 s, none more
+than a frame apart; before 53 with 6). `SV_SendClientMessages`
 (0x809bcff) skips free slots and clients whose time has not come.
 
 **Reliable server commands** (0x8094857, sender 0x8094a10): after incrementing the sequence, if exactly 129 commands are
@@ -977,6 +983,43 @@ time; the server's fields are put over it and the newer commands are run, the fi
 - The weapon step of a command is skipped when its time is not newer than the last stepped one (the server skips the
   command as well). On a map turret neither side runs the weapon; the command's time is passed, so the first
   step after it is that command's own.
+
+### Weapon selection
+
+The weapon a client asks for (the weapon byte of its commands) is the cgame's selected weapon (MP client 0x1519ed0,
+with the time of the last change at 0x1519ed4). In the 1.3 client it changes only in these places:
+- the player's own input (weapon keys, next / previous weapon, the out-of-ammo switch) through the select routine
+  0x4d7df0, which stores the new index and the current time, touches the weapon-info fade and, unless the new weapon is
+  the current weapon's alternate, ends a toggled aim;
+- the reliable server command `a <index>` (letter 0x61 of the server-command switch 0x4d1bb8, case 0x4d1bd5): the
+  index is read with atoi and passed to the same select routine;
+- a respawn of the predicted player state (0x4e0190, called from the snapshot transition at 0x4df398 and 0x4dfafc
+  when the client number or a spawn marker of the player state changes, or after a map restart flag): the selection
+  is set to the player state's weapon (ps+0xd4);
+- a selection outside the weapon table is cleared to 0 (0x4d014a), and a selected weapon the player no longer owns is
+  cleared before the next one is chosen (0x4d6f39).
+The snapshot's weapon is never compared with the selection otherwise: a snapshot that still shows the previous weapon
+(the server has not yet run the commands that ask for the new one, or is still lowering the old one) does not touch it.
+
+On the server, a script that changes the weapon outside the client's commands tells the client by that command. The
+`switchToWeapon` method (1.3 Linux dedicated server 0x80fa1b6) checks that the player owns the weapon and calls the
+sender 0x8120e0a, which queues `a <index>` as a reliable command for that client (format "%c %i" with 0x61); two
+further game paths call the same sender (0x80feb98 and 0x81056b5, an item pickup and a weapon exchange; TODO(spec):
+which pickup cases). `switchToOffhand` uses a sibling sender with the letter 0x43. `setSpawnWeapon` (0x80faf9a) only
+writes the player state's weapon (and weapon state 0) and sends nothing: the client takes it at the respawn.
+
+openiw2: the server's weapon step (src/netgame/netcombat.cpp) sees a script's change as a `$weapon` that differs from
+the one it wrote; for a playing client it then queues `a <index>` (index in the weapon list configstring, as the
+command's weapon byte). The client (src/netgame/weaponselect.h `NetWeaponSelection`) takes a selection from that
+command, from the player state's weapon at a spawn (pm_type changing to 0 from another value, a new gamestate, or no
+selection yet) and when the selected weapon is no longer owned; it ignores the snapshot's weapon otherwise. Before,
+the client took every snapshot weapon that differed from the one it had drawn as a script's change, held off for 2 s
+after its own change but only until a snapshot first showed the selection. With changes in quick succession (a wheel
+turned twice, a key pressed again before the first change reached the server) the server, which lowers and raises in
+its own time, later still showed an older weapon; the client selected it again, its commands asked the server for it,
+and the two sides chased each other's stale state. tests/test_mplag.cpp (ctest `mplag_weapon`: the `wan` path with the
+rate limits of a remote client, a change every 150 ms) counts selection changes without a press: 0 with this rule;
+the earlier rule (IW2_LAG_OLDSELECT=1) gives several per run at 150 and 400 ms between presses.
 
 ### Client clock after a gamestate
 

@@ -10,6 +10,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "game/playerweapon.h"
@@ -129,6 +130,10 @@ public:
     const game::PlayerWeapon& weapon() const { return weapon_; }
     const EventRing& ring() const { return ring_; }
     int shots() const { return shots_; }  // total shots fired (tests)
+    // The weapon a script selected for this playing client since the last call (switchtoweapon, a pickup, the spawn
+    // weapon: a `$weapon` the weapon step did not write), empty when none. The server tells the client with the
+    // command `a <index>` (docs/spec/net.md section 10 "Weapon selection").
+    std::string takeScriptedSelect() { return std::exchange(scriptedSelect_, {}); }
     // weapon index of an event parameter (set by the owner: the weapon configstring index of a name).
     std::function<int(const std::string&)> weaponIndex;
     // The client's antilag time for its shots (the owner sets it before think; -1: the current positions).
@@ -140,6 +145,7 @@ private:
     game::PlayerWeapon weapon_;
     bool wired_ = false;
     std::string select_, written_, lastCmdWeapon_;
+    std::string scriptedSelect_; // a script's weapon change of this think, for the client (takeScriptedSelect)
     uint32_t oldButtons_ = 0;
     EventRing ring_;
     int shots_ = 0;

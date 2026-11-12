@@ -69,6 +69,9 @@ void Server::shutdown(const std::string& reason) {
 }
 
 bool isLanAddress(const NetAddress& a) {
+    // IW2_NET_WAN=1 (docs/debug-flags.md): every peer counts as remote, so a test through a local relay gets the rate
+    // and snaps limits an internet client gets.
+    if (std::getenv("IW2_NET_WAN")) return false;
     const uint32_t ip = a.ip;
     const uint32_t b0 = ip >> 24;
     const uint32_t b1 = (ip >> 16) & 255;
@@ -226,8 +229,13 @@ void Server::poll(int64_t nowMs, int waitMs) {
             if (maxRate != 0) rate = std::min(rate, std::max(maxRate, 1000));
             return std::max((std::min(bytes, 1500) * 1000 + 48000) / rate, c.snapshotMs);
         };
-        if (c.state == ServerClientState::Active && nowMs >= c.nextSnapshotMs &&
-            (serverTime != c.lastSnapshotServerTime || nowMs - c.lastSnapshotMs >= 1000)) {
+        // The delay counts in server time, as the 1.3 server's due time is its frame-stepped time plus the delay
+        // (0x809ad66; the time advances by whole frames at 0x8096dc3): a delay of one frame is due at the next frame.
+        // Counted in real time it fell a few ms after the frame now and then and the snapshot waited a whole frame
+        // more. A server time that went back (a new level) is due at once.
+        if (serverTime < c.lastSnapshotServerTime) c.nextSnapshotServerTime = serverTime;
+        if (c.state == ServerClientState::Active &&
+            ((serverTime >= c.nextSnapshotServerTime && serverTime != c.lastSnapshotServerTime) || nowMs - c.lastSnapshotMs >= 1000)) {
             const int messageNum = c.chan->outgoingSequence();
             const int bytes = sendSnapshot(i);
             Client::Frame& sent = c.frames[static_cast<size_t>(messageNum & 31)];
@@ -235,7 +243,7 @@ void Server::poll(int64_t nowMs, int waitMs) {
             sent.ackMs = -1;
             c.lastSnapshotServerTime = serverTime;
             c.lastSnapshotMs = nowMs;
-            c.nextSnapshotMs = nowMs + nextDelay(bytes);
+            c.nextSnapshotServerTime = serverTime + nextDelay(bytes);
         } else if (c.state != ServerClientState::Active && nowMs >= c.nextSnapshotMs) {
             // A client without the world gets a message with no operation but the end mark: a client that lost the
             // gamestate acknowledges a later message and so gets it again (0x809adea). The pending server commands
