@@ -151,6 +151,10 @@ find_package(SDL3 CONFIG)
 if(SDL3_FOUND)
   add_executable(iw2view apps/iw2view/main.cpp apps/iw2view/jpeg.cpp)
   target_link_libraries(iw2view PRIVATE iw2_dedicated iw2_netgame iw2_video SDL3::SDL3)
+  # The main menu shows the build's version (src/ui/appversion.h): git describe of the checkout at configure time.
+  execute_process(COMMAND git describe --tags --always --dirty WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                  OUTPUT_VARIABLE IW2_GIT_DESCRIBE OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  target_compile_definitions(iw2view PRIVATE IW2_VERSION="${IW2_GIT_DESCRIBE}")
   # The screenshotJpeg command encodes with ImageIO (apps/iw2view/jpeg.cpp).
   target_link_libraries(iw2view PRIVATE "-framework ImageIO" "-framework CoreGraphics" "-framework CoreFoundation")
   else()

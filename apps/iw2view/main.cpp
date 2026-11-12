@@ -84,6 +84,7 @@
 #include "ui/frontend.h"
 #include "ui/menuhide.h"
 #include "ui/menuinput.h"
+#include "ui/appversion.h"
 #include "ui/esckey.h"
 #include "ui/profile.h"
 #include "ui/profilelist.h"
@@ -8407,6 +8408,14 @@ int main(int argc, char** argv) {
                     const float fpsSc = float(h) / 480.0f;
                     const uint8_t yellow[4] = {255, 255, 0, 255};
                     hudText(out, std::to_string(fpsShown) + " FPS", float(w) - 8.0f * fpsSc, 20.0f * fpsSc, 0.3f * 48.0f / float(f->pixelHeight) * fpsSc, *f, yellow, 1.0f, 1.0f, 3);
+                }
+            // The version in the bottom right corner of the main menu (openiw2 addition, src/ui/appversion.h), outside a level.
+            if (!world && std::any_of(frontStack.menus().begin(), frontStack.menus().end(), [](const ui::Menu* m) { return m->name == "main"; }))
+                if (const assets::Font* f = font("normalFont")) {
+                    const float vSc = float(h) / 480.0f;
+                    const uint8_t grey[4] = {200, 200, 200, 160};
+                    hudText(out, ui::versionLabel(IW2_VERSION), float(w) - 8.0f * vSc, float(h) - 6.0f * vSc, 0.22f * 48.0f / float(f->pixelHeight) * vSc,
+                            *f, grey, 1.0f, 1.0f, 0);
                 }
             (void)c;
             return out;

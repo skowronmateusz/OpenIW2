@@ -33,7 +33,8 @@ original's behavior was written down as specs, then reimplemented from those spe
 ### Start
 
 Open **OpenIW2**. On the first start it asks for your `main` folder and checks that all needed files are there; if
-some are missing, it lists them. It remembers the folder and opens the main menu. Your `main` folder is never changed.
+some are missing, it lists them. It remembers the folder and opens the main menu, which shows the OpenIW2 version in its
+bottom right corner. Your `main` folder is never changed.
 
 | What | Where |
 |---|---|

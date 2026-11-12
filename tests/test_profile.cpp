@@ -1,3 +1,4 @@
+#include "ui/appversion.h"
 #include <unistd.h>
 #include <fstream>
 #include <filesystem>
@@ -10,6 +11,10 @@
 int main() {
     int failures = 0;
     auto check = [&](bool c, int line) { if (!c) { std::cerr << "line " << line << " failed\n"; ++failures; } };
+    // The main menu's version label (src/ui/appversion.h).
+    check(iw2::ui::versionLabel("v0.2.5") == "OpenIW2 0.2.5", __LINE__);
+    check(iw2::ui::versionLabel("v0.2.5-3-g1a2b3c4-dirty") == "OpenIW2 0.2.5-3-g1a2b3c4-dirty", __LINE__);
+    check(iw2::ui::versionLabel("1a2b3c4") == "OpenIW2 1a2b3c4" && iw2::ui::versionLabel("") == "OpenIW2", __LINE__);
     std::map<std::string, std::string> cv{{"sensitivity", "7"}, {"m_pitch", "-0.022"}, {"snd_volume", "0.5"}, {"mis_03", "1"}, {"ui_background", "x"}, {"sv_running", "1"}};
     const std::string text = iw2::ui::formatConfig(cv);
     const auto back = iw2::ui::parseConfig(text);
