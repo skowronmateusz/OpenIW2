@@ -139,6 +139,13 @@ struct PlayerState {
     int breathTimerMs = 0;       // ps+0x594: counts up while holding, down otherwise
     float breathScale = 0;       // ps+0x590: the scope sway scale (not initialised by the spawn in the exe)
     bool havePrevCmd = false;
+    // Prone body (docs/spec/mp-pmove.md "Prone body"): the yaw the prone body lies along (ps+0x584; the legs point the other
+    // way), set when going prone and turned after the view.
+    float proneYaw = 0;
+    // View yaw change made by the prone yaw cap (degrees, not yet in delta_angles): the network server moves it into
+    // delta_angles[1]; it is added to the command yaw of the following steps.
+    float viewYawCorrection = 0;
+    bool proneBlocked = false;   // pm_flags 0x10000: the prone body did not fit this step (cleared every step)
     std::array<float, 2> oldVelocity{}; // ps+0x2c: horizontal velocity smoothed by min(frametime, 1) per step (inertia check)
 };
 
@@ -254,6 +261,10 @@ struct MoveParams {
     // the SP dead path. spectateSpeed is the ps speed (400 with free look, else 0); spectateSpeedScale is
     // player_spectateSpeedScale.
     bool mpSpectator = false;
+    // The MP prone body check (docs/spec/mp-pmove.md "Prone body"): going prone, moving and turning prone need room for
+    // the body behind the player. SP accepts every position (0x4fc000).
+    bool proneBodyCheck = false;
+    float proneYawCap = 85.0f;        // bg_prone_yawcap
     float spectateSpeed = 400.0f;
     float spectateSpeedScale = 2.0f;
 };
@@ -289,6 +300,14 @@ void applyKnockback(PlayerState& ps, const KnockbackHit& hit, float gKnockback =
 inline void addPmEvent(PlayerState& ps, int ev) {
     addPlayerEvent(ps, ev, 0);
 }
+
+// The MP prone body check (MP exe 0x514700): whether the body lying along `yaw` (legs behind) fits at `origin`.
+// `alreadyProne` skips the room-to-lie-down test, `strict` refuses missing ground and a partly blocked body,
+// `groundNormal` (or null) is the ground the player stands on, `length` the body length (66).
+bool proneBodyFits(const CollisionWorld& w, const Vec& origin, float yaw, bool alreadyProne, bool strict,
+                   const Vec* groundNormal, float length, int passEntity, float radius = 15.0f, float height = 30.0f);
+// The view yaw cap while prone: the view stays within proneYaw ± cap. Returns yaw unchanged when not prone.
+float proneClampYaw(const PlayerState& ps, float yaw, float cap = 85.0f);
 
 // Advances the player by dt seconds (split into steps of at most 66 ms like the original).
 void playerMove(const CollisionWorld& world, PlayerState& ps, const PlayerInput& in, float dt, const MoveParams& mp = {});

@@ -10,8 +10,11 @@
 #include "game/world.h"
 
 #include <cmath>
+#include <cstdio>
+#include <vector>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string>
 
 namespace {
@@ -111,6 +114,128 @@ int main() {
     CollisionWorld floorCw(bsp);
     addFloor(floorCw);
     auto floorWorld = [&]() -> const CollisionWorld& { return floorCw; };
+
+    // The prone body (docs/spec/mp-pmove.md "Prone body") against the mp_toujane walls: from each mp_dm_spawn on flat
+    // ground, the nearest wall (a ±6 box at waist height) between 120 and 400 units away, with flat floor up to it.
+    struct WallSpot { Vec origin; float yaw; float dist; }; // yaw: towards the wall
+    std::vector<WallSpot> spots;
+    {
+        CollisionWorld& cw = floorCw;
+        for (const auto& ent : bsp.entities()) {
+            const std::string* cls = ent.get("classname");
+            const std::string* org = ent.get("origin");
+            if (!cls || !org || *cls != "mp_dm_spawn") continue;
+            Vec o{};
+            if (std::sscanf(org->c_str(), "%f %f %f", &o[0], &o[1], &o[2]) != 3) continue;
+            const TraceResult down = cw.trace(o, {o[0], o[1], o[2] - 200}, {-15, -15, 0}, {15, 15, 30}, Contents::PlayerClipMask);
+            if (down.startSolid || down.fraction == 1.0f || down.normal[2] < 0.99f) continue;
+            o = down.endPos;
+            for (int k = 0; k < 36; ++k) {
+                const float yaw = float(k * 10), r = yaw * float(M_PI) / 180.0f;
+                const Vec dir{std::cos(r), std::sin(r), 0};
+                const Vec s{o[0], o[1], o[2] + 24}, e{s[0] + dir[0] * 400, s[1] + dir[1] * 400, s[2]};
+                const TraceResult t = cw.trace(s, e, {-6, -6, -6}, {6, 6, 6}, 0x810011);
+                if (t.startSolid || t.fraction == 1.0f || std::fabs(t.normal[2]) > 0.1f) continue;
+                const float d = t.fraction * 400 + 6;
+                if (d < 120) continue;
+                bool flat = true; // the floor up to the wall stays at the spawn's height
+                for (float x = 0; x + 20 < d && flat; x += 8) {
+                    const Vec p{o[0] + dir[0] * x, o[1] + dir[1] * x, o[2] + 20};
+                    const TraceResult g = cw.trace(p, {p[0], p[1], p[2] - 40}, {0, 0, 0}, {0, 0, 0}, 0x810011);
+                    flat = g.fraction < 1.0f && std::fabs(g.endPos[2] - o[2]) < 0.5f;
+                }
+                if (flat) spots.push_back({o, yaw, d});
+            }
+        }
+        std::cout << "prone wall spots on mp_toujane: " << spots.size() << "\n";
+        CHECK(!spots.empty());
+    }
+    auto at = [](const WallSpot& w, float fromWall) {
+        const float r = w.yaw * float(M_PI) / 180.0f;
+        PlayerState ps;
+        const float k = w.dist - fromWall;
+        ps.origin = {w.origin[0] + std::cos(r) * k, w.origin[1] + std::sin(r) * k, w.origin[2]};
+        ps.onGround = true;
+        ps.timeMs = 100000;
+        return ps;
+    };
+    auto goProne = [&](PlayerState& ps, const MoveParams& mp, float yaw) {
+        PlayerInput in;
+        in.yaw = yaw;
+        in.stance = Stance::Crouch;
+        playerMove(floorCw, ps, in, 0.05f, mp);
+        in.stance = Stance::Prone;
+        const int seq = ps.eventSeq;
+        playerMove(floorCw, ps, in, 0.05f, mp);
+        return seq;
+    };
+    if (!spots.empty()) {
+        const WallSpot& w = spots.front();
+        const MoveParams mp = multiplayerMoveParams();
+        CHECK(mp.proneBodyCheck && !MoveParams{}.proneBodyCheck);
+        // Lying down with the legs into the wall 30 units behind is refused; the client is asked to stay crouched.
+        PlayerState ps = at(w, 30);
+        const int seq = goProne(ps, mp, w.yaw + 180.0f); // facing away from the wall: the legs point at it
+        CHECK(ps.stance == Stance::Crouch);
+        bool ev = false;
+        for (int i = seq; i < ps.eventSeq; ++i) ev |= ps.events[i & 3] == 0x8d;
+        CHECK(ev);
+        // Facing the wall (legs away from it) fits.
+        PlayerState ps2 = at(w, 30);
+        goProne(ps2, mp, w.yaw);
+        CHECK(ps2.stance == Stance::Prone);
+        CHECK(near(std::remainder(ps2.proneYaw - w.yaw, 360.0f), 0.0f, 0.01f));
+        // SP accepts the body in the wall (0x4fc000 always passes).
+        PlayerState ps3 = at(w, 30);
+        goProne(ps3, MoveParams{}, w.yaw + 180.0f);
+        CHECK(ps3.stance == Stance::Prone);
+
+        // Crawling backwards towards the wall stops when the legs reach it, not when the box does.
+        PlayerState pc = at(w, w.dist - 10);
+        goProne(pc, mp, w.yaw + 180.0f);
+        CHECK(pc.stance == Stance::Prone);
+        PlayerInput in;
+        in.stance = Stance::Prone;
+        in.yaw = w.yaw + 180.0f;
+        in.forward = -1.0f;
+        for (int i = 0; i < 600; ++i) playerMove(floorCw, pc, in, 0.05f, mp);
+        const float r = w.yaw * float(M_PI) / 180.0f;
+        auto gap = [&](const PlayerState& p) {
+            return w.dist - ((p.origin[0] - w.origin[0]) * std::cos(r) + (p.origin[1] - w.origin[1]) * std::sin(r));
+        };
+        std::cout << "prone crawl: MP gap to the wall " << gap(pc) << "\n";
+        CHECK(gap(pc) > 50.0f && gap(pc) < 80.0f);
+        PlayerState sp = at(w, w.dist - 10);
+        goProne(sp, MoveParams{}, w.yaw + 180.0f);
+        for (int i = 0; i < 600; ++i) playerMove(floorCw, sp, in, 0.05f, MoveParams{});
+        std::cout << "prone crawl: SP gap to the wall " << gap(sp) << "\n";
+        CHECK(gap(sp) < 20.0f);
+
+        // Turning: lying with the legs away from the wall 30 units off, the mouse turns the view half round (5 degrees
+        // a step; the view correction is taken into the view as the network server and the front end do). In MP the
+        // body stops before its legs reach the wall and the view stays within the body yaw ± 85; in SP the body follows.
+        auto turn = [&](const MoveParams& m) {
+            PlayerState p = at(w, 30);
+            goProne(p, m, w.yaw);
+            CHECK(p.stance == Stance::Prone);
+            PlayerInput ti;
+            ti.stance = Stance::Prone;
+            float view = w.yaw;
+            for (int i = 0; i < 120; ++i) {
+                if (i < 36) view += 5.0f;
+                ti.yaw = view;
+                playerMove(floorCw, p, ti, 0.05f, m);
+                view += p.viewYawCorrection;
+                p.viewYawCorrection = 0;
+                CHECK(std::fabs(std::remainder(p.proneYaw - view, 360.0f)) <= 85.01f);
+            }
+            std::cout << "prone turn: body " << p.proneYaw << " view " << view << "\n";
+            return std::fabs(std::remainder(p.proneYaw - w.yaw, 360.0f)); // how far the body turned
+        };
+        const float mpTurn = turn(mp), spTurn = turn(MoveParams{});
+        CHECK(mpTurn < spTurn - 30.0f);
+        CHECK(spTurn > 50.0f); // the SP body follows a view pushed past bg_prone_yawcap - 5
+    }
 
     // Fall damage between the MP heights 256 and 480 (the SP ones are 200 and 350).
     {

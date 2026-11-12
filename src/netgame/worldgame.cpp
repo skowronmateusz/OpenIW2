@@ -713,7 +713,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         cmd = withDeltaAngles(cmd, m.deltaAngles);
     }
     // The movement shared with the client's prediction (src/netgame/netmove.cpp), with this client's weapon state.
-    const game::PlayerInput in = inputFromUsercmd(cmd);
+    game::PlayerInput in = inputFromUsercmd(cmd);
     const WeaponMove wm = m.combat->move();
     // On a map turret the server holds the client behind the gun and fires the turret (src/game/mpturret.cpp): no move
     // and no weapon of its own.
@@ -725,6 +725,14 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         for (const game::KnockbackHit& hit : w_->mpTakeKnockbacks(it->second)) game::applyKnockback(m.ps, hit, w_->cvarFloat("g_knockback", 1000.0f));
         setMantleAnims(w_->mpMantleAnims());
         runUsercmd(w_->collision(), m.ps, cmd, prevTime, &wm, e->number, frozen);
+    }
+    // The prone yaw cap turned the view (docs/spec/mp-pmove.md "Prone body"): the change goes into delta_angles[1], so
+    // the client's view turns with it, and this command's view is the capped one.
+    if (m.ps.viewYawCorrection != 0.0f) {
+        const int dy = int(std::lround(m.ps.viewYawCorrection * 65536.0f / 360.0f));
+        m.deltaAngles[1] = (m.deltaAngles[1] + dy) & 0xffff;
+        cmd.angles[1] = (cmd.angles[1] + dy) & 0xffff;
+        m.ps.viewYawCorrection = 0.0f;
     }
     // The movement's player-state events (0x80e00d2): into the entity's ring for the other clients, the client's own
     // ring of the killcam archive, the listen host's ears, and ClientEvents' fall damage (MP server 0x80f52da).
@@ -780,10 +788,13 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     }
     // Intermission ignores the view input (viewInputIgnored): the view stays where the server set it.
     if (!viewInputIgnored(m.ps.pmType)) {
+        in = inputFromUsercmd(cmd); // with the prone yaw cap applied above
         m.viewPitch = in.pitch;
         m.viewYaw = in.yaw;
     }
-    e->obj->set("angles", Value(script::Vec3{0.0f, m.viewYaw, 0.0f}));
+    // A prone body lies along its body yaw, not the view (the leg direction of MP exe 0x515c30), so its hit boxes stay
+    // where the body check put them. TODO(spec): the separate leg and torso yaws of the player animation.
+    e->obj->set("angles", Value(script::Vec3{0.0f, m.ps.stance == game::Stance::Prone ? m.ps.proneYaw : m.viewYaw, 0.0f}));
     e->velocity = {m.ps.velocity[0], m.ps.velocity[1], m.ps.velocity[2]};
     w_->mpSetButtons(it->second, static_cast<uint32_t>(held.buttons));
     w_->mpSetView(it->second, script::Vec3{m.viewPitch, m.viewYaw, 0.0f}, m.ps.viewHeight);
@@ -891,7 +902,7 @@ void WorldGame::writePlayerEntity(std::vector<uint8_t>& es, int client, const En
         if (n == client)
             if (auto mv = moves_.find(s); mv != moves_.end()) {
                 putF(es, 60, mv->second.viewPitch);  // apos.trBase[0]
-                putF(es, 64, mv->second.viewYaw);    // apos.trBase[1]
+                putF(es, 64, mv->second.ps.stance == game::Stance::Prone ? mv->second.ps.proneYaw : mv->second.viewYaw); // apos.trBase[1] (a prone body: its body yaw)
             }
     // eFlags (observed with the 1.3 server; VAs in the 1.3 Linux dedicated server): 4 crouched, 8 prone, 0x40 while
     // the attack button is held with the weapon ready or firing (set in the movement code at 0x80e8bc6..0x80e8c38,

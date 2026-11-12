@@ -39,8 +39,10 @@ Player box at spawn (0x4e9100, constants at 0x5a5bdc): (−15, −15, 0)–(15, 
   - to crouch from stand: 0→60, 1→59.5, 4→58.5, 30→56, 80→44, 90→41.5, 95→40.5, 100→40
   - to crouch from prone: 0→11, 5→10, 30→21, 50→25, 67→31, 83→34, 100→40
   - to stand: 0→40, 5→40.5, 10→41.5, 20→44, 70→56, 96→58.5, 99→59.5, 100→60
-- Standing up traces the taller box first. TODO(spec): [stays: 0x4fc000 not read] the prone surface check (0x4fc000), the
-  crouch/prone button logic (cmd bits 0x100/0x200). Mantling: see "Mantle" below.
+- Standing up traces the taller box first. The prone body check 0x4fc000 accepts every position in SP
+  (it only computes body angles); the MP game refuses prone positions whose body does not fit (docs/spec/mp-pmove.md
+  "Prone body"). The prone body yaw follows the view and the view stays within it ± bg_prone_yawcap in both.
+  TODO(spec): the crouch/prone button logic (cmd bits 0x100/0x200). Mantling: see "Mantle" below.
 
 ## Movement
 

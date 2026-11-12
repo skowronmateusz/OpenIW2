@@ -1113,7 +1113,13 @@ struct Soak {
         if (phase(7.0, 8.0)) sc.buttons |= game::Button::Crouch;
         if (phase(8.0, 9.4)) sc.buttons |= game::Button::Prone;
         if (phase(7.7, 8.0)) ++life.stanceSeen[netgame::RemoteView::stance(*last) == 1 ? 1 : 100 + netgame::RemoteView::stance(*last)];
-        if (phase(9.1, 9.4)) ++life.stanceSeen[netgame::RemoteView::stance(*last) == 2 ? 2 : 200 + netgame::RemoteView::stance(*last)];
+        // A prone request where the body behind the player does not fit is refused (docs/spec/mp-pmove.md "Prone body"),
+        // by the server and the prediction alike: that counts as agreement (key 3), not as a stance the server missed.
+        if (phase(9.1, 9.4)) {
+            const int st = netgame::RemoteView::stance(*last);
+            const bool refused = st != 2 && c.ps.stance != game::Stance::Prone && c.ps.proneBlocked;
+            ++life.stanceSeen[st == 2 ? 2 : refused ? 3 : 200 + st];
+        }
         if (once(3, 10.6)) evaluateStance(*last);
         // bursts to an empty magazine, then a reload
         if (phase(11.0, 19.5) && !life.emptied && o.serverClip != 0) {
@@ -1252,7 +1258,7 @@ struct Soak {
     }
 
     void evaluateStance(const net::ClientSnapshot&) {
-        int crouchOk = life.stanceSeen[1], crouchBad = 0, proneOk = life.stanceSeen[2], proneBad = 0;
+        int crouchOk = life.stanceSeen[1], crouchBad = 0, proneOk = life.stanceSeen[2] + life.stanceSeen[3], proneBad = 0;
         for (const auto& [k, n] : life.stanceSeen) {
             if (k >= 100 && k < 200) crouchBad += n;
             if (k >= 200) proneBad += n;

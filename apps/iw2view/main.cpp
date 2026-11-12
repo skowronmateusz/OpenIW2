@@ -10106,6 +10106,11 @@ int main(int argc, char** argv) {
                     pweapon.stateNumber() == 11)
                     ps.aimSpread = 255.0f;
                 cam.yaw = game::mantleClampYaw(ps, cam.yaw); // the view yaw cap while mantling (0x525b60)
+                // The prone cap's view turn (viewYawCorrection) belongs to the view; a network game moves it into delta_angles
+                // on the server, and the prediction starts each frame without it.
+                if (!netClient) cam.yaw += ps.viewYawCorrection;
+                ps.viewYawCorrection = 0;
+                cam.yaw = game::proneClampYaw(ps, cam.yaw); // the prone view yaw cap (bg_prone_yawcap, docs/spec/mp-pmove.md "Prone body")
                 cam.pos = {ps.origin[0], ps.origin[1], ps.origin[2] + ps.viewHeight};
                 if (netClient && netClient->latest()) { // the remaining part of a prediction correction (cg_errorDecay)
                     const game::Vec o = netPredictor.drawOrigin(netDrawNowMs);

@@ -179,6 +179,7 @@ game::PlayerState predictPlayer(const game::CollisionWorld& world, const PsField
     ps.origin = {server.origin[0], server.origin[1], server.origin[2]};
     ps.velocity = {server.velocity[0], server.velocity[1], server.velocity[2]};
     ps.bobCycle = server.bobCycle;
+    ps.viewYawCorrection = 0; // the server's delta_angles hold every correction up to the acknowledged command
     int prev = server.commandTime;
     if (server.eFlags & 0x300) {
         ps.velocity = {0, 0, 0};

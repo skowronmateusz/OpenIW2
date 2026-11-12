@@ -104,8 +104,136 @@ MoveParams multiplayerMoveParams() {
     mp.fallDamageMinHeight = 256.0f;
     mp.fallDamageMaxHeight = 480.0f;
     mp.inertiaAngle = 0.0f;
+    mp.proneBodyCheck = true;
     return mp;
 }
+
+namespace {
+constexpr uint32_t kProneMask = 0x810011; // the body check's own mask: no player bodies
+float angleNorm180(float a) { return std::remainder(a, 360.0f); }
+float angleNorm360(float a) {
+    a = std::fmod(a, 360.0f);
+    return a < 0 ? a + 360.0f : a;
+}
+// vectopitch: 0..360, nose down positive.
+float vecPitch(const Vec& v) {
+    if (v[0] == 0 && v[1] == 0) return v[2] > 0 ? 270.0f : 90.0f;
+    float p = std::atan2(-v[2], std::sqrt(v[0] * v[0] + v[1] * v[1])) * 180.0f / float(M_PI);
+    return p < 0 ? p + 360.0f : p;
+}
+} // namespace
+
+bool proneBodyFits(const CollisionWorld& w, const Vec& origin, float yaw, bool alreadyProne, bool strict,
+                   const Vec* groundNormal, float length, int passEntity, float radius, float height) {
+    // 1. Room to lie down: the player box moved 10 up is not all solid.
+    if (!alreadyProne) {
+        const TraceResult t = w.trace(origin, {origin[0], origin[1], origin[2] + 10.0f}, {-radius, -radius, 0},
+                                      {radius, radius, height}, kProneMask, passEntity);
+        if (t.allSolid) return false;
+    }
+    // 2. Steep ground.
+    if (strict && groundNormal && (*groundNormal)[2] < 0.7f) return false;
+    auto lerp3 = [](const Vec& p, const Vec& q, float f) { return Vec{(q[0] - p[0]) * f + p[0], (q[1] - p[1]) * f + p[1], (q[2] - p[2]) * f + p[2]}; };
+    const Vec bmin{-6, -6, -6}, bmax{6, 6, 6};
+    const float y = (yaw - 180.0f) * float(M_PI) / 180.0f;
+    const Vec back{std::cos(y), std::sin(y), 0.0f};
+    auto box = [&](const Vec& a, const Vec& b) { return w.trace(a, b, bmin, bmax, kProneMask, passEntity); };
+    const float waist = height - 6.0f;
+    // 3. The legs along the body direction.
+    const Vec legStart{origin[0], origin[1], origin[2] + waist};
+    Vec legEnd = add(legStart, scale(back, length - 6.0f));
+    TraceResult t = box(legStart, legEnd);
+    if (t.fraction < 1.0f) {
+        if (!strict) return false;
+        const float reach = (length - 6.0f) * t.fraction + 6.0f;
+        if (reach < radius + 2.0f) return false;
+        const float need = waist * 0.7f + 48.0f;
+        if (reach < need) {
+            legEnd[2] += 22.0f;
+            const Vec d{legEnd[0] - legStart[0], legEnd[1] - legStart[1], legEnd[2] - legStart[2]};
+            const float len = std::sqrt(dot(d, d));
+            t = box(legStart, legEnd);
+            if (t.fraction < 1.0f && len * t.fraction + 6.0f < need) return false;
+        }
+        // TODO(spec): the knee-to-foot traces of a partly blocked leg trace (0x514c7f..0x514e15).
+    }
+    const Vec legHit = lerp3(legStart, legEnd, t.fraction);
+    auto fail = [&] { return !strict; }; // a missing ground only refuses the strict check
+    // 4. The knees, 48 behind.
+    const Vec kneeStart = add(Vec{origin[0], origin[1], origin[2] + waist}, scale(back, 48.0f));
+    const float kneeDrop = radius * 2.5f + waist - 6.0f;
+    t = box(kneeStart, {kneeStart[0], kneeStart[1], kneeStart[2] - kneeDrop});
+    if (t.fraction == 1.0f) return fail();
+    if (t.normal[2] < 0.7f) return false;
+    Vec knee = lerp3(kneeStart, {kneeStart[0], kneeStart[1], kneeStart[2] - kneeDrop}, t.fraction);
+    knee[2] -= 6.0f;
+    // 5. The feet below the leg end.
+    const Vec footEnd{legHit[0], legHit[1], legHit[2] - ((legHit[2] - knee[2]) * 2.0f + radius)};
+    t = box(legHit, footEnd);
+    if (t.fraction == 1.0f) return fail();
+    if (t.normal[2] < 0.7f) return false;
+    Vec foot = lerp3(legHit, footEnd, t.fraction);
+    foot[2] -= 6.0f;
+    // 6. The bend at the knee and clear lines along the body.
+    bool ok = true;
+    const float p1 = vecPitch({knee[0] - origin[0], knee[1] - origin[1], knee[2] - origin[2]});
+    const float p2 = vecPitch({foot[0] - knee[0], foot[1] - knee[1], foot[2] - knee[2]});
+    const float bend = angleNorm180(p2 - p1);
+    if (bend < -50.0f || bend > 70.0f) ok = false;
+    const Vec o5{origin[0], origin[1], origin[2] + 5}, k5{knee[0], knee[1], knee[2] + 5}, f5{foot[0], foot[1], foot[2] + 5};
+    if (w.trace(o5, k5, {0, 0, 0}, {0, 0, 0}, kProneMask, passEntity).fraction < 1.0f) ok = false;
+    if (w.trace(k5, f5, {0, 0, 0}, {0, 0, 0}, kProneMask, passEntity).fraction < 1.0f) ok = false;
+    return ok || fail();
+}
+
+float proneClampYaw(const PlayerState& ps, float yaw, float cap) {
+    if (ps.stance != Stance::Prone) return yaw;
+    const float d = angleNorm180(ps.proneYaw - yaw);
+    if (d >= -cap && d <= cap) return yaw;
+    return angleNorm360(ps.proneYaw + (d <= 0 ? cap : -cap));
+}
+
+namespace {
+// The turn check (MP exe 0x519260): the body at view + t·d with a length blended from 66 to 45.
+bool proneTurnFits(const CollisionWorld& w, const PlayerState& ps, float viewYaw, float target, const MoveParams& mp) {
+    const float d = angleNorm180(target - viewYaw);
+    const float t = std::fabs(d) / 240.0f;
+    const float yaw = angleNorm360(target - (1.0f - t) * d);
+    return proneBodyFits(w, ps.origin, yaw, true, ps.onGround, nullptr, t * 45.0f + (1.0f - t) * 66.0f, mp.passEntity, mp.maxs[0]);
+}
+
+// The prone part of the view angles (MP exe 0x519340): the body yaw follows the view where it fits, the view stays
+// within the body yaw ± bg_prone_yawcap (the change goes to viewYawCorrection).
+void proneTurn(const CollisionWorld& w, PlayerState& ps, float viewYaw, bool moving, int ms, const MoveParams& mp) {
+    const float cap = mp.proneYawCap;
+    const float d = angleNorm180(ps.proneYaw - viewYaw);
+    if (std::fabs(d) > cap - 5.0f || (moving && d != 0.0f)) {
+        const float rate = float(ms) * 0.055f;
+        float cand = rate <= std::fabs(d) ? (d <= 0 ? ps.proneYaw + rate : ps.proneYaw - rate) : viewYaw;
+        bool ok = !mp.proneBodyCheck;
+        if (mp.proneBodyCheck) {
+            for (int i = 0; i < 400; ++i) {
+                if (proneTurnFits(w, ps, viewYaw, cand, mp)) { ok = true; break; }
+                const float back = angleNorm180(ps.proneYaw - cand);
+                if (std::fabs(back) <= 1.0f) {
+                    cand = angleNorm360(cand + back);
+                    ok = proneTurnFits(w, ps, viewYaw, cand, mp);
+                    break;
+                }
+                cand = angleNorm360(cand + (back <= 0 ? -1.0f : 1.0f));
+            }
+            if (ok)
+                ok = proneBodyFits(w, ps.origin, viewYaw, true, ps.onGround, nullptr, 45.0f, mp.passEntity, mp.maxs[0]) &&
+                     proneBodyFits(w, ps.origin, cand, true, ps.onGround, nullptr, 45.0f, mp.passEntity, mp.maxs[0]);
+        }
+        if (ok) ps.proneYaw = angleNorm360(cand);
+        else ps.proneBlocked = true;
+    }
+    // TODO(spec): the view turn when the current body yaw no longer fits, the 0.98 push back, the pitch limit.
+    const float clamped = proneClampYaw(ps, viewYaw, cap);
+    ps.viewYawCorrection += angleNorm180(clamped - viewYaw);
+}
+} // namespace
 
 void addPlayerEvent(PlayerState& ps, int event, int parm) {
     if (event == 0) return;
@@ -421,8 +549,16 @@ void stepSlideMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, bool grav
     // Stairs (0x54f846): a height change of more than half a unit against the plain slide gives the step event 0x8f
     // (parameter: the rounded height clamped to -16..24, + 0x80) and slows the player down. Not on a ladder.
     // Steps over 3 units also advance the bob cycle by min(|step| / 2, 4) · 1.25 + 7 (a footstep when bit 7 changes,
-    // 0x50a830 always allows it). The prone gate 0x4fc000 (called from 0x54e990) returns 1 on every path and only
-    // fills the prone body angles ps+0x584..0x58c, so no step is ever undone.
+    // 0x50a830 always allows it). The SP prone gate 0x4fc000 (called from 0x54e990) returns 1 on every path and only
+    // fills the prone body angles ps+0x584..0x58c, so in SP no step is undone; the MP gate above (proneBodyCheck) can.
+    // The MP prone gate (MP exe 0x53104e -> 0x530130): a move that leaves no room for the body is undone, without the step event.
+    if (onGroundPlane && !ps.onLadder && !pml.dead && mp.proneBodyCheck && ps.stance == Stance::Prone &&
+        !proneBodyFits(w, ps.origin, ps.proneYaw, true, true, nullptr, 66.0f, pml.passEntity, mp.maxs[0])) {
+        ps.origin = startO;
+        ps.velocity = startV;
+        ps.proneBlocked = true;
+        return;
+    }
     if (onGroundPlane && !ps.onLadder) {
         const float dz = ps.origin[2] - downO[2];
         if (std::fabs(dz) > 0.5f) {
@@ -473,7 +609,7 @@ float viewHeightAt(int target, bool down, int percent) {
 float maxsZ(Stance s, const MoveParams& mp) { return s == Stance::Prone ? 30.0f : s == Stance::Crouch ? 50.0f : mp.maxs[2]; }
 
 // Stance change (0x509d10): standing up needs room for the taller box; going prone needs ground
-// (0x4fc000 always returns 1: it is not a gate). A change starts a view-height transition (0x509840).
+// (SP 0x4fc000 always returns 1: no gate in SP; in MP the prone body must fit, proneBodyFits). A change starts a view-height transition (0x509840).
 void updateStance(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, const MoveParams& mp) {
     // pm_flags 0x8000 (freezecontrols / an absolute playerlinkto): outside a turret the whole stance logic is skipped (0x509e59 -> 0x50a37e),
     // so neither the crouch / prone keys nor the lack of them change the stance.
@@ -505,6 +641,15 @@ void updateStance(const CollisionWorld& w, PlayerState& ps, const PlayerInput& i
         }
     } else if (want == Stance::Prone && !ps.onGround) {
         return;
+    } else if (want == Stance::Prone) {
+        // Going prone (MP exe 0x517b5e): the body behind the player must fit; refused, the client is told to give up
+        // the request (0x8c stand / 0x8d crouch) unless the stance key is held.
+        if (mp.proneBodyCheck && !proneBodyFits(w, ps.origin, in.yaw, false, true, nullptr, 66.0f, mp.passEntity, mp.maxs[0])) {
+            ps.proneBlocked = true;
+            if (!in.stanceHeld) addPlayerEvent(ps, ps.stance == Stance::Crouch ? 0x8d : 0x8c, 0);
+            return;
+        }
+        ps.proneYaw = angleNorm360(in.yaw);
     }
     const int target = want == Stance::Prone ? 11 : want == Stance::Crouch ? 40 : 60;
     ps.transitionDown = target < ps.viewHeightTarget;
@@ -1429,6 +1574,17 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     }
     // While mantling (pm_flags 4) PmoveSingle skips the stance change and the ground trace (0x50c9b7).
     if (!ps.mantling) groundTrace(w, ps, pml);
+    // MP exe 0x519ce0: a prone player in the air whose body does not fit, or on steep ground, is asked to crouch.
+    if (mp.proneBodyCheck && ps.stance == Stance::Prone && !in.dead) {
+        if (!ps.onGround) {
+            if (!proneBodyFits(w, ps.origin, ps.proneYaw, true, false, nullptr, 66.0f, pml.passEntity, mp.maxs[0])) {
+                addPlayerEvent(ps, 0x8d, 0);
+                ps.proneBlocked = true;
+            }
+        } else if (pml.groundPlane && pml.groundTrace.normal[2] < 0.7f) {
+            addPlayerEvent(ps, 0x8d, 0);
+        }
+    }
     updateLean(w, ps, in, float(ms), in.yaw);
     if (in.dead) {
         // Dead (0x509d10 with pm_type ≥ 4): view height target 8, reached at 180 units/s (0x509840: targets other
@@ -1578,7 +1734,14 @@ void playerMove(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in,
     while (ms > 0) {
         const int step = std::min(ms, 66);
         ps.timeMs += step;
-        moveStep(w, ps, in, step, mp);
+        ps.proneBlocked = false; // pm_flags 0x10000 is cleared every step (MP exe 0x51a80a)
+        PlayerInput stepIn = in;
+        stepIn.yaw = angleNorm360(in.yaw + ps.viewYawCorrection);
+        if (ps.stance == Stance::Prone && ps.pmType == 0 && !in.dead && !in.controlsFrozen) {
+            proneTurn(w, ps, stepIn.yaw, in.forward != 0 || in.right != 0, step, mp);
+            stepIn.yaw = angleNorm360(in.yaw + ps.viewYawCorrection);
+        }
+        moveStep(w, ps, stepIn, step, mp);
         ms -= step;
     }
 }

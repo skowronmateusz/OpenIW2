@@ -160,6 +160,55 @@ TODO(spec): the pellet impact effects of the cgame are those of a single bullet.
 TODO(spec): the sessionteam string of value 0 is taken as "none" from the order of the setter (0x80f7db6) and the error
 text listing allies, axis, none and spectator.
 
+## Prone body (MP exe 0x514700, 0x530130, 0x517a..0x518137, 0x519ce0, 0x519340)
+
+The prone box is the 30-unit-high player box, but the MP game also checks the body that lies behind it. The SP check
+(SP 0x4fc000) computes the same body angles but accepts every position, so in SP nothing below limits the player.
+
+Body check (MP exe 0x514700). Inputs: origin, box radius r (the player maxs x, 15), box height h (30), a body yaw, an
+"already prone" flag, a strict flag, the ground normal (or none) and a body length L (66, or 45 / a blend in the turn
+checks). Traces use the mask 0x810011 (no player bodies) and skip the player.
+1. Not yet prone: the player box (-r,-r,0)..(r,r,h) moved 10 units up must not be all solid.
+2. Strict, with a ground normal whose z is below 0.7: refused.
+3. The legs: a box of ±6 from origin + (0,0,h-6) along the direction yaw - 180 (behind the player) for L - 6 units.
+   Clear: the leg end is at full length. Blocked: the lenient check refuses at once; the strict one refuses when the
+   reached distance (fraction · (L-6) + 6) is below r + 2, and below (h-6)·0.7 + 48 it tries again with the end raised
+   by 22 and refuses when that is still short. TODO(spec): the extra knee-to-foot traces done after a partly blocked
+   leg trace (0x514c7f..0x514e15) are not modelled; such a body is treated as a clear one.
+4. The knees: the ±6 box from 48 units behind at height h-6 traced down by 2.5·r + h - 12. No ground: refused when
+   strict, else accepted. Ground with normal z below 0.7: refused. The knee point is the hit position 6 lower.
+5. The feet: from the leg end down by 2·(leg end z - knee z) + r. Same rules; the foot point is the hit 6 lower.
+6. The pitch from origin to knee and from knee to foot (vectopitch); the second minus the first, normalized to ±180,
+   outside -50..70 refuses. Point traces from origin to knee and knee to foot, both raised by 5, must be clear.
+7. A refusal from 6 or a failure that only the strict flag treats as one returns "does not fit"; the lenient check
+   accepts the rest.
+
+Uses:
+- Going prone (stance change, MP exe 0x517b5e..0x517bd9): only on the ground; the strict check with the view yaw,
+  not yet prone. Refused: the stance stays, pm_flags 0x10000 is set, and unless the stance key is held (button 0x2000)
+  the event 0x8c (client stand) or 0x8d (when crouched, client crouch) asks the client to give up the prone request.
+  Accepted: the body yaw (ps+0x584) becomes the view yaw.
+- Moving (step slide move, MP exe 0x53104e -> 0x530130): after the move on the ground plane, off a ladder and alive,
+  a prone player is checked strictly (already prone) at the body yaw. Refused: origin and velocity go back to their
+  values at the start of the move and the step event is skipped. This is what keeps the body out of walls.
+- Every step after the ground trace (MP exe 0x519ce0): a prone player in the air is checked leniently; refused gives
+  event 0x8d and pm_flags 0x10000. On ground steeper than normal z 0.7 the event 0x8d is added too.
+- Turning (view angles, MP exe 0x519340): while prone the body yaw follows the view. When the view is more than
+  bg_prone_yawcap - 5 from the body, or the player moves, the body turns toward it by at most msec · 0.055 degrees
+  (all the way when closer). The candidate is tested by the turn check (0x519260: the body at view + t·d, d = candidate
+  - view, t = |d| / 240, length 45·t + 66·(1-t), strict on the ground); when it fails the candidate steps back toward the
+  old body yaw one degree at a time. Then the 45-long body at the view yaw and at the candidate must fit, else the
+  body yaw stays. Last, the view yaw is held within body yaw ± bg_prone_yawcap (85) by changing delta_angles[1].
+  TODO(spec): the second loop of 0x519340 that turns the view when the current body yaw no longer fits, the 0.98 push
+  back of a blocked turn, the prone view pitch limit around ps+0x58c and the body pitch angles (ps+0x588/0x58c,
+  0x5a8..0x5b0) are not modelled.
+- The leg direction of the player animation (ps+0x9c, MP exe 0x515c30) is the body yaw minus the view yaw, held to
+  ±90: the prone body, and so its hit boxes, lies along the body yaw, not the view.
+
+OpenIW2: MoveParams::proneBodyCheck (on in multiplayerMoveParams) turns the check on; the network game moves the view
+correction into delta_angles on the server, the client draws its view within the same cap, and the server orients a
+prone player's entity by the body yaw (TODO(spec): the separate leg/torso yaws of the animation).
+
 ## Players against each other
 
 VAs in the 1.3 Linux dedicated server unless noted.
