@@ -42,6 +42,7 @@
 
 #include "assets/xanim.h"
 #include "fs/vfs.h"
+#include "game/clientinput.h"
 #include "game/playerweapon.h"
 #include "game/pmove.h"
 #include "game/world.h"
@@ -375,6 +376,7 @@ struct Stats {
     std::vector<int> drawnLead;
     int snapGaps = 0, snapGapsLong = 0; // snapshots received while measuring, those more than one frame after the previous
     int presses = 0, selectFlips = 0, serverWeaponChanges = 0; // IW2_LAG_ASWITCH
+    std::vector<int> turretUse, turretFire, turretOff; // IW2_LAG_TURRET
     std::vector<int> shotAck, shotHit, shotDrawnDead; // B's press to: its snapshot with the shot, A's damage, B drawing A dead
     std::vector<int> ackDelay; // B's command sent to B's snapshot acknowledging it (ms of wall time)
     std::vector<int> hitDelay; // B's fire press to A's snapshot with less health (ms of wall time) // the newest snapshot's time minus B's drawn time
@@ -398,6 +400,7 @@ struct Run {
     int hitPressCmd = 0, aHealth = 0;
     int64_t aDeadMs = 0; // A's own snapshot first shows health 0
     std::map<int, int64_t> ackWait;
+    int64_t turretPhaseMs = 0, useSeenMs = 0, firePressMs = 0, fireSeenMs = 0, offPressMs = 0, offSeenMs = 0; // IW2_LAG_TURRET
     std::deque<std::pair<int, int64_t>> bPresses; // B's fire presses: command time, wall time
     bool bPrevBtn = false;
     int bSeq = -1, shotCmd = 0;
@@ -541,7 +544,50 @@ struct Run {
         if (i == 0) st.clockLastMs = netNow, st.clockLastCmd = clientTime;
         // The client's view direction c.yaw is the command plus the server's delta_angles (docs/spec/net.md section 10
         // "View angles"): the command carries the view minus the delta.
-        net::UserCmd uc = netgame::makeUserCmd(clientTime, btn, fwd, 0, 0, c.yaw, weaponByte);
+        // IW2_LAG_TURRET=<yaw>,<pitch>: A looks that way and, while measuring, uses the turret in front of it, fires
+        // it for 2 s and gets off again, every 6 s. Timed: the press to A's snapshot that shows it on the turret
+        // (eFlags 0x300), the attack press to the first snapshot whose viewLockMode says the turret fired, and the
+        // second use press to the snapshot without the turret bits.
+        uint32_t aBtn = 0;
+        float aPitch = 0;
+        static const char* turretSpec = std::getenv("IW2_LAG_TURRET");
+        if (turretSpec && i == 0) {
+            float ty = 0, tp = 0;
+            std::sscanf(turretSpec, "%f,%f", &ty, &tp);
+            c.yaw = ty, aPitch = tp;
+            if (measuring && last) {
+                const netgame::PsFields tf = netgame::readPs(last->ps);
+                const bool on = (tf.eFlags & 0x300) != 0;
+                if (!turretPhaseMs) turretPhaseMs = now;
+                const int64_t ph = now - turretPhaseMs;
+                if (ph < 32) aBtn = game::Button::Activate; // use (Activate)
+                if (ph >= 32 && !useSeenMs && on) {
+                    useSeenMs = now;
+                    st.turretUse.push_back(int(now - turretPhaseMs));
+                    std::printf("turret: on the gun %lld ms after the use press\n", (long long)(now - turretPhaseMs));
+                }
+                if (useSeenMs && now - useSeenMs >= 1000 && now - useSeenMs < 3000) {
+                    aBtn = 1; // attack
+                    if (!firePressMs) firePressMs = now;
+                    if (!fireSeenMs && tf.viewLockMode == 2) {
+                        fireSeenMs = now;
+                        st.turretFire.push_back(int(now - firePressMs));
+                        std::printf("turret: fired %lld ms after the attack press\n", (long long)(now - firePressMs));
+                    }
+                }
+                if (useSeenMs && now - useSeenMs >= 3200 && now - useSeenMs < 3232) {
+                    aBtn = game::Button::Activate;
+                    if (!offPressMs) offPressMs = now;
+                }
+                if (offPressMs && !on && !offSeenMs) {
+                    offSeenMs = now;
+                    st.turretOff.push_back(int(now - offPressMs));
+                    std::printf("turret: off the gun %lld ms after the use press\n", (long long)(now - offPressMs));
+                }
+                if (ph > 6000) turretPhaseMs = 0, useSeenMs = firePressMs = fireSeenMs = offPressMs = offSeenMs = 0;
+            }
+        }
+        net::UserCmd uc = netgame::makeUserCmd(clientTime, btn | aBtn, fwd, 0, aPitch, c.yaw, weaponByte);
         if (const net::ClientSnapshot* ds = c.gc->latest()) {
             const netgame::PsFields df = netgame::readPs(ds->ps);
             for (int k = 0; k < 3; ++k) uc.angles[k] = (uc.angles[k] - df.deltaAngles[k]) & 0xffff;
@@ -777,7 +823,7 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
         // A walks along x, turning back every 2.5 s (the forward move with the yaw flipped by 180).
         if (measureStart && now - run.dirChangeMs > 2500) {
             run.walkDir = -run.walkDir;
-            run.clients[0]->yaw = run.walkDir > 0 ? 0.0f : 180.0f;
+            if (!std::getenv("IW2_LAG_TURRET")) run.clients[0]->yaw = run.walkDir > 0 ? 0.0f : 180.0f;
             run.dirChangeMs = now;
         }
         const bool measuring = measureStart && now < measureEnd;
@@ -859,6 +905,9 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
         std::sort(h.begin(), h.end());
         std::printf("%s: %s: %zu, median %d ms, 90%% %d ms, max %d ms\n", prof.name.c_str(), what, h.size(), h[h.size() / 2], h[h.size() * 9 / 10], h.back());
     };
+    pct("A's use press to the snapshot on the turret", s.turretUse);
+    pct("A's attack press to the snapshot with the turret's shot", s.turretFire);
+    pct("A's use press to the snapshot off the turret", s.turretOff);
     pct("B's press to its snapshot with the shot", s.shotAck);
     pct("B's press to A's snapshot with the damage", s.shotHit);
     pct("B's press to B drawing A dead", s.shotDrawnDead);
