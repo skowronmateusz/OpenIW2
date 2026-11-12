@@ -1825,6 +1825,54 @@ float World::fxVisibility(const Vec3& start, const Vec3& end) const {
 
 namespace iw2::game {
 
+// The feedback of one frame's damage (P_DamageFeedback 0x4e7040): count = damage * 100 / maxhealth (at most 127), the
+// direction as pitch and yaw bytes (255 / 255 for damage from the world), the event counter advanced.
+static void feedbackOf(int blood, int maxHealth, const Vec3& from, bool fromWorld, int& event, int& pitchOut, int& yawOut,
+                       int& countOut) {
+    countOut = 0;
+    if (blood <= 0 || maxHealth <= 0) return;
+    if (fromWorld) {
+        pitchOut = yawOut = 0xff;
+    } else {
+        float yaw = std::atan2(from[1], from[0]) * 180.0f / float(M_PI); // vectoangles (0x421b30)
+        if (yaw < 0) yaw += 360.0f;
+        float pitch = std::atan2(from[2], std::sqrt(from[0] * from[0] + from[1] * from[1])) * 180.0f / float(M_PI);
+        pitch = pitch > 0 ? 360.0f - pitch : -pitch;
+        pitchOut = int(pitch * 0.7111111283302307f);
+        yawOut = int(yaw * 0.7111111283302307f);
+    }
+    countOut = std::min(127, blood * 100 / maxHealth);
+    ++event;
+}
+
+void World::mpClientDamageFeedback() {
+    if (!mp_) return;
+    for (MpClient& cl : mp_->clients) {
+        Entity* p = cl.ent;
+        if (!p || p == player_ || p->obj->removed) continue;
+        if (!isAlive(*p)) {
+            cl.damageBlood = 0;
+            continue;
+        }
+        const Value mh = p->obj->get("maxhealth");
+        feedbackOf(cl.damageBlood, mh.isNumber() ? mh.asInt() : 100, cl.damageFrom, cl.damageFromWorld, cl.damageEvent,
+                   cl.damagePitch, cl.damageYaw, cl.damageCount);
+        cl.damageBlood = 0;
+        cl.damageFromWorld = false;
+    }
+}
+
+void World::mpSetRemoteDamageFeedback(int event, int yaw, int pitch, int count) {
+    if (!mpRemote_ || event == remoteDamageEvent_) return;
+    const bool first = remoteDamageEvent_ < 0;
+    remoteDamageEvent_ = event;
+    if (first) return; // the first snapshot's counter is no new damage
+    damageFeedback_.yaw = yaw;
+    damageFeedback_.pitch = pitch;
+    damageFeedback_.count = count;
+    ++damageFeedback_.event;
+}
+
 void World::damageFeedback() {
     if (!player_ || !isAlive(*player_)) return;
     damageFeedback_.count = 0;

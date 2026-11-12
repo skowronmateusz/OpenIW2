@@ -66,6 +66,14 @@ struct MpClient {
     // The damage timer of finishPlayerDamage (ps+0x90 / +0x94 / +0x98; the third-person stumbles read it).
     int damageTimerMs = 0, damageDurationMs = 0;
     float flinchYaw = 0;
+    // The damage feedback of a non-local client (P_DamageFeedback 0x4e7040 at its frame end; the local player keeps
+    // the world's own): the damage since the last frame with its direction, and the player state's fields damageEvent
+    // (ps+0xf8, a count of damage frames), damageYaw / damagePitch (+0xfc / +0x100, 255 for damage from the world) and
+    // damageCount (+0x104) that the client's hit direction icons, view kick and aim spread read.
+    int damageBlood = 0;
+    std::array<float, 3> damageFrom{0, 0, 0};
+    bool damageFromWorld = false;
+    int damageEvent = 0, damageYaw = 0, damagePitch = 0, damageCount = 0;
     int ping = 0; // the network client's round trip in ms, for the scores command (local clients and bots have none)
     bool controlsFrozen = false; // freezeControls of this client (client field, not the local front end's)
     // A non-local client's view (the newest usercmd angles and view height) and its turret use state: the per-client

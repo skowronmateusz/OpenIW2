@@ -885,6 +885,9 @@ public:
     // max health). The aim spread scale also grows by count (ps+0x5b0).
     struct DamageFeedback { int event = 0, pitch = 0, yaw = 0, count = 0; };
     const DamageFeedback& playerDamageFeedback() const { return damageFeedback_; }
+    // A network client: the player state's damage feedback fields (docs/spec/mp-hud.md "Hit direction and damage
+    // feedback"); a new damageEvent value is a new damage frame.
+    void mpSetRemoteDamageFeedback(int event, int yaw, int pitch, int count);
     // Game time (ms) of the last damage the player dealt to a living enemy actor (hitMarkerTrigger), -1 before the first. The front end
     // draws the hit marker from it when the option iw2_hitMarker is on (src/game/hitmarker.h).
     int64_t playerHitMarkerMs() const { return hitMarkerMs_; }
@@ -1940,6 +1943,7 @@ private:
     int playerUseEntity_ = -1;           // ps+0x580: what the use key would use now
     bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
     DamageFeedback damageFeedback_;
+    int remoteDamageEvent_ = -1; // the last damageEvent of the network client's snapshots
     int64_t hitMarkerMs_ = -1, hitMarkerKillMs_ = -1;
     std::vector<Earthquake> earthquakes_;
     std::optional<Vec3> sunlight_;          // setsunlight override (config string 9); empty after resetsunlight
@@ -2037,6 +2041,7 @@ private:
     std::vector<std::string> mpDuplicateBuiltins_;
     void registerMpGametypeBuiltins(); // src/game/mpgametypes.cpp
     void mpClientTriggers();
+    void mpClientDamageFeedback();
     void mpClientUseSearch(size_t client); // the use search of a non-local client (src/game/mpgametypes.cpp)
     void registerMpDropBuiltins();                      // src/game/mpdrop.cpp
     void mpClientItems(Entity& client, int pressedOn); // weapon item touch / use of a non-local client

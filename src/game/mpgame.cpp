@@ -225,6 +225,7 @@ void World::mpFreeClientHud(int client) {
 void World::mpFrame() {
     mpSpectateFrame(); // spectator follow (src/game/mpspectate.cpp, docs/spec/mp-spectate.md)
     mpClientTriggers(); // touch / use triggers of the non-local clients
+    mpClientDamageFeedback(); // their damage feedback (P_DamageFeedback at the client's frame end)
     mpBotsFrame(); // bot clients (src/game/mpbots.cpp, docs/spec/mp-bots.md)
     mpHudFrame();   // objective_onEntity positions (src/game/mphud.cpp)
     mpPlayersFrame(); // third-person animation of the other clients (src/game/mpplayers.cpp, docs/spec/mp-players.md)
@@ -413,6 +414,8 @@ void World::registerMpBuiltins() {
         cl.weaponDisabled = false;
         cl.knockbacks.clear();
         cl.damageTimerMs = cl.damageDurationMs = 0;
+        cl.damageBlood = 0;
+        cl.damageFromWorld = false;
         ++cl.spawnCount;
         cl.setViewAngles = {a[0], a[1], a[2]};  // ClientSpawn sets the view (0x80f940e -> SetClientViewAngle)
         ++cl.viewAngleSets;
@@ -468,6 +471,12 @@ void World::registerMpBuiltins() {
         const int health = std::max(h - amount, -999);
         t.obj->set("health", Value(int32_t(health)));
         vm_.notify(t.obj, "damage", {Value(int32_t(amount)), attackerValue(entityOf(c.arg(1)))});
+        if (&t != player_) { // the same for any other client, into its own player state (mpClientDamageFeedback)
+            cl.damageBlood += amount;
+            const Vec3 d = c.arg(7).isVector() ? c.arg(7).asVector() : Vec3{0, 0, 0};
+            cl.damageFromWorld = d[0] == 0 && d[1] == 0 && d[2] == 0;
+            if (!cl.damageFromWorld) cl.damageFrom = d;
+        }
         if (&t == player_) {
             // The engine's player damage (0x80fb316 -> 0x8102886) accumulates the damage and its direction as SP G_Damage
             // does; the hit direction icons read it (docs/spec/mp-hud.md).
@@ -707,6 +716,12 @@ void World::registerMpBuiltins() {
             const auto link = playerLink_;
             const size_t commands = clientCommands_.size();
             Value r = base(c);
+            if (n == "viewkick") { // the damage feedback fields of that client (TODO(spec): the MP method's VA; SP 0x4f7a40)
+                MpClient& vk = mp_->clients[size_t(cl)];
+                vk.damageBlood = damageBlood_;
+                vk.damageFrom = damageFrom_;
+                vk.damageFromWorld = false;
+            }
             damageBlood_ = blood;
             damageFrom_ = from;
             damageFromWorld_ = fromWorld;

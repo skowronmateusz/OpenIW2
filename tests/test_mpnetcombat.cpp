@@ -365,6 +365,42 @@ void dm(fs::Vfs& vfs) {
         g.host.playSound = [](const std::string&, const game::Vec3*, float*, int) { return 0; };
     }
 
+    // Bravo falls from a height (docs/spec/mp-hud.md "Hit direction and damage feedback"): the fall damage reaches its
+    // player state as a damage frame from the world (damageEvent advanced, pitch and yaw 255, a count), and its front
+    // end's world takes it as new damage feedback (the view kick; no direction icon for world damage).
+    {
+        Entity* pb = g.host.mpClientEntity(b);
+        CHECK(pb != nullptr);
+        int ev0 = -1;
+        if (const net::ClientSnapshot* s = g.clients[1]->latest()) ev0 = s->ps[284];
+        World bview(vfs, "mp_toujane", true);
+        bview.mpStartRemote();
+        netgame::RemoteView brv;
+        if (const net::ClientSnapshot* s = g.clients[1]->latest()) brv.apply(bview, *s, g.clients[1]->configstrings, b, 0, nullptr);
+        const int viewEvent0 = bview.playerDamageFeedback().event;
+        const int hp0 = pb ? pb->obj->get("health").asInt() : 0;
+        if (pb) {
+            game::Vec3 o = origin(pb);
+            o[2] += 260.0f; // about 8 m: damage, not death
+            pb->obj->set("origin", Value(o));
+        }
+        int ev = ev0, yaw = 0, pitch = 0, count = 0;
+        for (int i = 0; i < 60; ++i) {
+            g.frame();
+            if (const net::ClientSnapshot* s = g.clients[1]->latest()) {
+                brv.apply(bview, *s, g.clients[1]->configstrings, b, 0, nullptr);
+                if (s->ps[284] != ev) ev = s->ps[284], yaw = s->ps[288], pitch = s->ps[292], count = s->ps[296];
+            }
+        }
+        const int hp1 = pb ? pb->obj->get("health").asInt() : 0;
+        std::cout << "bravo fall: health " << hp0 << " -> " << hp1 << ", damageEvent " << ev0 << " -> " << ev << " yaw " << yaw << " pitch "
+                  << pitch << " count " << count << ", its view's feedback events " << bview.playerDamageFeedback().event - viewEvent0 << "\n";
+        CHECK(hp1 < hp0 && hp1 > 0);
+        CHECK(ev != ev0 && yaw == 255 && pitch == 255 && count > 0);
+        CHECK(bview.playerDamageFeedback().event > viewEvent0 && bview.playerDamageFeedback().count == count);
+        if (pb) pb->obj->set("health", Value(100)); // full health again for the rest
+    }
+
     // bot2 kills bravo.
     g.host.mpBotSetCombat(bot2, true);
     bool botKill = false;

@@ -75,6 +75,7 @@
 #include "net/oob.h"
 #include "netgame/netmove.h"
 #include "netgame/weaponselect.h"
+#include "game/healthoverlay.h"
 #include "ui/menu.h"
 #include "ui/iw2options.h"
 #include "ui/menurun.h"
@@ -4752,7 +4753,9 @@ int main(int argc, char** argv) {
         // The command's weapon (cg.weaponSelect): follows the scripts' weapon changes (switchtoweapon, giveweapon set
         // $weapon) and weapnext; PM_Weapon in PlayerWeapon drops the old one and raises it, then $weapon follows.
         std::string weaponSelect, weaponWritten, prevSelect;
-        netgame::NetWeaponSelection netWeaponSelection; // network client: when the selection follows the server (syncWeapon)
+        netgame::NetWeaponSelection netWeaponSelection;
+        game::HealthOverlay healthOverlay; // the MP low-health overlay (ownerdraw 109)
+        int healthOverlayPm = -1;          // pm_type of the previous frame (a spawn resets the overlay) // network client: when the selection follows the server (syncWeapon)
         auto syncWeapon = [&]() {
             if (!world || !world->player()) return;
             pweapon.lookup = [&](const std::string& n) { return world->weapon(n); };
@@ -5273,6 +5276,9 @@ int main(int argc, char** argv) {
         // The death screen's quote item comes from the HUD menus (ui/hud.txt → ui/hud.menu, menu "deadscreen").
         ui::MenuLibrary hudMenus(vfs);
         hudMenus.loadList("ui/hud.txt");
+        // The MP HUD's own menus (ui_mp/hud.txt): the low-health overlay is only defined there.
+        ui::MenuLibrary hudMenusMp(vfs);
+        bool hudMenusMpLoaded = false;
         const ui::Item* deadQuoteItem = nullptr;
         if (const ui::Menu* m = hudMenus.find("deadscreen"))
             for (const auto& it : m->items)
@@ -7776,6 +7782,46 @@ int main(int argc, char** argv) {
             // full health, once hud_fade_healthbar (2 s) has passed since the touch, the touch is cleared. The trail
             // quad (0x4a8a0f) spans x = fraction .. trail with texcoords s fraction .. trail, t 0 .. 1, colour (1, 0, 0,
             // fade alpha) as implemented.
+            // Multiplayer low-health overlay (menu "Low Health", ownerdraw CG_PLAYER_LOW_HEALTH_OVERLAY 109, MP 0x4c5250; docs/spec/mp-hud.md
+            // "Low-health overlay"): the item's background over the full screen with the pulse alpha of the health fraction
+            // (the network client's from its player state, the host's from its entity). A spawn starts it afresh (0x4e0190).
+            if (world && world->multiplayer() && !hudMenusMpLoaded) {
+                hudMenusMpLoaded = true;
+                hudMenusMp.loadList("ui_mp/hud.txt");
+            }
+            if (const ui::Menu* lm = world && world->multiplayer() && world->player() ? hudMenusMp.find("Low Health") : nullptr) {
+                auto dv = [&](const char* n, float d) {
+                    const std::string v = menuEnv.getCvar(n);
+                    return v.empty() ? d : float(std::atof(v.c_str()));
+                };
+                game::HealthOverlayParams hp;
+                hp.pulseStart = dv("hud_healthOverlay_pulseStart", hp.pulseStart);
+                hp.regenPauseTime = int(dv("hud_healthOverlay_regenPauseTime", float(hp.regenPauseTime)));
+                hp.phaseOneDuration = int(dv("hud_healthOverlay_phaseOne_pulseDuration", float(hp.phaseOneDuration)));
+                hp.phaseTwoMultiplier = dv("hud_healthOverlay_phaseTwo_toAlphaMultiplier", hp.phaseTwoMultiplier);
+                hp.phaseTwoDuration = int(dv("hud_healthOverlay_phaseTwo_pulseDuration", float(hp.phaseTwoDuration)));
+                hp.phaseThreeMultiplier = dv("hud_healthOverlay_phaseThree_toAlphaMultiplier", hp.phaseThreeMultiplier);
+                hp.phaseThreeDuration = int(dv("hud_healthOverlay_phaseThree_pulseDuration", float(hp.phaseThreeDuration)));
+                hp.endAlpha = dv("hud_healthOverlay_phaseEnd_toAlpha", hp.endAlpha);
+                hp.endDuration = int(dv("hud_healthOverlay_phaseEnd_pulseDuration", float(hp.endDuration)));
+                const net::ClientSnapshot* ls = netClient ? netClient->latest() : nullptr;
+                const auto lh = world->player()->obj->get("health");
+                const int pm = ls ? netgame::readPs(ls->ps).pmType : lh.isNumber() && lh.asFloat() <= 0 ? 6 : 0;
+                if (healthOverlayPm != 0 && pm == 0) healthOverlay.reset(hp);
+                healthOverlayPm = pm;
+                const auto hv = world->player()->obj->get("health"), mv = world->player()->obj->get("maxhealth");
+                const float frac = game::healthOverlayFraction(hv.isNumber() ? hv.asInt() : 0, mv.isNumber() ? mv.asInt() : 100, pm);
+                const float oa = healthOverlay.frame(frac, cgNowMs(), hp);
+                if (oa > 0.0f && !hudKillcam)
+                    for (const auto& itp : lm->items)
+                        if (itp->ownerDraw == 109 && !itp->background.empty()) {
+                            Quad2D q{0, 0, float(w), float(h)}; // HORIZONTAL_ALIGN_FULLSCREEN / VERTICAL_ALIGN_FULLSCREEN
+                            for (int k = 0; k < 3; ++k) q.rgba[k] = uint8_t(std::clamp(itp->foreColor[size_t(k)], 0.0f, 1.0f) * 255.0f);
+                            q.rgba[3] = uint8_t(std::clamp(oa * itp->foreColor[3], 0.0f, 1.0f) * 255.0f);
+                            q.texture = materialTexture(itp->background);
+                            out.push_back(q);
+                        }
+            }
             if (const ui::Menu* hm = hudMenus.find("Health"); hm && world && world->player() && std::atof(menuEnv.getCvar("cg_drawHealth").c_str()) != 0.0) {
                 const int64_t now = cgNowMs();
                 const int dtMs = hudFade.lastHudMs > 0 && now > hudFade.lastHudMs ? int(now - hudFade.lastHudMs) : 0;

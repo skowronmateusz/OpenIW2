@@ -1231,6 +1231,10 @@ net::SnapshotView WorldGame::snapshot(int slot) {
         putI(v.ps, 144, sc.damageTimerMs);        // damageFlashTimer (finishPlayerDamage)
         putI(v.ps, 148, sc.damageDurationMs);
         putI(v.ps, 152, int(sc.flinchYaw));
+        putI(v.ps, 284, sc.damageEvent & 0xff);   // damageEvent .. damageCount (P_DamageFeedback)
+        putI(v.ps, 288, sc.damageYaw & 0xff);
+        putI(v.ps, 292, sc.damagePitch & 0xff);
+        putI(v.ps, 296, sc.damageCount & 0x7f);
         putI(v.ps, 1496, sc.shockIndex);
         putI(v.ps, 1500, int32_t(sc.shockStartMs));
         putI(v.ps, 1504, sc.shockDurationMs);

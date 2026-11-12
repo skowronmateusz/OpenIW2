@@ -321,6 +321,8 @@ void RemoteView::apply(game::World& w, const net::ClientSnapshot& snap, const st
         if (const int vm = getI(ps, 228) & 0xff; vm > 0)
             if (const std::string* n = cfg(cs, kModelConfigstrings + vm - 1)) p->obj->set("$viewmodel", Value(*n));
         p->obj->set("maxhealth", Value(getI(ps, 308)));
+        if (!following(snap)) // the damage feedback of the own player state (hit direction icons, view kick)
+            w.mpSetRemoteDamageFeedback(getI(ps, 284) & 0xff, getI(ps, 288) & 0xff, getI(ps, 292) & 0xff, getI(ps, 296) & 0x7f);
         if (const auto c = snap.clients.find(self); c != snap.clients.end()) {
             p->obj->set("name", Value(clientStateName(c->second)));
             p->obj->set("sessionteam", Value(std::string(teamName(getI(c->second, 4) & 3))));

@@ -143,8 +143,52 @@ Implemented: `setWayPoint` marks the element; iw2view projects it like the head 
 - `finishPlayerDamage` passes the point and direction on to the engine's player damage (0x80fb170 -> 0x8102886); the
   client shows the hit direction icons as in SP (docs/spec/ui.md, `hit_direction`, `cg_hudDamageIcon*`). Implemented:
   the local player's accumulated damage keeps the direction (as SP G_Damage), so the icons point at the attacker.
+- Every client has its own damage feedback (P_DamageFeedback 0x4e7040 at the client's frame end): the damage of the
+  frame with its direction becomes damageEvent (ps+0xf8, counted up), damageYaw / damagePitch (+0xfc / +0x100, bytes of
+  the direction's angles; 255 / 255 for damage without a direction, as a fall) and damageCount (+0x104, damage * 100 /
+  maxhealth, at most 127); a dead client gets none. They are fields of the network player state (`damageEvent`,
+  `damageYaw`, `damagePitch`, `damageCount`), and the client handles a new damageEvent as the local player does:
+  the view kick, the aim spread and, unless the damage came from the world, a direction icon. openiw2 kept them for the
+  listen host's own player only: a network client got no view kick and no direction icons for any damage. Now the
+  server keeps them per client (`MpClient::damage*`, `World::mpClientDamageFeedback`) and writes them into the player
+  state; the client's world takes a changed damageEvent as new feedback (`World::mpSetRemoteDamageFeedback`).
+  `viewkick` on another client fills that client's fields as on the local player (TODO(spec): the MP method's VA; the
+  single-player one is 0x4f7a40; not covered by a test).
+  Test: tests/test_mpnetcombat.cpp (a network client falls from a height: its snapshot carries a new damage event
+  from the world with a count, and its front end's world takes it).
 - The hit marker for the attacker is script: `_damagefeedback.gsc` shows `damage_feedback` on a client HUD element and
   plays `MP_hit_alert` with `playLocalSound`.
+
+## Low-health overlay
+
+The red full screen of the MP HUD is the menu "Low Health" of `ui_mp/hud.menu` (in the single-player HUD the same
+menu is commented out): one full-screen item with the `overlay_low_health` background and ownerdraw 109
+(CG_PLAYER_LOW_HEALTH_OVERLAY, draw 0x4c5250). It does not read the damage feedback: it follows the health fraction.
+- Fraction (0x4c4a00): the snapshot player state's health / maxhealth clamped to 0..1; 0 when either is 0 or pm_type
+  is 6 (dead). At 0 nothing is drawn.
+- Pulse step (0x4c5000), once per drawn frame with the cgame time: a fraction lower than the last one and below
+  `hud_healthOverlay_pulseStart` (float, default 0.35) restarts the pulses (pulse level 0, the drop time now). When
+  the running step has ended: below the threshold the overlay becomes active; not active and not below: nothing
+  changes. Active: the next step starts now from the current target. While the level is below 4 the three phases
+  repeat: to level alpha (1, 0.8, 0.6, 0.3 for levels 0..3) over `hud_healthOverlay_phaseOne_pulseDuration` (150 ms),
+  to that times `phaseTwo_toAlphaMultiplier` (0.7) over `phaseTwo_pulseDuration` (320 ms), to the level alpha times
+  `phaseThree_toAlphaMultiplier` (0.6) over `phaseThree_pulseDuration` (400 ms); each target clamped to 0..1. After the
+  third phase the level goes up once the drop time + `hud_healthOverlay_regenPauseTime` (5000 ms) − 3 × (the three
+  durations) has passed. At level 4 the overlay ends: inactive, to `phaseEnd_toAlpha` (0) over `phaseEnd_pulseDuration`
+  (700 ms). A new drop during that fade waits for it to end.
+- Alpha (0x4c4fb0): linear from the step's start value to its target over the step's duration, the target after it.
+  The item is drawn with its colour and that alpha over the whole screen.
+- A respawn of the predicted player state (0x4e0190) resets it: inactive, no step, level 0, target the end alpha, last
+  fraction 1.
+- The dvars are registered at 0x4c35d0..0x4c37bf (ints 0..1000 for the durations, 0..10000 for the pause; floats 0..1).
+So a fall or a hit that leaves the player at or below 35 % health shows the red pulses; one that leaves more does not,
+in the original as well.
+
+openiw2 had no ownerdraw 109 and its front end drew the single-player HUD menus in multiplayer as well, so the overlay
+was missing for every kind of damage, on a network client and on the listen host. Implemented: src/game/healthoverlay.h
+(`HealthOverlay`), drawn by iw2view from the MP HUD's "Low Health" menu (ui_mp/hud.txt) in a multiplayer game, reset when
+the player state's pm_type returns to 0. TODO(spec): the overlay's place in the HUD menu draw order (drawn before the
+health bar here). Test: tests/test_healthoverlay.cpp.
 
 ## Sounds from the gametype scripts
 
