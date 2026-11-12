@@ -521,6 +521,36 @@ firstonly()
         CHECK(h.joined() == "");
     }
 
+    { // the frame-end free pass clears the freed object's fields (0x467150 -> 0x464660): a stale reference keeps an empty object, so
+      // what the fields held is released (a struct cycle through the object no longer survives it)
+        Harness h;
+        h.files["test/free4.gsc"] = R"(
+main()
+{
+    ent = spawnstruct();
+    ent.chatter = spawnstruct();
+    ent.chatter.owner = ent;
+    ent.chatter.priority = 1;
+    level.stale = ent;
+    thread reader(ent);
+}
+reader(ent)
+{
+    ent waittill("never");
+}
+)";
+        h.vm.start("test/free4.gsc", "main");
+        const auto ent = h.vm.level()->get("stale").asObject();
+        std::weak_ptr<iw2::script::Object> chatter = ent->get("chatter").asObject();
+        h.vm.freeObject(ent);
+        CHECK(!ent->fields.empty()); // until the frame end the threads of the frame still see the fields
+        h.vm.runFrame(50);
+        CHECK(ent->removed);
+        CHECK(ent->fields.empty());
+        CHECK(chatter.expired()); // the cycle ent -> chatter -> ent is broken
+        CHECK(h.vm.describeThreads().empty());
+    }
+
     {
       // OriginWatch (IW2_NET_TRACE): an origin write outside the movement's own one is recorded for the watched object only
         using iw2::script::OriginWatch;

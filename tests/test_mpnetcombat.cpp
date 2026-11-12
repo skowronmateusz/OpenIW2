@@ -3,6 +3,7 @@
 // client respawns with the use button and gets a weapon again; the other client sees the shooter's fire events in its
 // snapshots. Then sd: a network client plants the bomb by holding use in a bomb zone, and a round restart (map_restart)
 // keeps both clients connected and fighting. Needs IW2_MAIN.
+#include <map>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -723,6 +724,16 @@ void sd(fs::Vfs& vfs) {
 // on the ground gives its weapon hint (weapon number + 4, the client side shows the pickup prompt), and so does a
 // turret seen from behind with its useHintString.
 void dmHints(fs::Vfs& vfs) {
+    // The zones' model and origin from an sd world, which keeps them (map entities get the same numbers): dm frees the triggers,
+    // and a freed entity keeps no fields.
+    std::map<int, std::pair<Value, Value>> zones;
+    World probe(vfs, "mp_toujane", true);
+    probe.vm().setLoopGuardIterations(200000u);
+    probe.cvars["mapname"] = "mp_toujane";
+    probe.mpStart("sd");
+    for (const auto& e : probe.entities())
+        if (e->obj->get("targetname").toString() == "bombzone" && e->classname.rfind("trigger", 0) == 0)
+            zones[e->number] = {e->obj->get("model"), e->obj->get("origin")};
     Game g(vfs, "dm");
     g.host.mpAutoJoin(0);
     if (!g.open()) {
@@ -739,7 +750,12 @@ void dmHints(fs::Vfs& vfs) {
     if (!pa) return;
     int zonesTried = 0;
     for (const auto& e : g.host.entities()) {
-        if (e->obj->get("targetname").toString() != "bombzone" || e->classname.rfind("trigger", 0) != 0) continue;
+        const auto z = zones.find(e->number);
+        if (z == zones.end()) continue;
+        if (e->obj->removed) { // restore what the placed zone had for zoneSpot (the entity stays freed)
+            e->obj->set("model", z->second.first);
+            e->obj->set("origin", z->second.second);
+        }
         game::Vec3 spot;
         if (!zoneSpot(g, e.get(), pa, spot)) continue;
         pa->obj->set("origin", Value(spot));

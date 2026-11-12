@@ -585,6 +585,9 @@ bool World::turretManualThink(Entity& t, Entity* gunner) {
     }
     const bool fire = ts.flags & 4u;
     Entity* script = ts.target ? entityOf(Value(ts.target)) : nullptr;
+    // A freed target has no position any more (its script object lost its fields at the frame end, 0x467150 -> 0x464660).
+    // TODO(spec): whether the exe clears the turret's target entity when that entity is freed; here it is ignored.
+    if (script && script->obj->removed) script = nullptr;
     if (script) {
         const Vec3 d = sub(script->obj->get("origin").asVector(), t.obj->get("origin").asVector());
         if (dot(d, d) < ts.maxRangeSq) {
@@ -620,6 +623,7 @@ void World::thinkTurret(Entity& t) {
     // Enemy team of the turret team (table {0, 2, 1, 0, 0} in 0x51c400): axis ↔ allies, others none.
     const std::string enemyTeam = ts.team == 1 ? "allies" : ts.team == 2 ? "axis" : "";
     Entity* scriptTarget = ts.target ? entityOf(Value(ts.target)) : nullptr;
+    if (scriptTarget && scriptTarget->obj->removed) scriptTarget = nullptr; // freed: see turretManualThink
     auto inRange = [&](Entity& e) {
         const Vec3 d = sub(e.obj->get("origin").asVector(), t.obj->get("origin").asVector());
         return dot(d, d) < ts.maxRangeSq;

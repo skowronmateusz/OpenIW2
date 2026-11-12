@@ -644,6 +644,15 @@ void World::releaseEntityLinks(Entity& e) {
     if (e.isActor && e.ai.corpse) corpses_.release(e.number);
 }
 
+// What a freed entity no longer needs: its animation state, attachments and scripted placement. The entity stays in entities_
+// (numbers are not reused) with its removed script object.
+void World::releaseFreedEntityState(Entity& e) {
+    if (e.anim) e.anim.reset();
+    e.animTree.clear();
+    e.attachments.clear();
+    e.scripted.reset();
+}
+
 void World::freeEntity(Entity& e) {
     if (e.obj->removed) return; // already freed
     // Its own link and every link to it go, as in deleteEntityScripted (0x4d7c30, child list ent+0x1cc): a player linked to a
@@ -820,6 +829,10 @@ void World::frame(bool advanceTime) {
         }
     }
     vm_.runFrame(timeMs_); // stage 5
+    // The entities freed before this point have had their script objects released (0x467150); the original's slot is free again
+    // and keeps nothing, so their animation state goes too (an actor's full tree is about 100 KB, and freed entities stay listed).
+    for (const auto& ep : entities_)
+        if (ep->obj->removed) releaseFreedEntityState(*ep);
     runBadPlaces();        // stage 6
     // Stage 7: the vehicle the player rides runs first.
     if (player_ && (pmFlags_ & 0x20000u) && player_->usingVehicle >= 0)

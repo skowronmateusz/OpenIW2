@@ -91,7 +91,7 @@ void run(fs::Vfs& vfs) {
     // The leftover entity: freed, out of every list a script, a trace or a snapshot reads.
     Entity* ghost = d.world.player();
     CHECK(ghost && ghost->obj->removed);
-    CHECK(ghost && ghost->obj->get("health").asInt() == 0);
+    CHECK(ghost && ghost->obj->fields.empty()); // the frame-end free pass cleared its fields (0x467150 -> 0x464660)
     const int a = d.connect("alpha");
     CHECK(a == 0);
     if (a != 0) return;

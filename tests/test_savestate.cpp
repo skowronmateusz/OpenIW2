@@ -397,6 +397,74 @@ void worldRoundTrip() {
               << b.vm().liveThreadCount() << "\n";
 }
 
+// Freed entities (savegame format 17): a freed entity is written as its identity only and its script object keeps no fields, so the
+// state size does not grow with the number of entities freed during play (toujane_ride went past the loader's 64 MB with full records
+// of hundreds of freed actors, each with its whole animation tree and the battlechatter structs its fields held). A script reference
+// to a freed actor survives as a removed object; a load gives the same digest.
+void freedEntitiesStaySmall() {
+    const char* main = std::getenv("IW2_MAIN");
+    if (!main) {
+        std::cout << "freed entities skipped (IW2_MAIN not set)\n";
+        return;
+    }
+    iw2::fs::Vfs vfs;
+    vfs.mountDirectory(main);
+    iw2::game::World a(vfs, "toujane");
+    a.start();
+    for (int i = 0; i < 20; ++i) a.frame();
+    iw2::game::Entity* spawner = nullptr;
+    for (const auto& e : a.entities())
+        if (e->isSpawner && !e->obj->removed && e->classname.rfind("actor_", 0) == 0) { spawner = e.get(); break; }
+    CHECK(spawner != nullptr);
+    if (!spawner) return;
+    auto stateSize = [&] {
+        iw2::script::StateWriter w;
+        a.saveState(w);
+        return w.bytes.size();
+    };
+    auto spawnAndFree = [&](int n) {
+        for (int i = 0; i < n; ++i) {
+            spawner->obj->set("count", iw2::script::Value(int32_t(5)));
+            iw2::game::Entity* actor = a.debugSpawnActor(*spawner, true);
+            CHECK(actor != nullptr);
+            if (!actor) return;
+            // a struct cycle through the actor, held by a level array (as squad and battlechatter records are)
+            auto rec = a.vm().newObject("struct");
+            rec->set("owner", iw2::script::Value(actor->obj));
+            rec->set("expiretime", iw2::script::Value(int32_t(1000)));
+            actor->obj->set("chatter", iw2::script::Value(rec));
+            a.vm().level()->set("stale" + std::to_string(i), iw2::script::Value(actor->obj));
+            a.debugFree(*actor);
+            a.frame();
+            CHECK(actor->obj->removed && actor->obj->fields.empty() && !actor->anim);
+        }
+    };
+    spawnAndFree(2);
+    const size_t before = stateSize();
+    spawnAndFree(20);
+    const size_t after = stateSize();
+    // identity, removed object, level field and what the spawn left behind: a few hundred bytes each (a full actor record was about 100 KB)
+    CHECK(after < before + 20 * 4096);
+    std::cout << "freed entities: state " << before << " -> " << after << " bytes after 20 more freed actors\n";
+    iw2::game::SaveRequest req;
+    req.name = "freed";
+    req.description = "freed";
+    iw2::game::LoadedSave ls;
+    const std::string err = iw2::game::parseSaveFile(iw2::game::buildSaveFile(a, req), ls);
+    CHECK(err.empty());
+    if (!err.empty()) return;
+    iw2::game::World b(vfs, "toujane");
+    b.prepareStart();
+    iw2::game::restoreSave(b, ls);
+    const std::string da = a.stateDigest(), db = b.stateDigest();
+    CHECK(da == db);
+    const iw2::script::Value stale = b.vm().level()->get("stale0");
+    CHECK(stale.isObject() && stale.asObject()->removed && stale.asObject()->fields.empty());
+    for (const auto& e : b.entities())
+        if (e->obj->removed) CHECK(!e->anim);
+    b.frame();
+}
+
 } // namespace
 
 // Every body format the reader has branches for is accepted (formats 13 and 14 were once refused); format 2 and unknown ones are not.
@@ -412,6 +480,7 @@ int main() {
     developerModeSave();
     try {
         worldRoundTrip();
+        freedEntitiesStaySmall();
     } catch (const std::exception& e) {
         std::cerr << "world round trip: " << e.what() << "\n";
         ++failures;

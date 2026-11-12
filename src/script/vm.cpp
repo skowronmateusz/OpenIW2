@@ -1252,6 +1252,7 @@ void VM::freeObject(const ObjectPtr& object) {
 //   until one that still holds an endon (table 0x9bef28, key call + 0x10000); that call stays parked with no waited object
 //   (state 0x10, its stack under 0x1ffff) and only one of its endons can end it. With no such call the thread ends.
 // - A thread parked that way, whose endon on the object was dropped, is unwound again the same way (0x46c2e0 with 1).
+// - Last, the object's fields are cleared (0x464660).
 void VM::processFreedObjects() {
     while (!freed_.empty()) {
         std::vector<ObjectPtr> list;
@@ -1286,6 +1287,10 @@ void VM::processFreedObjects() {
                 th.waitMatch.reset();
                 th.waitEvent.clear();
             }
+            // 0x467150 then clears the object's variables when it has any (0x464660) before it drops the extra reference: a freed
+            // entity keeps no fields, so what they held (battlechatter structs, squad records, other actors) is released unless
+            // something else holds it, and a stale script reference to the freed object holds an empty object.
+            object->fields.clear();
         }
     }
 }

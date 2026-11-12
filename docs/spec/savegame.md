@@ -189,7 +189,15 @@ The original body cannot be reproduced (section 2.3), so openiw2 writes its own 
   state stack was already saved, so an actor saved in the negotiation state (9) came back without its key and ran
   `animscripts/traverse/` with an empty name ("script not found"); a dying actor came back counted as alive. Older formats derive the
   alive flag from the death state on the stack; their traverse key stays lost (TODO(spec)).
-- The loader accepts formats 1 and 3 to 16 (`saveFormatLoadable`). Formats 13 and 14 were once left out of that list although the
+- Format 17 writes a freed entity as its identity only (number, classname, kind flags, its removed script object, then a set
+  "freed" flag) and nothing else. The original writes only the entities in use (byte +0xa4, section 3 above), so a freed
+  entity's state never comes back; openiw2 keeps freed entities in its list (numbers are not reused, unlike the original's
+  0x800 slots), and wrote the whole record for each of them, an actor's full animation tree included (about 100 KB). A long
+  level that kills and converts hundreds of actors (toujane_ride) thus wrote saves of more than 200 MB raw, past the 64 MB
+  limit of the loader. A loaded freed entity, and every entity freed during play at the next script frame end, also drops its
+  animation state, attachments and scripted placement (World::releaseFreedEntityState). Formats up to 16 still load with full
+  records.
+- The loader accepts formats 1 and 3 to 17 (`saveFormatLoadable`). Formats 13 and 14 were once left out of that list although the
   reader handles them, so such saves were refused with "openiw2 save format 14, expected 15".
 - A load rebuilds the actors' predicted state stack (`ActorAi::predicted`, the copy the animscripted pop checks) from the saved stack; the original keeps it in the actor struct, which it writes whole (TODO(spec): not verified byte by byte). Without it a restored actor in the animscripted state could not pop it and re-entered animscripts/scripted main with no arguments ("expected an animation, got undefined", scripted.gsc:22).
 - Contents (src/game/savestate.cpp): the script VM (objects, arrays, threads with frames, locals, stacks, references, wait/endon state,

@@ -37,7 +37,7 @@ std::vector<Mount> mounts(World& w) {
     std::vector<Mount> m;
     for (const auto& up : w.entities()) {
         Entity& e = *up;
-        if (!e.isActor || e.ai.stack[0] != AiTurret || !e.usingTurret) continue;
+        if (!e.isActor || e.obj->removed || e.ai.stack[0] != AiTurret || !e.usingTurret) continue;
         for (const auto& o : w.entities())
             if (o->obj == e.usingTurret && o->turret && (o->turret->flags & 0x20u)) m.push_back({&e, o.get()});
     }
@@ -65,7 +65,7 @@ void test(iw2::fs::Vfs& vfs, bool hitCase) {
     Entity* threat = nullptr;
     const std::string own = gunner.obj->get("team").toString();
     for (const auto& up : w.entities())
-        if (up->isActor && up->obj->get("team").toString() != own && up->obj->get("team").toString() != "neutral" && up->ai.stack[0] != AiTurret && up->obj->get("health").asInt() > 0) threat = up.get();
+        if (up->isActor && !up->obj->removed && up->obj->get("team").toString() != own && up->obj->get("team").toString() != "neutral" && up->ai.stack[0] != AiTurret && up->obj->get("health").asInt() > 0) threat = up.get();
     CHECK(threat);
     if (!threat) return;
     threat->obj->set("health", Value(int32_t(100000))); // the map keeps fighting around the staged threat; a dead one would not be a threat
@@ -130,9 +130,8 @@ void test(iw2::fs::Vfs& vfs, bool hitCase) {
     CHECK(ts.wantAngles[0] == 0.0f && ts.wantAngles[1] == 0.0f);
 
     // 3. Manual: flag 4 decides the firing state.
-    Entity* mark = nullptr;
-    for (const auto& up : w.entities())
-        if (up->obj->get("classname").toString() == "script_origin" || up->obj->get("classname").toString() == "script_model") mark = up.get();
+    // A fresh script_origin: a map one may be freed (no fields left) or moved by the level script.
+    Entity* mark = &w.debugSpawn("script_origin");
     CHECK(mark);
     if (!mark) return;
     const Value markOrigin = mark->obj->get("origin");

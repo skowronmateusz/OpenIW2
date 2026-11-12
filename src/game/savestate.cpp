@@ -334,6 +334,11 @@ void World::saveState(StateWriter& w) {
         w.b(e.isSpawner);
         w.b(e.isActor);
         w.i32(t.indexOf(e.obj));
+        // Version 17: a freed entity is written as its identity only. The original archives only the entities in use (byte +0xa4,
+        // docs/spec/savegame.md), so nothing of a freed one survives a load; the record stays so the entity keeps its number and
+        // its (removed) script object.
+        w.b(e.obj->removed);
+        if (e.obj->removed) continue;
         w.str(e.animTree);
         w.u32(e.anim ? uint32_t(e.anim->nodeStates().size()) : 0u);
         if (e.anim)
@@ -771,6 +776,11 @@ void World::loadState(StateReader& r) {
             e->obj = obj;
         }
         byObject_[e->obj.get()] = e;
+        if (r.version >= 17 && r.b()) { // a freed entity: its identity only (see the writer)
+            releaseFreedEntityState(*e);
+            e->sentientInfo.clear();
+            continue;
+        }
         const std::string tree = r.str();
         if (tree.empty()) {
             e->anim.reset();
@@ -1065,7 +1075,11 @@ std::string World::stateDigest() const {
     };
     os << "level" << fields(*vm_.level()) << "\n";
     for (const auto& e : entities_) {
-        os << "ent " << e->number << " " << e->classname << " obj#" << e->obj->id << (e->obj->removed ? " removed" : "")
+        if (e->obj->removed) { // a freed entity keeps only its identity (savegame format 17)
+            os << "ent " << e->number << " " << e->classname << " obj#" << e->obj->id << " removed\n";
+            continue;
+        }
+        os << "ent " << e->number << " " << e->classname << " obj#" << e->obj->id
            << " tree " << e->animTree << " att " << e->attachments.size() << fields(*e->obj) << "\n";
         if (e->vehicle) {
             const VehiclePathPos& p = e->vehicle->path;

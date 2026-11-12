@@ -1372,6 +1372,7 @@ private:
     void deleteEntityScripted(Entity& e);
     // G_FreeEntity's script part (0x4d7c30 -> 0x4670b0 at 0x4d7ea7): every entity free queues its script object for the VM.
     void freeEntity(Entity& e);
+    void releaseFreedEntityState(Entity& e); // drops the animation state of a freed entity (frame end, savegame load)
     void releaseEntityLinks(Entity& e);
     void unlinkEntity(Entity& e);      // 0x4d6720
     void releaseSentient(Entity& e);   // 0x514d50

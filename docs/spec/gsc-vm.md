@@ -130,6 +130,14 @@ frame still see the object. Each queued object goes through 0x46d1f0, which take
   same way with 1 (0x46d369): calls that no longer hold an endon are ended; if none is left, the 0x1ffff entry is removed
   (0x46c3fd) and the thread ends; otherwise it stays parked.
 - The order of the entries does not change the result: an endon of the freed object is gone before any walk could stop at it.
+- After the notify list is empty, 0x467150 checks whether the object still has variables of its own (its child list is not empty)
+  and, if so, frees all of them (0x464660, which releases every object, array or string the fields held), then drops the extra
+  reference 0x4670b0 took (0x464ea0). So a freed entity's object keeps no fields: a script that still holds a reference to it
+  (an array of squad members, a struct that names it) holds an empty dead object, and what its fields referenced (for an actor
+  its animscript and battlechatter records and through them other actors) is released unless something else holds it. Before
+  the frame end the fields are still readable, as the notify cancel above. openiw2 does the same in the frame-end free pass
+  (src/script/vm.cpp processFreedObjects); without it a struct cycle through a freed actor (its battlechatter records name it)
+  was never released, and every later savegame wrote the freed actors' fields again.
 - Behavioural consequence, shipped `maps/_spawner.gsc` `flood_think`: with no antispawn trigger `flood_trigger` deletes its
   `flood_spawner` trigger in the same frame in which it started the `flood_think` threads (`kill_trigger`), and every one of them
   holds `trigger endon("antispawn")`. Those threads keep running: a refused `dospawn` sleeps in `wait(2)` and retries (trainyard
