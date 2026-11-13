@@ -1224,9 +1224,10 @@ every frame and, with attack held, a timer below 1 restarts at fireTime and shoo
 "Multiplayer"), and the client shows the shot when the turret's event arrives (MP 0x4d7143: the flash of the own
 turret). So the own turret's first shot comes a round trip, up to a game frame and the client's event delay after
 the press; with openiw2's command hold on a bursty path (section 10 "Commands on a bursty path") up to 100 ms more.
-Measured with tests/test_mplag.cpp's turret mode (attack press to the first snapshot with the shot, 2 s bursts):
-wifi 25..109 ms, wifiburst 33..140 ms, spike (85 ms dark every 500 ms) 91..114 ms, wan 81..138 ms, radio (220 ms dark)
-133..316 ms. openiw2 rule (`PredictedTurret`, src/netgame/predictedturret.h; `RemoteView::predictTurret`): while
+Measured with tests/test_mplag.cpp's turret mode on an idle machine (attack press to the first snapshot with the
+shot, one 2 s burst every 6 s for 60 s): wifi 34..82 ms, wifiburst 46..102 ms, wan 93..140 ms, spike (2..4 ms each
+way, 85 ms dark every 500 ms) 92..140 ms, almost all of it the command hold, which the server's trace shows engaged
+for those presses, and the game frame; radio (220 ms dark) 116..357 ms. openiw2 rule (`PredictedTurret`, src/netgame/predictedturret.h; `RemoteView::predictTurret`): while
 the player state says the client is on a turret (the 0x300 eFlags bits and viewLockEntity), every command runs the
 server's rule on the command's own time: the first command with attack after the timer ran out shoots at once, and
 while attack is held the shots follow every 50 · ceil(fireTime / 50) ms (the server's interval), a long command
