@@ -273,7 +273,11 @@ void botTests(const fs::Vfs& vfs) {
                         const net::SnapshotView v = game.snapshot(1);
                         const auto it = v.entities.find(bot);
                         const int la = it == v.entities.end() ? -1 : getI(it->second, 204) & 1023;
-                        sawWire |= la > 0 && la == host.mpLegsAnimWire(bot) && la == cl.anim.legsNode;
+                        // The node on the wire is the climb / mantle animation itself (not, say, a jump the legs still play).
+                        const auto& nodes = be->anim ? be->anim->tree().nodes() : std::vector<game::AnimNode>{};
+                        const std::string name = la > 0 && size_t(la) < nodes.size() ? nodes[size_t(la)].name : std::string();
+                        sawWire |= la == host.mpLegsAnimWire(bot) && la == cl.anim.legsNode &&
+                                   (name.rfind(std::string(k.up ? "pb_climb" : "mp_mantle_"), 0) == 0);
                     }
                     const auto o = be->obj->get("origin").asVector();
                     if (std::hypot(o[0] - b[0], o[1] - b[1]) < 24 && std::fabs(o[2] - b[2]) < 24) break;
