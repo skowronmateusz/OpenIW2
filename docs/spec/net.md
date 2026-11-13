@@ -1451,7 +1451,7 @@ flips it on a new map and on a map_restart.
 ### openiw2 choices (no 1.3 counterpart observed yet)
 
 - Script entities with a model that are spawned at run time (grenades, flags, the bomb, bodies) are eType 6 with their
-  model index (`TODO(spec)`: the 1.3 missile entity type).
+  model index (the 1.3 server's missiles are entity type 4, ded 0x810e720 / 0x810e9a2; `TODO(spec)`: that type's entity state, which openiw2 does not send).
 - Trajectories: a grenade, a rocket and a falling dropped weapon carry their movement in `pos` (and a turning
   grenade in `apos`) as the Quake III trajectory the server itself runs them with (SP 0x4fae80, docs/spec/grenades.md;
   the MP client's trajectory evaluator is 0x513df0 and its entity placement 0x4cda50 evaluates every trajectory but a
@@ -1481,20 +1481,40 @@ flips it on a new map and on a map_restart.
   eventParms[sequence & 3], sequence + 1). There is no separate potato event in multiplayer. The cgame's handler
   (MP 0x4e1524) plays the bounce sound of the entity state's surfaceType (the `grenade_bounce` family by surface,
   registered at MP 0x4bf9c9 by the same per-surface builder as the explosion sounds) at the entity's drawn position and
-  the impact table's grenade bounce effect for that surface; its direction comes from the event parameter through the
-  direction-byte decoder (MP 0x4268c0; `TODO(spec)`: the table is not reproduced, openiw2 points the effect up).
-  Event check (MP 0x4e1a90): an entity's ring is played from the last sequence played, at most the last four; the
-  check runs for the entities of a snapshot when it becomes the next one of the drawn pair (called from MP 0x4dfc4e
-  in the function that sets the next snapshot, which CG_ProcessSnapshots, MP 0x4dfda0, calls once the clock has
-  passed the previous one), and an entity there takes its ring's sequence as played (MP 0x4df29e; `TODO(spec)`: that
-  this per-type branch is the one that runs for an entity's first snapshot). openiw2: the
+  the impact table's grenade bounce effect for that surface (the table's slot +0x2e0 + 4 · surfaceType; no effect, no
+  call). The effect's direction is the event parameter put through the direction-byte decoder (MP 0x4268c0: a byte
+  0..161 selects one of 162 unit vectors in the table at MP 0x5ce768, 12 bytes each; any other value gives the zero
+  vector). As the server's parameter is the surface type and not a coded normal, the direction is a fixed vector per
+  surface, whatever the wall's normal is: e.g. (−0.526, 0, 0.851) for surface 0, straight up for 5 (concrete) and
+  (−0.5, 0.809, 0.309) for 22 (asphalt). An axis is built around it (MP 0x427410) and the effect is played at the
+  entity's position (MP 0x499740). The shipped `fx/iw_impacts.csv` names no effect in any of its 23 `grenade_bounce`
+  rows, so with the game's own data a bounce is only heard; the direction shows with a table that has one.
+  Event check (MP 0x4e1a90): a temporary event entity (eType above 10) plays its event once. Any other entity's ring
+  is played from the last sequence played (cent +0x1e4) up to the ring's sequence, at most the last four; a ring
+  sequence of 0 plays nothing and stores 0, and a sequence below the stored one is taken as having wrapped (the stored
+  one drops by 256). The event's parameter is put into the entity state's eventParm (+0xa0) for the handler and the
+  old value restored. The check runs for the entities of a snapshot when it becomes the next one of the drawn pair
+  (called from MP 0x4dfc4e in the function that sets the next snapshot, which CG_ProcessSnapshots, MP 0x4dfda0, calls
+  once the clock has passed the previous one).
+  What a new entity's ring plays is decided before that check, in the same function: an entity of the next snapshot
+  that was not in the previous one, or whose teleport bit (eFlags 2) differs from its drawn state's, is reset (MP
+  0x4dfb40..0x4dfb5b calling MP 0x4df100), and the reset sets the last played sequence by entity type (the jump table
+  at MP 0x4df2b0): 0 for types 0 (general) and 4 (missile; the server's grenade and rocket launches store type 4, ded
+  0x810e720 and 0x810e9a2), the ring's own sequence for types 1 (player), 3 (item) and every type above 4 (script
+  movers 6, turrets 9; MP 0x4df29e), and for type 2 (a player's body) one or the other (MP 0x4df1f7..0x4df283). So a
+  missile that comes into the snapshot with bounces behind it plays them (its last four at most) when it is first
+  drawn, while a player's, an item's, a script mover's or a turret's ring starts silent. openiw2: the
   server keeps the bounce events per grenade (`GrenadeState::bounceEvents`) and sends them in the grenade's ring with
   `surfaceType`; the network client checks the missiles' rings of the snapshot after the one the missiles are drawn
   from (`RemoteView::missileEvents`, after `placeTrajectories`), so the sound starts where the drawn grenade is; a
   snapshot not newer than the last one checked is skipped (the drawn time steps back with a clock reset, and an older
-  ring would play its last four events again), a much older number (a new connection) starts the rings afresh. Before,
+  ring would play its last four events again), a much older number (a new connection) starts the rings afresh. A
+  model first seen takes 0 as its last played sequence, as the original's missile does; openiw2's server sends its
+  missiles with the script movers' type 6 (`TODO(spec)`: the type 4 entity state, whose model is the weapon's), so the
+  rule is applied to every trajectory model, and only the bounce event is read from the ring. The effect points along
+  the surface's table vector (`World::mpBounceDirection`, the 23 table entries of the surface types; before, straight up). Before,
   the bounce sound and effect played only on the listen host (the server's own world): a network client heard no
-  bounce at all (in 0.2.5 as well). Test: tests/test_mpnetgrenade.cpp (one sound per server bounce event, at the drawn
+  bounce at all (in 0.2.5 as well). Test: tests/test_mpnetgrenade.cpp (the effect along the table vector with a test table; a missile first seen with 2 or 9 events plays 2 or 4; one sound per server bounce event, at the drawn
   grenade, with 20 snapshots a second, one per game frame, and with 60, between the frames).
 - A grenade's spin after a wall bounce: the bounce adds (rand & 0x7f) − 63 to the pitch spin and wraps the sum as an
   angle into [0, 360) (ded 0x810d179..0x810d19d through the AngleMod of ded 0x80a8432, the same as SP 0x525ed0..0x525f27,

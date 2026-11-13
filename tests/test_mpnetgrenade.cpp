@@ -3,6 +3,10 @@
 // at its own drawn time (16 ms render frames between 50 ms snapshots), so the drawn position moves every frame,
 // follows the server's parabola and never steps. Needs IW2_MAIN.
 #include <cmath>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <unistd.h>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -209,6 +213,8 @@ void run(fs::Vfs& vfs, bool steps) {
         if (alias.rfind("grenade_bounce_", 0) == 0) heard.push_back({alias, at ? *at : game::Vec3{0, 0, 0}});
         return 0;
     };
+    view.takeFxEvents();
+    std::vector<game::World::FxEvent> bounceFx; // the effects the bounce events start on the client
     g.host.playerThrowGrenade("frag_grenade_american_mp", {eye[0], eye[1], eye[2] + 60.0f}, {-45.0f, 0.0f, 0.0f}, {0, 0, 0});
     Entity* lob = nullptr;
     for (const auto& e : g.host.entities())
@@ -238,6 +244,7 @@ void run(fs::Vfs& vfs, bool steps) {
         const auto snaps = g.client->snapshotsFrom(t);
         netgame::RemoteView::placeTrajectories(view, snaps, t);
         rv.missileEvents(view, snaps);
+        for (auto& fx : view.takeFxEvents()) bounceFx.push_back(fx);
         if (lob->obj->removed || !lob->grenade) break;
         serverBounces = lob->grenade->bounceEvents.size();
         if (lob->grenade->trType != 5) continue;
@@ -298,6 +305,71 @@ void run(fs::Vfs& vfs, bool steps) {
             nearPath = nearPath || std::fabs(po[0] - h.at[0]) + std::fabs(po[1] - h.at[1]) + std::fabs(po[2] - h.at[2]) < 1.0f;
         CHECK(nearPath);
     }
+    // The bounce effect's direction is the surface type through the direction-byte table (docs/spec/net.md section 11
+    // "Grenade bounces"): one of the table's vectors, not the wall's normal and not always up.
+    {
+        const game::Vec3 up = game::World::mpBounceDirection(5), d0 = game::World::mpBounceDirection(0), d22 = game::World::mpBounceDirection(22);
+        CHECK(up[0] == 0 && up[1] == 0 && up[2] == 1);
+        CHECK(std::fabs(d0[0] + 0.525731f) < 1e-6f && d0[1] == 0 && std::fabs(d0[2] - 0.850651f) < 1e-6f);
+        CHECK(std::fabs(d22[0] + 0.5f) < 1e-6f && std::fabs(d22[1] - 0.809017f) < 1e-6f && std::fabs(d22[2] - 0.309017f) < 1e-6f);
+        for (int k = 0; k < 23; ++k) {
+            const game::Vec3 d = game::World::mpBounceDirection(k);
+            CHECK(std::fabs(d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - 1.0f) < 1e-4f);
+        }
+        const game::Vec3 none = game::World::mpBounceDirection(23), neg = game::World::mpBounceDirection(-1);
+        CHECK(none[0] == 0 && none[1] == 0 && none[2] == 0 && neg[2] == 0);
+        std::cout << "lob: " << bounceFx.size() << " bounce effects on the client\n";
+        int tableDirs = 0;
+        for (const auto& fx : bounceFx)
+            for (int k = 0; k < 23; ++k) {
+                const game::Vec3 d = game::World::mpBounceDirection(k);
+                if (fx.forward[0] == d[0] && fx.forward[1] == d[1] && fx.forward[2] == d[2]) { ++tableDirs; break; }
+            }
+        CHECK(!bounceFx.empty() && bounceFx.size() <= heard.size() && tableDirs == int(bounceFx.size()));
+    }
+    // A missile first seen with bounces behind it plays them, the last four at most (the cgame's reset gives a new
+    // missile the last played sequence 0); a ring sequence of 0 plays nothing.
+    if (const net::ClientSnapshot* base = g.client->latest()) {
+        int number = -1;
+        for (const auto& [n, es] : base->entities)
+            if ((es[4] & 0xff) == netgame::kEtGeneral) number = n;
+        CHECK(number >= 0);
+        if (number >= 0) {
+            auto run = [&](int seq) {
+                net::ClientSnapshot sn = *base;
+                sn.messageNum += 1000 + seq * 10;
+                std::vector<uint8_t> es = sn.entities[number];
+                sn.entities.clear();
+                const int32_t q = seq, ev = netgame::kEvGrenadeBounce, surf = 5;
+                std::memcpy(es.data() + 164, &q, 4);
+                for (int k = 0; k < 4; ++k) std::memcpy(es.data() + 168 + 4 * k, &ev, 4);
+                std::memcpy(es.data() + 136, &surf, 4);
+                sn.entities[900 + seq] = es; // a wire number the view has not seen
+                netgame::RemoteView fresh;
+                const size_t before = heard.size();
+                rv.apply(view, sn, g.client->configstrings, a, view.timeMs()); // the view gets the model
+                netgame::RemoteView::placeTrajectories(view, {&sn}, sn.serverTime);
+                fresh.missileEvents(view, {&sn});
+                return heard.size() - before;
+            };
+            const size_t n0 = run(0), n2 = run(2), n9 = run(9);
+            std::cout << "first sight: sequence 0 -> " << n0 << ", 2 -> " << n2 << ", 9 -> " << n9 << " bounce sounds\n";
+            CHECK(n0 == 0 && n2 == 2 && n9 == 4);
+            // The effect of each surface at that model: where the impact table has one, it points along the surface's vector.
+            view.takeFxEvents();
+            int withFx = 0, wrongDir = 0;
+            for (int k = 0; k < 23; ++k) {
+                view.mpRemoteGrenadeBounce(909, k);
+                const game::Vec3 d = game::World::mpBounceDirection(k);
+                for (const auto& fx : view.takeFxEvents()) {
+                    ++withFx;
+                    if (fx.forward[0] != d[0] || fx.forward[1] != d[1] || fx.forward[2] != d[2]) ++wrongDir;
+                }
+            }
+            std::cout << "bounce effects: " << withFx << " of 23 surfaces have one, " << wrongDir << " not along the table vector\n";
+            CHECK(withFx == 2 && wrongDir == 0);
+        }
+    }
     CHECK(spinChecks >= 10);
     CHECK(spinOff == 0);
     CHECK(spinMoves * 10 >= spinChecks * 9);
@@ -314,8 +386,16 @@ int main() {
     }
     fs::Vfs vfs;
     vfs.mountDirectory(main);
+    // The shipped impact table names no grenade bounce effect for any surface, so the bounce event's effect never plays
+    // with the game's own data. A table of the test gives two surfaces one, to see the effect and its direction.
+    const std::filesystem::path extra = std::filesystem::temp_directory_path() / ("iw2_test_mpnetgrenade_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(extra / "fx");
+    std::ofstream(extra / "fx" / "zz_test_impacts.csv") << "grenade_bounce,wood,fx/test/bounce_wood.efx\n"
+                                                        << "grenade_bounce,concrete,fx/test/bounce_concrete.efx\n";
+    vfs.mountDirectory(extra);
     run(vfs, false);
     run(vfs, true);
+    std::filesystem::remove_all(extra);
     std::cout << (failures ? "mpnetgrenade_e2e: FAILED\n" : "mpnetgrenade_e2e: ok\n");
     return failures ? 1 : 0;
 }

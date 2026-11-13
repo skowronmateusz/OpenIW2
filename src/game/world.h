@@ -643,6 +643,9 @@ public:
     // A network client's grenade bounce event (MP cgame 0x4e1524): grenade_bounce_<surface> at the drawn missile of
     // that wire number and the impact table's grenade bounce effect.
     void mpRemoteGrenadeBounce(int wire, int surface);
+    // The direction the cgame gives that effect: the event parameter (the surface type) through the direction-byte table
+    // (MP 0x4268c0, docs/spec/net.md section 11 "Grenade bounces"); zero outside the surface types.
+    static Vec3 mpBounceDirection(int parameter);
     void mpSetRemoteModels(const std::vector<RemoteModel>& models);
     void mpSetMenuNames(std::vector<std::string> names) { menus_ = std::move(names); }
     bool mpRemote() const { return mpRemote_; }

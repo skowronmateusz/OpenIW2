@@ -667,11 +667,10 @@ void RemoteView::missileEvents(game::World& w, const std::vector<const net::Clie
         if ((getI(es, 4) & 0xff) != kEtGeneral) continue;
         present.insert(number);
         const int seq = getI(es, 164) & 0xff;
+        // First sight: a missile's last played sequence starts at 0 (the cgame's reset of a new entity, by type, MP
+        // 0x4df100), so the bounces it brings along play, the last four at most; a ring sequence of 0 plays nothing.
         auto it = missileSeq_.find(number);
-        if (it == missileSeq_.end()) { // first sight: the ring's events are old (CG reset of a new entity)
-            missileSeq_[number] = seq;
-            continue;
-        }
+        if (it == missileSeq_.end()) it = missileSeq_.emplace(number, 0).first;
         int from = it->second;
         if (((seq - from) & 0xff) > 4) from = (seq - 4) & 0xff; // more than the ring holds: the last four
         for (int q = from; q != seq; q = (q + 1) & 0xff)

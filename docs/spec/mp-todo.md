@@ -45,15 +45,12 @@ at the source. The convention itself (docs/spec/net.md section 1) is not an entr
   `src/netgame/worldgame.cpp:858`).
 - The give's clip fill (the 1.3 pistol has a loaded clip, openiw2 an empty one) (`docs/spec/net.md:738`).
 - Confirm the +0x1728 placement of non-archived HUD elements with a 1.3 server (`docs/spec/net.md:742`).
-- The 1.3 missile entity type (`docs/spec/net.md:750`).
+- The entity state of the 1.3 missile entity type 4, which openiw2 does not send (`docs/spec/net.md`, section 11
+  "Trajectories").
 - The VA of the 1.3 server's trajectory evaluator and the MP cgame's use of the trajectories of entities other than
   players (`docs/spec/net.md:753`).
 - The MP cgame's handling of a re-based trajectory at a bounce (the closest-point hold is openiw2's own rule)
   (`docs/spec/net.md:763`).
-- That the MP cgame's per-type branch at 0x4df29e (the ring's sequence taken as played) is the one that runs for an
-  entity's first snapshot, so a new entity's events are not replayed (`docs/spec/net.md:1489`).
-- The direction of a network client's grenade bounce effect: the cgame decodes the event parameter (the surface type)
-  with the direction-byte table of 0x4268c0, openiw2 points it up (`docs/spec/net.md:1485`, `src/game/mpremote.cpp:219`).
 - A grenade's new spin at a bounce before its snapshot time (`src/netgame/remoteview.cpp:482`).
 - The 1.3 server turns the missile entity itself into the explosion event and sends the direction as a byte in
   eventParm (`docs/spec/net.md:770`, `src/netgame/worldgame.cpp:914`).
