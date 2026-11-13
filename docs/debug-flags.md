@@ -166,7 +166,7 @@ and test_savestate, whose scripts print with `println` and set developer_script 
   the `logPrint` lines, the script errors and the stubbed (unimplemented) builtins the run called; exit code 1 on
   script errors. ctest `mpdm_iw2game` runs it on mp_toujane.
 - iw2view `<main> mp/<map>`: the same offline multiplayer game in the window with the MP key bindings
-  (`default_mp.cfg`): the gametype opens the server info, team and weapon menus for the local client; ESC opens the
+  (`default_mp.cfg`, then the profile's `config_mp.cfg`, docs/spec/controls.md): the gametype opens the server info, team and weapon menus for the local client; ESC opens the
   script main menu (`g_scriptMainMenu`), x the weapon menu, TAB / F4 the scoreboard. Env `IW2_MP_GAMETYPE` (default `g_gametype`, else
   `dm`) picks the gametype; `IW2_MP_AUTOJOIN=1` skips the menus (autoassign and a default weapon, as iw2game does; with `+connect` the client sends those menu responses to the server).
   With `--shot` and `--sim-seconds S`, `IW2_SHOT_MP_RESPONSES=t:menu:response,...` sends the local client's menu

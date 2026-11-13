@@ -12,6 +12,67 @@ only in the console key). Its binds are the defaults: W/S/A/D `+forward` `+back`
 and G `+frag`, 4 `+smoke`, B `+binoculars`, F `+activate`, R `+reload`, SPACE `+gostand`, CTRL `goprone`, C
 `gocrouch`. OpenIW2 reads the file from the game data at start; nothing is hard-coded.
 
+## Profile key tables: single player and multiplayer
+
+Sources: VAs in the patch 1.3 SP executable ("SP") and the patch 1.3 MP executable ("MP"), the shipped
+`default.cfg` / `default_mp.cfg` and `ui/options_control_defaults.menu`.
+
+Single player and multiplayer are separate programs in the original (docs/spec/mp-ui.md "From the single-player menu").
+Each keeps its own key table and its own file in the same profile folder `players/<profile>/`:
+
+- SP: the startup and profile-load exec (SP 0x427460 -> 0x42e170) queues `exec %s` of the default cfg (the name kept
+  at 0x6c03ac), `exec language.cfg`, then `exec %s` of the profile's `config.cfg` (strings 0x573774, 0x575bec, 0x573780).
+- MP: at start (MP 0x434558 -> 0x4257a0) the default cfg is `default_localize_mp.cfg` when that file can be read, else
+  `default_mp.cfg` (0x42583a..0x4258b5, the name kept at 0xb1a5ac). The profile init (0x42d260) reads
+  `players/active.txt` (0x42d1d0); with an existing profile 0x42d0b0 builds `players/<profile>/config_mp.cfg` (0x42d430)
+  and 0x4343a0 queues `exec` of the default cfg, `exec language.cfg`, `exec` of that profile file, runs the buffer, and in
+  safe mode adds `exec safemode_mp.cfg`. Without a profile (0x42d2ff) the same runs without the profile file.
+- Both default cfgs start with `unbindall`, so every start and every profile load builds the key table from the
+  shipped defaults first; the profile file's lines (its own `unbindall` and `bind` lines) then replace them.
+- MP `loadPlayerProfile` (uiScript 0x53564f -> 0x534410 -> 0x42d0f0) writes `players/active.txt`, runs `disconnect`,
+  resets the dvars, sets `com_playerProfile` and runs 0x4343a0 for the new profile's `config_mp.cfg` (defaults, language, profile file), like the
+  SP profile load (docs/spec/savegame.md section 4).
+- Writing (MP 0x434b20, called first in every frame by 0x434f70): when the archive bit 1 of the modified flags
+  (0xc5c580) is set and `com_playerProfile` is not empty, the bit is cleared and `players/<profile>/config_mp.cfg` is
+  written (0x434a90): a header comment, `unbindall`, one `bind` line per bound key (0x40b450), then the archived dvars
+  (0x43a3d0). The console commands `bind`, `unbind` and `unbindall` (registered at 0x40b6e0 with handlers 0x40b200,
+  0x40b150, 0x40b1c0) set that bit (the binding setter at 0x40b0c8, and 0x40b1a0, 0x40b1e1 in the handlers), so a binding
+  change is saved like an archived dvar change. The SP program writes `config.cfg` the same way.
+- So a key changed in the SP menus is not seen by the MP program, and one changed in the MP menus (its options pages are
+  the same `ui/options_*.menu` files, listed by `ui_mp/menus.txt`) is not seen by SP. The controls "reset to defaults"
+  popup runs `exec default.cfg` when `ui_multiplayer` is 0 and `exec default_mp.cfg` when it is 1
+  (`ui/options_control_defaults.menu:129`, `:164`).
+- Joining a server, a map change and a map restart (every new gamestate) do not touch the key table. The only exec of
+  a config after start is in the file-system restart (MP 0x425920, at 0x425ab3..0x425aeb): `exec config_mp.cfg` only when `fs_game` differs from the last valid game folder
+  and the client is not in safe mode. The connect path reaches it from the gamestate parse (0x413dfa, after 0x4139e0,
+  our reading: the systeminfo update) when the server's checksum feed or `fs_game` changed and the dvar at 0xc26108 (our
+  reading: the client does not run the server itself) is 0. The command handler of `unbindall` is only registered
+  (0x40b6fe, 0x434537), never called directly; the `exec` texts given to the command buffer (0x420ad0) are only those of the start, the profile
+  load (0x4343a0, 0x42d2ff) and this restart (`exec %s` 0x5a553c, `exec language.cfg`, `exec safemode_mp.cfg`,
+  `exec configure_mp.cfg`). TODO(spec): whether a map_restart sends a new gamestate in the original (the keys stay
+  either way).
+
+openiw2 (one program for both, src/game/profilekeys.{h,cpp}, used by iw2view):
+- Two tables per profile: SP = `default.cfg` + `players/<profile>/config.cfg`, MP = `default_mp.cfg` +
+  `players/<profile>/config_mp.cfg` (a missing file leaves the defaults). The MP default file is `default_mp.cfg` also in
+  a localized install, as SP uses `default.cfg` (the localized files differ only in the console key).
+- The MP table is the running one while the multiplayer menu set is active, while connected to a network server and
+  while a multiplayer level runs; the SP table otherwise. Switching keeps the other table as it is, and every further level
+  load in multiplayer (map rotation, a server's new gamestate after a map change, map_restart or a round restart) keeps the
+  running table.
+- A profile write puts the archived cvars and the SP table into `config.cfg` and the MP table, once multiplayer was
+  entered, into `config_mp.cfg` (bind lines only). Deviation: the original keeps separate archived dvars per program;
+  openiw2 has one dvar store, saved in `config.cfg` (docs/spec/mp-ui.md), so `config_mp.cfg` holds no `seta` lines.
+- A binding change from the menus or from console text (`bind`, `unbind`, `unbindall`, the reset popup's `exec`) marks
+  the profile for writing.
+- A profile load builds both tables again from the shipped defaults and the new profile's files.
+- The openiw2 key upgrades (developer cheat keys, the F11 -> F12 screenshot move, marker `iw2_keysver`) apply to the SP
+  table only; the cheat keys are never available in multiplayer.
+- `fs_game` mods are not supported, so the restart exec of `config_mp.cfg` has no counterpart.
+- `ui_multiplayer` (1 in the MP program) follows the running table, so the reset popup runs `default_mp.cfg` for the MP
+  table also in a multiplayer game started from the command line, where the single-player menu set is loaded.
+Test: tests/test_profilekeys.cpp (ctest `profilekeys`, and `profilekeys_world` with the game files).
+
 ## Client commands (registration 0x409fe4…0x40a3e4, handlers 0x408b10…0x4093e0)
 
 - `+x` / `-x` press and release a key button (IN_KeyDown 0x408b50 / IN_KeyUp 0x408bd0): up to two keys hold it, the

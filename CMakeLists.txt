@@ -94,7 +94,7 @@ add_library(iw2_game
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/actorslide.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp src/game/grenadehint.cpp
   src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/spawnchecks.cpp src/game/softlock.cpp src/game/firemonitor.cpp src/game/inventorydiff.cpp src/game/grenades.cpp src/game/actorgrenade.cpp src/game/actorevents.cpp
-  src/game/mpgame.cpp src/game/mpkillcam.cpp src/game/maprotation.cpp src/game/mphud.cpp src/game/mpchat.cpp src/game/mpscoreboard.cpp src/game/mpspectate.cpp src/game/mpgametypes.cpp src/game/mpbots.cpp src/game/mpbotcombat.cpp src/game/mpbotgoals.cpp src/game/mpplayers.cpp src/game/playeranimscript.cpp src/game/navgen.cpp src/game/watersim.cpp src/game/clientinput.cpp src/game/playeractions.cpp src/game/playeruse.cpp
+  src/game/mpgame.cpp src/game/mpkillcam.cpp src/game/maprotation.cpp src/game/mphud.cpp src/game/mpchat.cpp src/game/mpscoreboard.cpp src/game/mpspectate.cpp src/game/mpgametypes.cpp src/game/mpbots.cpp src/game/mpbotcombat.cpp src/game/mpbotgoals.cpp src/game/mpplayers.cpp src/game/playeranimscript.cpp src/game/navgen.cpp src/game/watersim.cpp src/game/clientinput.cpp src/game/profilekeys.cpp src/game/playeractions.cpp src/game/playeruse.cpp
   src/game/mpremote.cpp src/game/prone.cpp src/game/proneworld.cpp src/game/savestate.cpp src/game/actorfacing.cpp src/game/actorpredict.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets iw2_ui ZLIB::ZLIB)
@@ -390,6 +390,14 @@ add_test(NAME listbox COMMAND test_listbox)
 add_executable(test_profile tests/test_profile.cpp)
 target_link_libraries(test_profile PRIVATE iw2_ui)
 add_test(NAME profile COMMAND test_profile)
+# The SP and MP key tables of a profile (docs/spec/controls.md "Profile key tables"); with the game files also the shipped defaults.
+add_executable(test_profilekeys tests/test_profilekeys.cpp)
+target_link_libraries(test_profilekeys PRIVATE iw2_game)
+add_test(NAME profilekeys COMMAND test_profilekeys)
+if(IW2_TEST_MAIN)
+  add_test(NAME profilekeys_world COMMAND test_profilekeys)
+  set_tests_properties(profilekeys_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
 add_executable(test_hitmarker tests/test_hitmarker.cpp)
 target_link_libraries(test_hitmarker PRIVATE iw2_game)
 add_test(NAME hitmarker COMMAND test_hitmarker)
