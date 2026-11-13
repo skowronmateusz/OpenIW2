@@ -205,6 +205,26 @@ Weapon field table entries (name 0x58bb8c / 0x58bb78 / 0x58b8c8, offset, type): 
   flash on leaving the scope (`consumeViewFlash`). Brass (event time, 0x4b7730) is not gated by the overlay; the gun is posed so its
   tag exists. TODO(spec): [stays: not read] the exact overlay-active condition of 0x4bc8a0 is approximated by the overlay alpha > 0.01.
 
+## Raise and put-away sounds (weapon registration, exe evidence)
+
+The client's weapon registration looks up each sound key of the weapon file as an alias. For two keys it stores a fixed
+alias when the lookup gives nothing (an empty key, or a name that is not a loaded alias):
+
+- raiseSound (weapon def +0xf4): `weap_raise` (single player 0x4b399d..0x4b39af, string 0x580450; patch 1.3 MP
+  executable 0x4d4abd..0x4d4ad2, string 0x5b62b8);
+- putawaySound (def +0xfc): `weap_putaway` (single player 0x4b3a2d..0x4b3a3f, string 0x580440; MP 0x4d4b4e..0x4d4b63,
+  string 0x5b62a8).
+
+altSwitchSound (def +0xf8) has no such fallback. The raise event 0x9a and the put-away event 0x9b play the stored alias
+(MP event cases 0x4e11e3 / 0x4e11fa, at the player; the same for the own view, another player and a killcam's followed
+client, no player variant). Of the shipped weapon files only `bar_mp` names its own pair (`weap_bar_raise` /
+`weap_bar_putaway`); every other weapon, in single player and in multiplayer, raises with `weap_raise` (a short weapon
+handling sound with layered variants) and puts away with `weap_putaway` (a silent sample). openiw2:
+`weaponRaiseSound` / `weaponPutawaySound` (src/game/playerweapon.h), used by the view weapon and by the event sounds of
+other players and of the killcam (src/game/mpremote.cpp). `TODO(spec)`: the fallback for a key naming an alias that is
+not loaded; openiw2 takes a non-empty key as it is (the shipped files name only loaded aliases). Before, a weapon change
+was silent for every weapon but the BAR.
+
 ## Bullet passes (0x531340)
 One fired bullet can run several passes; each repeats the trace, the AI events, the trigger damage and the impact event, at
 most 12 deep. Damage is the distance damage of the pass (measured from that pass's start) times the pass's factor, truncated.

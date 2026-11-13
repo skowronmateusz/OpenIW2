@@ -15,6 +15,13 @@
 
 namespace iw2::game {
 
+// The raise and put-away sounds of a weapon as the client's weapon registration stores them (SP 0x4b399d / 0x4b3a2d,
+// MP 0x4d4abd / 0x4d4b4e): the weapon file's raiseSound / putawaySound, or the fixed alias weap_raise / weap_putaway
+// when the key is empty. TODO(spec): the registration also falls back when the named alias is not loaded (the lookup
+// result 0); the shipped weapon files name only loaded aliases, so the key is taken as it is here.
+inline std::string weaponRaiseSound(const std::string& key) { return key.empty() ? std::string("weap_raise") : key; }
+inline std::string weaponPutawaySound(const std::string& key) { return key.empty() ? std::string("weap_putaway") : key; }
+
 class PlayerWeapon {
 public:
     using Def = std::map<std::string, std::string>;

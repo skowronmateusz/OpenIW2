@@ -3,6 +3,7 @@
 #include "game/mpgame.h"
 #include "game/mpplayers.h"
 #include "game/playerevents.h"
+#include "game/playerweapon.h"
 #include "game/world.h"
 
 #include <cmath>
@@ -144,8 +145,8 @@ void World::mpRemotePlayerEvent(int client, int event, const std::string& weapon
     case 0x98: play({"reloadStartSound"}); if (pi) pi->reloaded = true; break;                 // reload start (segmented)
     case 0x99: play({"reloadEndSound"}); break;                                                 // reload end
     case 0xa1: play({"rechamberSound"}); break;                                                 // EV_RECHAMBER_WEAPON (the bolt)
-    case 0x9a: play({"raiseSound"}); break;                                                     // EV_RAISE_WEAPON
-    case 0x9b: play({"putawaySound"}); break;                                                   // EV_PUTAWAY_WEAPON
+    case 0x9a: startSound(weaponRaiseSound(weaponField(wn, "raiseSound")), &o); break;          // EV_RAISE_WEAPON (MP 0x4e11e3)
+    case 0x9b: startSound(weaponPutawaySound(weaponField(wn, "putawaySound")), &o); break;      // EV_PUTAWAY_WEAPON (MP 0x4e11fa)
     case 0x9c: play({"altSwitchSound"}); break;                                                 // the switch to the altWeapon
     case 0xa3: play({"meleeSwipeSound"}); break;                                                // EV_MELEE_SWIPE
     case 0xa6: play({"fireSound"}); break;                                                      // EV_USE_OFFHAND (the throw)
@@ -188,8 +189,8 @@ void World::mpFollowEventSound(int event, const std::string& weapon) {
     case mpev::kReloadStart: play({"reloadStartSoundPlayer", "reloadStartSound"}); break;
     case mpev::kReloadEnd: play({"reloadEndSoundPlayer", "reloadEndSound"}); break;
     case mpev::kRechamber: play({"rechamberSoundPlayer", "rechamberSound"}); break;
-    case mpev::kRaiseWeapon: play({"raiseSound"}); break;
-    case mpev::kPutawayWeapon: play({"putawaySound"}); break;
+    case mpev::kRaiseWeapon: playSound(weaponRaiseSound(weaponField(weapon, "raiseSound")), nullptr, nullptr, player_ ? player_->number : -1); break;
+    case mpev::kPutawayWeapon: playSound(weaponPutawaySound(weaponField(weapon, "putawaySound")), nullptr, nullptr, player_ ? player_->number : -1); break;
     case mpev::kAltSwitch: play({"altSwitchSound"}); break;
     case mpev::kMeleeSwipe: play({"meleeSwipeSound"}); break;
     case mpev::kPrepOffhand: play({"pullbackSound"}); break;

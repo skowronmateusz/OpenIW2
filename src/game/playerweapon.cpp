@@ -170,7 +170,9 @@ void PlayerWeapon::equip(const std::string& name, const Def& def) {
     reloadInterrupted_ = false;
     triggerReleased_ = true;
     enter(State::Raising, "raiseAnim", time("raiseTime", 0.5f));
-    playFirst({"raiseSound"}); // event 0x9a (0x4dde44), once per raise (the alt raise re-enters with its own anim)
+    // Event 0x9a (0x4dde44), once per raise (the alt raise re-enters with its own anim). The weapon registration fills an
+    // empty raiseSound with the fixed alias weap_raise (SP 0x4b399d..0x4b39af, MP 0x4d4abd..0x4d4ad2; weaponRaiseSound).
+    sounds_.push_back(weaponRaiseSound(fieldValue("raiseSound")));
     stateEvent(0x9a);
 }
 
@@ -195,7 +197,7 @@ void PlayerWeapon::startDrop(const std::string& next) {
         playFirst({"altSwitchSound"});
         stateEvent(0x9c);
     } else if (std::atoi(fieldValue("clipOnly").c_str()) == 0 || clip_ != 0) {
-        playFirst({"putawaySound"});
+        sounds_.push_back(weaponPutawaySound(fieldValue("putawaySound"))); // an empty one is weap_putaway (SP 0x4b3a35, MP 0x4d4b56)
         stateEvent(0x9b);
     }
 }

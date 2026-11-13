@@ -225,6 +225,7 @@ void offhand() {
     w.lookup = [&](const std::string& n) -> const Def* { return n == "frag" ? &g : &a; };
     w.findOffhand = [](const std::string& cls) { return cls == "Frag Grenade" ? std::string("frag") : std::string(); };
     w.equip("a", a);
+    CHECK(w.takeSounds() == std::vector<std::string>{"weap_raise"}); // no raiseSound: the registration's fixed alias
     PlayerWeapon::Input in;
     in.weapon = "a";
     w.update(0.01f, in);

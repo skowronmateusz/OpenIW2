@@ -242,6 +242,50 @@ int main() {
             }
         }
     }
+    // The weapon change sound (docs/spec/weapons.md "Raise and put-away sounds"): a weapon without raiseSound /
+    // putawaySound raises with weap_raise and puts away with weap_putaway, in the own view, for another player and for
+    // the followed client; a weapon that names its own (the BAR) keeps them.
+    {
+        game::World mp(vfs, "mp_toujane", true);
+        PlayerWeapon pw;
+        pw.lookup = [&](const std::string& n) { return mp.weapon(n); };
+        const auto* mp40 = mp.weapon("mp40_mp");
+        CHECK(mp40 != nullptr);
+        if (mp40) {
+            pw.equip("mp40_mp", *mp40);
+            CHECK(pw.takeSounds() == std::vector<std::string>{"weap_raise"});
+            PlayerWeapon::Input in;
+            in.weapon = "mp40_mp";
+            for (int i = 0; i < 40; ++i) pw.update(0.05f, in);
+            (void)pw.takeSounds();
+            in.weapon = "bar_mp";
+            pw.update(0.05f, in);
+            const auto drop = pw.takeSounds();
+            CHECK(!drop.empty() && drop.front() == "weap_putaway");
+            for (int i = 0; i < 40; ++i) pw.update(0.05f, in);
+            bool barRaise = false;
+            for (const std::string& a : pw.takeSounds()) barRaise = barRaise || a == "weap_bar_raise";
+            CHECK(pw.name() == "bar_mp" && barRaise);
+        }
+        mp.mpStartRemote();
+        game::World::RemotePlayer rp;
+        rp.client = 3;
+        rp.name = "other";
+        rp.origin = {500, 0, 0};
+        mp.mpSetRemotePlayers({rp});
+        std::vector<std::pair<std::string, bool>> sounds;
+        mp.playSound = [&](const std::string& a, const game::Vec3* pos, float*, int) {
+            sounds.emplace_back(a, pos != nullptr);
+            return 0;
+        };
+        mp.mpRemotePlayerEvent(3, 0x9a, "mp40_mp", 0.0f);
+        mp.mpRemotePlayerEvent(3, 0x9b, "mp40_mp", 0.0f);
+        CHECK(sounds.size() == 2 && sounds[0] == std::make_pair(std::string("weap_raise"), true) &&
+              sounds[1] == std::make_pair(std::string("weap_putaway"), true));
+        sounds.clear();
+        mp.mpRemoteFollowEvent(0x9a, "thompson_mp");
+        CHECK(sounds.size() == 1 && sounds[0] == std::make_pair(std::string("weap_raise"), false));
+    }
     std::cout << (failures ? "mpweaponevents: FAILED\n" : "mpweaponevents: OK\n");
     return failures ? 1 : 0;
 }
