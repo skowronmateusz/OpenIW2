@@ -368,6 +368,12 @@ struct Stats {
     std::vector<float> serverBack;
     // A as B receives him, snapshot by snapshot (the server's track of A): the distance per snapshot while A walks.
     std::vector<float> obsStep;
+    // The same walk summed over whole game frames (50 ms of snapshot time): the snapshots between the frames are stamped 16
+    // or 17 ms apart for 16.67 ms of movement, so a single step scaled by its stamp span is 3 % off either way by the
+    // rounding alone, and the two kinds differ by 6 %. The evenness is judged on these.
+    std::vector<float> obsFrameStep;
+    float obsAccDist = 0;
+    int obsAccSpan = 0;
     int clockHolds = 0, clockLeaps = 0, clockFrames = 0; // A's frames whose command time stood (under half the frame) or leapt (over twice)
     int64_t clockLastMs = 0;
     int clockLastCmd = 0;
@@ -722,6 +728,18 @@ struct Run {
                     const int span = last->serverTime - obsLastTime;
                     const float d = std::hypot(p.origin[0] - obsLast[0], p.origin[1] - obsLast[1]) * (span > 0 && span < 50 ? 50.0f / float(span) : 1.0f);
                     obsLastTime = last->serverTime;
+                    if (obsLegOk == dirChangeMs && d < 200.0f && span > 0) {
+                        st.obsAccDist += std::hypot(p.origin[0] - obsLast[0], p.origin[1] - obsLast[1]);
+                        st.obsAccSpan += span;
+                        if (st.obsAccSpan >= 50) {
+                            st.obsFrameStep.push_back(st.obsAccDist * 50.0f / float(st.obsAccSpan));
+                            st.obsAccDist = 0;
+                            st.obsAccSpan = 0;
+                        }
+                    } else {
+                        st.obsAccDist = 0;
+                        st.obsAccSpan = 0;
+                    }
                     if (obsLegOk == dirChangeMs && d < 200.0f) {
                         st.obsStep.push_back(d);
                         if (d < 0.5f) {
@@ -972,7 +990,7 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
     // snapshot"), so the steps of his walk between B's snapshots are alike; where his last command left him they differ
     // by a command (IW2_PLAYER_PLAIN=1 fails here).
     if (prof.name == "loopback") {
-        std::vector<float> steps = s.obsStep;
+        std::vector<float> steps = s.obsFrameStep;
         std::sort(steps.begin(), steps.end());
         const float median = steps.empty() ? 0.0f : steps[steps.size() / 2];
         int walking = 0, uneven = 0;
@@ -981,9 +999,11 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
             ++walking;
             if (std::fabs(d - median) > 0.06f * median) ++uneven;
         }
-        std::printf("%s: A's walk in B's snapshots: %d steps around the median %.2f units, %d more than 6 %% off it\n", prof.name.c_str(), walking,
-                    double(median), uneven);
-        if (walking < int(60 * seconds / 10.0) || uneven * 20 > walking) {
+        std::printf("%s: A's walk in B's snapshots: %d game frames around the median %.2f units, %d more than 6 %% off it\n", prof.name.c_str(),
+                    walking, double(median), uneven);
+        // A that spawned against a wall does not walk (the spawn point is the server's choice): nothing to judge then.
+        if (median < 1.0f) std::printf("%s: A did not walk (median step %.2f): the evenness is not judged in this run\n", prof.name.c_str(), double(median));
+        else if (walking < int(20 * seconds / 10.0) || uneven * 20 > walking) {
             std::printf("FAIL %s: the walking A's places in B's snapshots are uneven\n", prof.name.c_str());
             ok = false;
         }
