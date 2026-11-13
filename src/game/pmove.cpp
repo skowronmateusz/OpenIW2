@@ -1713,6 +1713,12 @@ void addFireSpread(PlayerState& ps, const HipSpread& h, float adsFrac) {
     ps.aimSpread = std::min(ps.aimSpread + h.fireAdd * 255.0f, 255.0f);
 }
 
+int mantleAnimIndex(const PlayerState& ps, const MantleAnims& m) {
+    if (!ps.mantling || ps.mantleTrans < 0 || ps.mantleTrans >= 7) return 0;
+    const MantleTrans& tr = kMantleTrans[ps.mantleTrans];
+    return ps.mantleTimeMs <= animMs(m.anims[size_t(tr.up)]) ? tr.up : tr.over;
+}
+
 bool mantleLowersWeapon(const PlayerState& ps) { return ps.mantling && kMantleTrans[ps.mantleTrans].over != 10; }
 bool moveLowersWeapon(const PlayerState& ps, bool inVehicle) { return mantleLowersWeapon(ps) || ps.onLadder || inVehicle; }
 

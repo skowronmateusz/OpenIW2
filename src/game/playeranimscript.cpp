@@ -223,7 +223,18 @@ const PaItem* PlayerAnimScript::event(const std::string& name, const PaContext& 
     return nullptr;
 }
 
+std::string paMantleMoveType(int mantleAnim) {
+    static const char* const kNames[] = {"mantle_up_57", "mantle_up_51", "mantle_up_45", "mantle_up_39", "mantle_up_33", "mantle_up_27",
+                                         "mantle_up_21", "mantle_over_high", "mantle_over_mid", "mantle_over_low"};
+    return mantleAnim >= 1 && mantleAnim <= 10 ? kNames[mantleAnim - 1] : std::string();
+}
+
+bool paServerOnlyMoveType(const std::string& t) { return t == "climbup" || t == "climbdown" || t.rfind("mantle_", 0) == 0; }
+
 std::string paMoveType(const PaMovement& m, float moveThreshold) {
+    // The mantle move plays its type every step (MP 0x80de377); on a ladder in the air the footsteps step climbs.
+    if (const std::string mt = paMantleMoveType(m.mantleAnim); !mt.empty()) return mt;
+    if (m.climb != 0) return m.climb > 0 ? "climbup" : "climbdown";
     const bool prone = m.viewHeightTarget == 11, crouch = m.viewHeightTarget == 40;
     const bool stumbling = m.damageTimerMs > std::max(m.damageDurationMs - m.stumbleTimeMs, 0);
     if (m.xySpeed < moveThreshold) {

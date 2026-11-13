@@ -1377,7 +1377,10 @@ Names the scripts register later in the game reach the clients as `d <index> <te
   `TODO(spec)`: the server's free-slot delay.
 - Players: entity number = client number, eType 1, clientNum (+0x90) the client, pos.trType 3 with pos.trDuration 50 and the velocity in
   pos.trDelta (section 10 "Commands on a bursty path": pos.trTime is the player state's `commandTime`), apos.trType 1, solid 0x66010f (the packed box: 15 sideways, 1 down, 70 up),
-  groundEntityNum 1022 on the ground, the weapon number, the event ring; eFlags as listed below. openiw2 sends the
+  groundEntityNum 1022 on the ground, the weapon number, the event ring; eFlags as listed below. legsAnim / torsoAnim are
+  the player state's animations (0x80dfe37..0x80dfe4c); openiw2 sends in legsAnim only the multiplayer tree node of a
+  climb or mantle animation, which the client cannot tell from the rest (docs/spec/mp-players.md "Ladder and mantle move
+  types"; `TODO(spec)`: the 1.3 numbering). openiw2 sends the
   snapshot time as pos.trTime, so the trajectory evaluates to the origin and a player is drawn at his origin, where
   the server's hit tests have him, without the original's 50 ms lead (`TODO(spec)`: whether the 1.3 antilag positions
   include that lead).

@@ -61,7 +61,42 @@ PaContext World::mpAnimContext(int client) {
     mv.damageDurationMs = cl.damageDurationMs;
     mv.stumbleTimeMs = int(cvarFloat("player_dmgtimer_stumbleTime", 500.0f));
     mv.flinchYaw = cl.flinchYaw;
+    // Ladder and mantle (docs/spec/mp-players.md "Ladder and mantle move types"). The server's clients: from the recorded
+    // view state their mover fills every move. A network client's puppet: the animation the server sends in legsAnim.
+    if (!mpRemote_) {
+        mv.climb = cl.view.climb;
+        if (cl.view.mantling)
+            if (const MantleAnims* m = mpMantleAnims()) {
+                PlayerState ps;
+                ps.mantling = true;
+                ps.mantleTrans = cl.view.mantleTrans;
+                ps.mantleTimeMs = cl.view.mantleTimeMs;
+                mv.mantleAnim = mantleAnimIndex(ps, *m);
+            }
+        ctx.holdMoveType = cl.view.climb != 0 && cl.view.climbHold;
+    }
     ctx.moveType = paMoveType(mv);
+    if (mpRemote_ && cl.animInput.serverLegsNode > 0)
+        if (const PlayerAnimScript* script = mpAnimScript())
+            if (const AnimTree* tree = animLib_.tree("multiplayer"); tree && size_t(cl.animInput.serverLegsNode) < tree->nodes().size()) {
+                // The climb or mantle move type whose animation the server plays (the one the entity state names).
+                const std::string& anim = tree->nodes()[size_t(cl.animInput.serverLegsNode)].name;
+                static const char* const kTypes[] = {"climbup", "climbdown", "mantle_up_57", "mantle_up_51", "mantle_up_45", "mantle_up_39",
+                                                     "mantle_up_33", "mantle_up_27", "mantle_up_21", "mantle_over_high", "mantle_over_mid",
+                                                     "mantle_over_low"};
+                for (const char* t : kTypes) {
+                    PaContext probe = ctx;
+                    probe.moveType = t;
+                    const PaItem* it = script->animation(t, probe);
+                    bool plays = false;
+                    for (const PaCommand& c : it ? it->commands : std::vector<PaCommand>{})
+                        for (const PaPart& p : c.parts) plays |= p.body != PaBody::Torso && p.anim == anim;
+                    if (plays) {
+                        ctx.moveType = t;
+                        break;
+                    }
+                }
+            }
     ctx.strafing = paStrafing(mv);
     ctx.weaponPosition = cl.animInput.ads ? "ads" : "hip";
     return ctx;
@@ -88,6 +123,7 @@ int World::mpPlayCommand(Entity& e, const PaItem& item, bool restart) {
         a.restart = restart;
         e.anim->set(n, a);
         const int len = duration >= 0 ? duration : animLengthMs(animLib_, p.anim);
+        if (p.body != PaBody::Torso && st) st->legsNode = n;
         if (p.body == PaBody::Torso) {
             if (st) st->torsoHeldUntilMs = now + len, st->torsoActive = true;
         } else if (p.body == PaBody::Both && (!st || now >= st->torsoHeldUntilMs)) {
@@ -127,6 +163,7 @@ void World::mpPlayersFrame() {
         MpPlayerAnim& st = cl.anim;
         if (e->obj->get("sessionstate").toString() != "playing") {
             st.legsItem = nullptr; // a new life starts from its move-type animation
+            st.legsNode = 0;
             st.legsHeldUntilMs = st.torsoHeldUntilMs = 0;
             cl.animInput = MpPlayerInput{};
             cl.damageTimerMs = 0;
@@ -141,6 +178,8 @@ void World::mpPlayersFrame() {
         st.weaponModel = weapon.empty() || weapon == "none" ? std::string() : weaponField(weapon, "worldModel");
         if (e == player_) cl.animInput.ads = playerCmd_.adsFrac >= 0.5f; // the local client's aim (its body is drawn in the killcam)
         PaContext ctx = mpAnimContext(int(ci));
+        // Just after a jump on a ladder the footsteps step chooses nothing: the playing move type goes on.
+        if (ctx.holdMoveType && !st.moveType.empty()) ctx.moveType = st.moveType;
         st.moveType = ctx.moveType;
         // Events of this frame (docs/spec/mp-players.md, "Events").
         auto event = [&](const char* name) {
@@ -208,6 +247,43 @@ namespace iw2::game {
 MpPlayerInput* World::mpPlayerInput(int client) {
     if (!mp_ || client < 0 || size_t(client) >= mp_->clients.size()) return nullptr;
     return &mp_->clients[size_t(client)].animInput;
+}
+
+} // namespace iw2::game
+
+namespace iw2::game {
+
+int World::mpServerOnlyLegsNode(int client, const MpViewState& v) {
+    const PlayerAnimScript* script = mpAnimScript();
+    const AnimTree* tree = animLib_.tree("multiplayer");
+    if (!script || !tree || !mp_ || client < 0 || size_t(client) >= mp_->clients.size()) return 0;
+    PaMovement mv;
+    mv.climb = v.climb;
+    if (v.mantling)
+        if (const MantleAnims* m = mpMantleAnims()) {
+            PlayerState ps;
+            ps.mantling = true;
+            ps.mantleTrans = v.mantleTrans;
+            ps.mantleTimeMs = v.mantleTimeMs;
+            mv.mantleAnim = mantleAnimIndex(ps, *m);
+        }
+    const std::string type = paMoveType(mv);
+    if (!paServerOnlyMoveType(type)) return 0;
+    PaContext ctx = mpAnimContext(client);
+    ctx.moveType = type;
+    const PaItem* it = script->animation(type, ctx);
+    for (const PaCommand& c : it ? it->commands : std::vector<PaCommand>{})
+        for (const PaPart& p : c.parts)
+            if (p.body != PaBody::Torso)
+                if (const int n = tree->find(p.anim); n > 0) return n;
+    return 0;
+}
+
+int World::mpLegsAnimWire(int client, const MpViewState* archived) {
+    if (!mp_ || client < 0 || size_t(client) >= mp_->clients.size()) return 0;
+    if (archived) return mpServerOnlyLegsNode(client, *archived);
+    const MpPlayerAnim& st = mp_->clients[size_t(client)].anim;
+    return paServerOnlyMoveType(st.moveType) ? st.legsNode : 0;
 }
 
 } // namespace iw2::game

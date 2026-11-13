@@ -194,6 +194,10 @@ struct MantleAnims {
 };
 // player_mantle_* animation names by tree index.
 const char* mantleAnimName(int index);
+// The mantle animation of the mantle's phase (MP 0x80dd1b2 in the 1.3 Linux dedicated server): the transition's up animation
+// while the mantle time is at most its length, then its over animation; 0 when not mantling. The third-person move type
+// is 20 + this index (docs/spec/mp-players.md "Ladder and mantle move types").
+int mantleAnimIndex(const PlayerState& ps, const MantleAnims& m);
 // PM_Weapon's weapon change (0x4de880) puts the weapon away while mantling (mantle_enable and pm_flags 4) unless the
 // mantle's over animation is player_mantle_over_low (tree index 10, table 0x5a94bc).
 bool mantleLowersWeapon(const PlayerState& ps);

@@ -60,7 +60,21 @@ struct MpViewState {
     float viewHeight = 60;
     float lean = 0;
     float aimSpread = 255; // ps+0x5b0, 0..255 (the crosshair's spread and alpha)
-    bool operator==(const MpViewState&) const = default;
+    // What the third-person move type needs beyond the stance and velocity (docs/spec/mp-players.md "Ladder and mantle
+    // move types"): on a ladder in the air (pm_flags 0x20, not linked) 1 climbing up or on the spot, -1 down, else 0;
+    // climbHold within 300 ms of a jump (no new move type then); the mantle's transition and time while mantling.
+    // These are for the third-person body only: the killcam's player state does not carry them, so the comparison of two
+    // view states (the view a killcam shows) leaves them out.
+    int climb = 0;
+    bool climbHold = false;
+    bool mantling = false;
+    int mantleTrans = 0;
+    int mantleTimeMs = 0;
+    bool operator==(const MpViewState& o) const {
+        return weapon == o.weapon && viewWeapon == o.viewWeapon && weaponState == o.weaponState && animKey == o.animKey && animMs == o.animMs &&
+               adsFrac == o.adsFrac && adsHeld == o.adsHeld && bobCycle == o.bobCycle && velocity == o.velocity &&
+               viewHeightTarget == o.viewHeightTarget && viewHeight == o.viewHeight && lean == o.lean && aimSpread == o.aimSpread;
+    }
 };
 
 // The weapon-file keys of the view animations in wire order: `weaponAnim` (+1488) of a killcam player state carries the

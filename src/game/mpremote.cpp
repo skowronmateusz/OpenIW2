@@ -82,6 +82,7 @@ void World::mpSetRemotePlayers(const std::vector<RemotePlayer>& players) {
             pi->valid = true;
             pi->move.viewHeightTarget = p.viewHeight;
             pi->move.xySpeed = std::sqrt(p.velocity[0] * p.velocity[0] + p.velocity[1] * p.velocity[1]);
+            pi->serverLegsNode = p.legsAnim; // a climb or a mantle (docs/spec/mp-players.md "Ladder and mantle move types")
         }
     }
     for (size_t i = 1; i < mp_->clients.size(); ++i) {

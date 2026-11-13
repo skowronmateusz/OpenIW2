@@ -584,6 +584,7 @@ public:
         bool hidden = false;   // not playing (spectator): not drawn
         std::string model;                     // body model of the client state ("" keeps the current one)
         std::vector<std::string> attachments;  // attached models of the client state (head, helmet), tag ""
+        int legsAnim = 0;      // the entity state's legsAnim: the server's climb / mantle animation node (0 none)
     };
     void mpStartRemote();
     void mpSetRemotePlayers(const std::vector<RemotePlayer>& players);
@@ -2112,9 +2113,15 @@ private:
     int mpPlayCommand(Entity& e, const PaItem& item, bool restart);
     // The death event: chooses the body's death animation; its duration in ms, -1 when none (lnxded 0x80d96ee).
     int mpDeathAnim(Entity& e);
+    // The move-type node of a climb or mantle move type for the recorded view state `v` of a client (0 for any other).
+    int mpServerOnlyLegsNode(int client, const MpViewState& v);
 public:
     // Whether a client entity is drawn in third person (a multiplayer client other than the local one, playing).
     bool mpPlayerDrawn(const Entity& e) const;
+    // What a client's entity state carries in legsAnim (docs/spec/mp-players.md "Ladder and mantle move types"): the
+    // multiplayer tree node of the climb or mantle animation the server plays on its legs, 0 for any other move type.
+    // With `archived` the node is the one of that recorded view state (the killcam's players of an archived frame).
+    int mpLegsAnimWire(int client, const MpViewState* archived = nullptr);
     // Debug / tests: the bullet's locational trace (default priority map) from `start` to `end` ignoring `pass`; the entity
     // hit (-1 for none) and the hit location name.
     std::pair<int, std::string> debugBulletLocation(const Vec3& start, const Vec3& end, const Entity* pass);

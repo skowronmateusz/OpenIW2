@@ -116,6 +116,44 @@ idle becomes a flinch chosen by the hit's yaw (0x80e5672: 315..45 `flinch_forwar
 for run, `stumble_walk_*` for walk, `stumble_crouch_*` for crouch (types 31-40). Prone has no reaction. The movement scale from the
 timer (0x80e1f20) is 1 with the default `player_dmgtimer_minScale` of 0, so it is not implemented.
 
+## Ladder and mantle move types
+
+VAs in the 1.3 Linux dedicated server. The footsteps step (0x80e572c, called by the move at 0x80e9066) picks a move
+type and calls the script player (0x80d94a6, arguments: the player state, state 3, the move type, 1) in this order:
+- On a map turret (eFlags 0x300, 0x80e57ff): the idle of the stance (`idleprone` with pm_flags 1, `idlecr` with
+  pm_flags 2, else `idle`, 0x80e5815..0x80e589d), nothing else.
+- In the air (groundEntityNum 1023, 0x80e58b8) with pm_type other than 1 (linked) and pm_flags 0x20 (on a ladder,
+  docs/spec/pmove.md): within 300 ms of the last jump (command time minus ps +0x70, at most 299, 0x80e58e9..0x80e58f8)
+  the step ends without choosing; otherwise `climbup` (type 18) while the vertical velocity (ps +0x28) is zero or up,
+  `climbdown` (19) while it goes down (0x80e5960..0x80e59b6). The climb also advances the bob cycle (docs/spec/pmove.md).
+- In the air otherwise, and after the climb choice: the step ends there unless a stance change is under way (pm_flags
+  & 3 differ from the stance of the view height target, 0x80e1532: 40 → 2, 11 → 1, else 0; 0x80e5a26..0x80e5a34), so
+  the animation that started before the player left the ground goes on.
+- On the ground: the idle / walk / run types of the previous section.
+The mantle move (0x80de260, while mantling) plays move type 20 + the mantle animation index each step (0x80de357..
+0x80de377). The index comes from the mantle transition table (0x8184d00, 12-byte entries {up animation, over animation,
+height}, the same table as the single-player one, docs/spec/pmove.md "Mantle") by the mantle's transition (+8 of the
+mantle state at ps +0x5bc): the up animation while the mantle time (+4) is at most the up animation's length, then the
+over animation (0x80dd1b2). The move types are named by the table at 0x81848c0 (8-byte entries): 20 `mantle_root`,
+21..27 `mantle_up_57` .. `mantle_up_21`, 28..30 `mantle_over_high`, `mantle_over_mid`, `mantle_over_low`; the
+`playeranim.script` blocks of 18, 19 and 21..30 play `pb_climbup`, `pb_climbdown` and the `mp_mantle_*` animations on both
+body parts (`playeranim.script:703-806`). A mantle is in the air, so the footsteps step chooses nothing over it.
+
+openiw2 applies the climb and the mantle types and the 300 ms hold after a jump on a ladder; a client on a turret does
+not move, so the ground rule gives it the same idle; the airborne hold (no new type in the air) is not applied
+(`TODO(spec)`: it would need the puppets' ground state, which the network client does not get), so a jump shows the
+types of the speed it has.
+
+What reaches the other clients: the player state's legs and torso animations (ps +0x7c, ps +0x84) go into the
+entity state's legsAnim and torsoAnim (0x80dfe37..0x80dfe4c, the player state to entity state copy), so every client
+plays the server's choice. openiw2's clients choose the move type themselves from the entity state (stance flags,
+velocity, docs/spec/net.md section 11), which carries nothing about a ladder or a mantle: the server sends in legsAnim
+the node number in the multiplayer animation tree of the animation it plays for a climb or mantle move type (0 for
+any other), and the client uses the move type whose animation that is. TODO(spec): the 1.3 numbering of legsAnim and
+its toggle bit (as for the body). The killcam's archived players carry it from their recorded view state.
+TODO(spec): how the client advances a move type's animation (a climb on the spot is still played at the animation's
+own rate, as walking is).
+
 ## Events
 
 - `fireweapon` when the client fires, `reload` when a reload starts, `jump` on a jump: the first matching item's
@@ -160,5 +198,5 @@ SP G_Damage (combat.cpp `hitLocationMultiplier`). TODO(spec): the server site th
 
 Torso pitch to the view (the bone list initialised with `J_Spine4` at MP 0x4df0d0; the strings `fTorsoPitch` /
 `fWaistPitch` at 0x5aa600 / 0x5aa60c name tunables): the body is drawn with the animation pose only. Leg yaw against
-the torso, the turning node, mantling, ladder climbing, MG42 mounting, flinches, stumbles, the transition events
+the torso, the turning node, MG42 mounting, flinches, stumbles, the transition events
 (stand_to_crouch ...), sounds of commands.

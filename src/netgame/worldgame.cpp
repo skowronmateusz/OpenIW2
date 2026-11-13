@@ -1062,6 +1062,9 @@ void WorldGame::writePlayerEntity(std::vector<uint8_t>& es, int client, const En
     if (client >= 0 && size_t(client) < w_->mpState().clients.size()) flags |= game::mpTeleportBit(w_->mpState().clients[size_t(client)].spawnCount);
     putI(es, 8, flags);
     putI(es, 200, weaponNumber(e.obj->get("$weapon").toString()));
+    // legsAnim (+204): the climb or mantle animation the server plays, which the client cannot tell from the rest
+    // (docs/spec/mp-players.md "Ladder and mantle move types"; TODO(spec): the 1.3 numbering, as for the body).
+    if (const int la = w_->mpLegsAnimWire(client); la > 0 && la < 1024) putI(es, 204, la);
     // The weapon events of a player (docs/spec/net.md section 13): the event ring, and the lean of a network player.
     if (auto o = otherRings_.find(client); o != otherRings_.end()) {
         const EventRing& r = o->second.second;
@@ -1440,6 +1443,7 @@ net::SnapshotView WorldGame::snapshot(int slot) {
             else if (ac.view.viewHeightTarget <= 40) flags |= kEfCrouch;
             putI(es, 8, flags);
             putI(es, 200, weaponNumber(ac.weapon));
+            putI(es, 204, w_->mpLegsAnimWire(int(n), &ac.view) & 1023); // its climb or mantle of that frame
             putF(es, 212, ac.view.lean);
             putI(es, 164, ac.ring.sequence & 0xff);
             for (int i = 0; i < 4; ++i) {

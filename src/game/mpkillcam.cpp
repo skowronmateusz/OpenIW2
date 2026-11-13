@@ -56,6 +56,14 @@ MpViewState mpViewStateOf(const PlayerWeapon& w, const PlayerState& ps) {
     v.viewHeight = ps.viewHeight;
     v.lean = ps.lean;
     v.aimSpread = ps.aimSpread;
+    // The footsteps step's ladder branch (MP 0x80e58b8..0x80e59b6): in the air, not linked, on a ladder.
+    if (!ps.onGround && ps.onLadder && ps.pmType != 1) {
+        v.climb = ps.velocity[2] >= 0 ? 1 : -1;
+        v.climbHold = ps.timeMs - ps.lastJumpMs < 300;
+    }
+    v.mantling = ps.mantling;
+    v.mantleTrans = ps.mantleTrans;
+    v.mantleTimeMs = ps.mantleTimeMs;
     return v;
 }
 

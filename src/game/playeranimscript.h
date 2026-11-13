@@ -45,6 +45,7 @@ struct PaContext {
     std::string strafing = "not";       // not / left / right
     bool mounted = false;
     bool firing = false;
+    bool holdMoveType = false; // not a condition: the footsteps step chooses nothing this frame (a climb just after a jump)
 };
 
 class PlayerAnimScript {
@@ -80,9 +81,17 @@ struct PaMovement {
     // player_dmgtimer_stumbleTime ms of a hit replace the move type.
     int damageTimerMs = 0, damageDurationMs = 0, stumbleTimeMs = 500;
     float flinchYaw = 0;
+    // Ladder and mantle (docs/spec/mp-players.md "Ladder and mantle move types"): climb 1 up (or on the spot) / -1 down on
+    // a ladder in the air; mantleAnim the mantle animation index 1..10 of the mantle's phase (0 not mantling).
+    int climb = 0;
+    int mantleAnim = 0;
 };
 
 std::string paMoveType(const PaMovement& m, float moveThreshold = 10.0f);
+// The move type of a mantle animation index (1..10: mantle_up_57 .. mantle_up_21, mantle_over_high / mid / low), "" else.
+std::string paMantleMoveType(int mantleAnim);
+// A climb or mantle move type: the ones the network client cannot tell from the entity state (it gets their animation).
+bool paServerOnlyMoveType(const std::string& moveType);
 // TODO(spec): the strafing value (docs/spec/mp-players.md).
 std::string paStrafing(const PaMovement& m);
 
