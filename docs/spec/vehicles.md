@@ -516,6 +516,14 @@ reaches a tank or truck whose file has armorPiercingDamage 1 (toujane_ride's des
 `weapon` field instead (as for actors) lost the flag and made that tank immune. Implemented as `World::vehicleIgnoresDamage`
 (tests/test_itempickup.cpp). The libya tanks (tiger etc.) have bulletDamage 0, so the MP40 no longer hurts them.
 
+## Turret attacker
+`fireturret` (0x514260) calls Bullet_Fire (0x531340) with the vehicle entity as its second argument (0x514819, `ebx`, after the 8192.0
+range pushed at 0x5147ec); Bullet_Fire loads that argument (0x5313e4) and passes it to G_Damage as both the inflictor and the attacker
+(0x531930..0x531933). A player riding the vehicle is not the attacker: "damage" / "death" callbacks see the vehicle. matmata's Stuka
+attack depends on it: each plane waits for damage whose attacker is `level.flakgun` (`maps/matmata.gsc:1335-1345`), so only the flak
+gun's shots count. openiw2: the `fireturret` builtin passes the vehicle to fireBullet as shooter and attacker; tests/test_matmataflak.cpp
+runs the whole attack (use, gun swap, kills, next mission).
+
 ## Collision after destruction
 
 The vehicle's collision brush model (vehicle +0xe) and contents (+0xc0 = 0x800000, 0xa00000 with spawnflag 1) are set by
