@@ -491,12 +491,15 @@ void World::actorPainNode(Entity& e, Entity* attacker, bool nodeRelease) {
 }
 
 // The die callback (0x4ff530): unless already dying, every state is finished and replaced by death, the actor
-// stops counting as alive for requests (+0x25c), and the current animscript is killed.
+// stops counting as alive for requests (+0x25c), the entity's targetname is cleared (0x4ff618..0x4ff630), and the current
+// animscript is killed. Without the targetname clear a dead actor (and its corpse) is still found by getentarray, and waits such as
+// matmata's wave counters (maps/matmata.gsc:805) never end.
 void World::actorDie(Entity& e, Entity* attacker) {
     (void)attacker;
     if (e.ai.stack[size_t(e.ai.depth)] == AiDeath) return;
     aiKillState(e, AiDeath);
     e.ai.alive = false;
+    e.obj->set("targetname", Value());
     killActorAnimScript(e);
 }
 
@@ -612,6 +615,9 @@ void World::trimCorpses() {
 // The corpse state of the entities lives in the table. A save without a table (format below 7): every actor dead in the death state
 // takes a slot through the picker, so such a save is bounded as well (openiw2 only; the corpse flag was not saved then).
 void World::restoreCorpses(const std::array<int, kCorpseSlots>* saved) {
+    // Saves written before the die callback cleared the targetname (openiw2 only): a dead actor loses it here, as it did when it died.
+    for (const auto& ep : entities_)
+        if (ep->isActor && !ep->isSpawner && !ep->obj->removed && !ep->ai.alive) ep->obj->set("targetname", Value());
     corpses_.clear();
     corpses_.setCount(kCorpseSlots);
     auto mark = [this](Entity& e) {

@@ -292,7 +292,14 @@ the engine has no 1 s sight age), refreshed by 0x54ca60 (TODO(spec): non-sentien
 **Damage.** G_Damage notifies "death" (attacker) when health ≤ 0 and calls the die callback, else the pain callback.
 Pain (0x4ff3b0): damage fields, the state's damaged handler, the attacker's "last attacked" (+0x1780)
 = now, push 6; when pushed, 0x53ac40. Die (0x4ff530): unless the state is death: damage fields, kill
-→ 5, +0x25c = 0, 0x53ac40.
+→ 5, +0x25c = 0, the sentient's +0x28 = the attacker argument (0x4ff60f..0x4ff615), the entity's targetname (+0x120, entity
+field table 0x56f4a8 entry 5) is released and set to 0 (0x4ff618..0x4ff630), then 0x53ac40.
+- Targetname clear: from the moment of death getent / getentarray (0x4fa1f0 / 0x4fa290 walk every entity in use and compare the
+  field, with no actor or corpse test) no longer find the actor or the corpse it becomes by its targetname. Scripts rely on it:
+  matmata's courtyard waves rename their spawned actors (`maps/matmata.gsc:668`) and wait until fewer than two entities carry the
+  name (`maps/matmata.gsc:805-817`); the flak gun and Stuka sequence starts only after the last wave (`maps/matmata.gsc:754-795`).
+  Without the clear the first wave never ends. The other natives (target, script_noteworthy, script_linkname) stay. openiw2: World::actorDie;
+  saves written before this rule clear the targetname of every dead actor at load (World::restoreCorpses). tests/test_deadtargetname.cpp.
 - Pain: start 0x54d2a0 (+0xa4 = now, clear path, `pain` (0, 4)); think 0x54d340: after the start
   frame, once the script thread has ended → pop and think again; else notify "pain", perception, facing 1, `pain`
   (0, 4); finish 0x54d300 broadcasts the pain AI event (0x535770).
@@ -1149,7 +1156,7 @@ one client-side selection (0x4b95d7, not decoded). World::syncEntityClips gives 
 
 Script object on demand. An entity gets a script object when script is handed it (0x467450 then 0x46f000, as in getent at 0x4fa264, and in
 the touch overflow at 0x528ccf). After the conversion that can only come from a lookup: getent / getentarray walk the entities by the
-targetname, target, script_noteworthy, script_linkname or classname, and a corpse keeps those natives. Shipped scripts do such lookups some
+targetname, target, script_noteworthy, script_linkname or classname, and a corpse keeps those natives, except the targetname, which the die callback already cleared (see "Damage"). Shipped scripts do such lookups some
 1700 times with literal keys, on map-start actors and on `dospawn(name)` copies too, so no proof of "never read" is possible; the rule itself is
 exact instead. The field dispatch (0x4f9d00) takes an actor field through entity +0x100 and a sentient field through +0x104, and reads
 nothing when the pointer is null; the actor free nulls both (0x4fca45, 0x4fca60). Script variables stayed on the released object. So a corpse
