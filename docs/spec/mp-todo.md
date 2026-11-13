@@ -239,6 +239,10 @@ Bots are openiw2's own design; the points raised here are decisions, stated at t
 
 ## Turrets
 
+- Where the 1.3 cgame plays the player variants (loopFireSoundPlayer, stopFireSoundPlayer) for the local gunner's
+  turret, whose entity state carries loopFireSound and whose stop event carries stopFireSound
+  (`docs/spec/turrets.md:388`, `src/game/mpturret.cpp:168`).
+
 - The AI-turret fields 0x4e7150(+0x294, +0x298), the bumped-sentient team branch 0x54aafa..0x54ab45, the
   actor-turret link itself, 0x54e3f0 / 0x503e10 with the start argument, and the debug string at actor +0x21a0
   (`docs/spec/turrets.md:148`).

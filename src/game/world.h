@@ -627,6 +627,10 @@ public:
     // A turret shot from the snapshots (EV_FIRE_WEAPON_MG42 on the turret entity): the flash at tag_flash, the shot's
     // sound, view shake and impact as in the turret fire (traced here, no damage) and the fire loop sound.
     void mpRemoteTurretFire(Entity& turret);
+    // A network client's turret sounds (docs/spec/turrets.md "Multiplayer"): the loop of the turret's entity state
+    // (loopSound, "" for none) and a stop sound event (0xb3) of its ring; the own turret's sounds are the weapon's
+    // player variants.
+    void mpSetRemoteTurretSound(Entity& turret, const std::string& loop, const std::string& stop);
     // A network client places a model with a trajectory (a grenade, a rocket, a falling weapon) at the time it draws
     // (docs/spec/net.md section 11 "Trajectories"); such an entity carries $nettraj and is not lerped by the world tick.
     void mpPlaceRemoteModel(int wire, const Vec3& origin, const Vec3* angles);
@@ -1901,6 +1905,7 @@ private:
     void syncEntityClips(); // src/game/entityclips.cpp
     void thinkTurret(Entity& t);
     void turretFireSound(Entity& t, bool playerOwner);
+    void setTurretLoop(Entity& t, const std::string& loop); // the turret's loop sound: started, changed or stopped
     void shootTurret(Entity& t);
     bool turretTag(Entity& t, const char* tag, Vec3& pos);
     bool turretAnglesTo(Entity& t, const Vec3& point, Vec3& angles);

@@ -9510,6 +9510,8 @@ int main(int argc, char** argv) {
                         netgame::RemoteView::placeTrajectories(*world, trajSnaps, trajTime);
                         remoteView.missileEvents(*world, trajSnaps); // bounce sounds where the drawn grenade is
                     }
+                    // Map turrets: shots, stop sounds and the fire loop at the drawn pair's newer snapshot (docs/spec/turrets.md).
+                    if (snapB) remoteView.turretEvents(*world, *snapB, netClient->configstrings);
                     // Other players' shots, reloads and throws: sounds, impacts, animations (docs/spec/net.md section 13).
                     remoteView.playerEvents(*world, *last, netClient->configstrings, netClient->clientNum);
                     // The followed client's shots in a killcam (the player state's event ring).

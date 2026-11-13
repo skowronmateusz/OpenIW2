@@ -41,6 +41,7 @@ struct TurretState {
     int fireCountdownMs = 0;     // +0x6c
     std::string loopSound;       // entity +6 (es.loopSound) as an alias, "" for none
     int loopHandle = -1;         // the started loop sound
+    int stopSounds = 0;          // stop fire sounds played (a network server sends each as the sound event 0xb3)
     bool inUse = false;          // entity +0x112
     script::ObjectPtr owner;     // entity +0xf4 while in use
     // Player use (0x51db50 … 0x51b3d0).

@@ -362,8 +362,14 @@ void World::turretFireSound(Entity& t, bool playerOwner) {
             const std::string playerStop = weaponField(ts.weapon, "stopFireSoundPlayer");
             const Vec3 at = t.obj->get("origin").asVector();
             startSound(playerOwner && !playerStop.empty() ? playerStop : stop, &at);
+            ++ts.stopSounds;
         }
     }
+    setTurretLoop(t, loop);
+}
+
+void World::setTurretLoop(Entity& t, const std::string& loop) {
+    TurretState& ts = *t.turret;
     if (loop != ts.loopSound) {
         if (ts.loopHandle > 0) stopSound(ts.loopHandle);
         ts.loopHandle = -1;
@@ -618,7 +624,8 @@ void World::thinkTurret(Entity& t) {
         owner = nullptr;
     }
     if (owner && owner->isPlayer) return; // the player aims
-    turretFireSound(t, false);
+    // A network client's turret sounds follow the server's entity state and events (mpSetRemoteTurretSound).
+    if (!mpRemote_) turretFireSound(t, false);
     const bool ai = ts.flags & 1u, automatic = ts.flags & 2u;
     // Enemy team of the turret team (table {0, 2, 1, 0, 0} in 0x51c400): axis ↔ allies, others none.
     const std::string enemyTeam = ts.team == 1 ? "allies" : ts.team == 2 ? "axis" : "";

@@ -34,6 +34,7 @@ enum NetEvent : int {
     kEvPutawayWeapon = 0x9b,
     kEvFireWeapon = 0x9e,
     kEvFireWeaponLastShot = 0xa0,
+    kEvSoundAlias = 0xb3,       // a sound at the entity (parm: the sound index; 0x811f32e), e.g. a turret's stop fire sound
     kEvGrenadeBounce = 0xbb,    // a grenade's bounce, on the missile (parm: the surface type; 0x810d5ba)
     kEvFireWeaponMg42 = 0xaf,   // a turret's shot, on the turret entity (parm: the gunner's entity number)
     kEvRechamberWeapon = 0xa1,

@@ -299,6 +299,7 @@ private:
     std::vector<Event> events_;
     // The fire events of the players that are not network clients (the host, bots): MP client -> (shots seen, ring).
     std::map<int, std::pair<int, EventRing>> turretRings_; // map turrets (entity number): shots seen, fire events
+    std::map<int, int> turretStopsSeen_;                   // map turrets: stop fire sounds seen
     std::map<int, std::pair<size_t, EventRing>> grenadeRings_; // grenades (entity number): bounces seen, bounce events
     std::map<int, std::pair<int, EventRing>> otherRings_;  // map entities: origin and angles at the start (sent once moved)
 };

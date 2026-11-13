@@ -455,18 +455,6 @@ void RemoteView::apply(game::World& w, const net::ClientSnapshot& snap, const st
                     if (e->turret) {
                         e->turret->pitch = getF(es, 104);
                         e->turret->yaw = getF(es, 108);
-                        // Its shots: each new EV_FIRE_WEAPON_MG42 of the event ring (first sight: none replayed).
-                        const int seq = getI(es, 164) & 0xff;
-                        auto ts = turretSeq_.find(number);
-                        if (ts == turretSeq_.end()) {
-                            turretSeq_[number] = seq;
-                        } else {
-                            int from = ts->second;
-                            if (((seq - from) & 0xff) > 4) from = (seq - 4) & 0xff;
-                            for (int s = from; s != seq; s = (s + 1) & 0xff)
-                                if ((getI(es, 168 + 4 * (s & 3)) & 0xff) == kEvFireWeaponMg42) w.mpRemoteTurretFire(*e);
-                            ts->second = seq;
-                        }
                     }
                 }
             if (m.mapNumber >= 0) models.push_back(m);
@@ -580,6 +568,42 @@ void RemoteView::placeTrajectories(game::World& w, const std::vector<const net::
             w.mpPlaceRemoteModel(number, {o[0], o[1], o[2]}, turns ? &angles : nullptr);
         }
     }
+}
+
+void RemoteView::turretEvents(game::World& w, const net::ClientSnapshot& s, const std::map<int, std::string>& cs) {
+    if (!s.valid || s.messageNum == turretEventsSnapshot_) return;
+    turretEventsSnapshot_ = s.messageNum;
+    const auto sound = [&](int index) {
+        const std::string* n = index > 0 ? cfg(cs, kSoundConfigstrings + index - 1) : nullptr;
+        return n ? *n : std::string();
+    };
+    std::set<int> present;
+    for (const auto& [number, es] : s.entities) {
+        if ((getI(es, 4) & 0xff) != kEtTurret || number < kFirstMapEntity) continue;
+        game::Entity* e = nullptr;
+        for (const auto& p : w.entities())
+            if (p->mapIndex > 0 && kFirstMapEntity + p->mapIndex - 1 == number) e = p.get();
+        if (!e || !e->turret) continue;
+        present.insert(number);
+        // Its shots and stop sounds: each new event of the ring (first sight: none replayed).
+        std::string stop;
+        const int seq = getI(es, 164) & 0xff;
+        if (auto ts = turretSeq_.find(number); ts == turretSeq_.end()) {
+            turretSeq_[number] = seq;
+        } else {
+            int from = ts->second;
+            if (((seq - from) & 0xff) > 4) from = (seq - 4) & 0xff;
+            for (int q = from; q != seq; q = (q + 1) & 0xff) {
+                const int ev = getI(es, 168 + 4 * (q & 3)) & 0xff;
+                if (ev == kEvFireWeaponMg42) w.mpRemoteTurretFire(*e);
+                else if (ev == kEvSoundAlias) stop = sound(getI(es, 184 + 4 * (q & 3)) & 0xff);
+            }
+            ts->second = seq;
+        }
+        // The fire loop of its entity state.
+        w.mpSetRemoteTurretSound(*e, sound(getI(es, 132) & 0xff), stop);
+    }
+    std::erase_if(turretSeq_, [&](const auto& t) { return !present.count(t.first); });
 }
 
 void RemoteView::missileEvents(game::World& w, const std::vector<const net::ClientSnapshot*>& snaps) {

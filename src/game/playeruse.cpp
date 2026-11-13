@@ -496,13 +496,9 @@ void World::releasePlayerTurret(Entity& t) {
 // and attack fires every fireTime (0x51b2b0: timer −50 per frame; at ≤ 0 with attack the timer restarts at
 // fireTime and 0x51b250 shoots); the fire countdown runs down (0x51b320). Otherwise the player gets off.
 void World::thinkPlayerTurret() {
-    // A network client's turret is run by the server; its state comes from the snapshots (mpSetRemoteTurret) and only
-    // the fire loop sound of its shots (mpRemoteTurretFire) runs here.
-    if (mpRemote_) {
-        if (playerOnTurret() && playerTurret_ && playerTurret_->turret && !playerTurret_->obj->removed)
-            turretFireSound(*playerTurret_, true);
-        return;
-    }
+    // A network client's turret is run by the server; its state comes from the snapshots (mpSetRemoteTurret) and its
+    // sounds from the turret's entity state and events (mpSetRemoteTurretSound).
+    if (mpRemote_) return;
     if (!playerOnTurret() || !playerTurret_) return;
     Entity& t = *playerTurret_;
     if (t.obj->removed || !t.turret) { // 0x51da40: a freed turret releases its user

@@ -85,6 +85,14 @@ constexpr int kHudText = 1, kHudValue = 2, kHudTimer = 3, kHudMaterial = 4, kHud
 
 }  // namespace
 
+// A key of a weapon file (lower case), "" when the weapon or the key is missing.
+static std::string weaponKey(game::World& w, const std::string& weapon, const char* key) {
+    const auto* def = w.weapon(weapon);
+    if (!def) return {};
+    const auto it = def->find(key);
+    return it == def->end() ? std::string() : it->second;
+}
+
 int ConfigstringRange::index(const std::string& nameIn) {
     if (nameIn.empty()) return -1;
     std::string name = nameIn;
@@ -323,6 +331,7 @@ void WorldGame::setWorld(World* w, std::string map, std::string gametype, int se
     moves_.clear();
     otherRings_.clear();
     turretRings_.clear();
+    turretStopsSeen_.clear();
     grenadeRings_.clear();
     sentOffhand_.clear();
     framePrev_.clear(), frameCur_.clear(), subPlaces_.clear();
@@ -1634,6 +1643,9 @@ net::SnapshotView WorldGame::snapshot(int slot) {
             if (e->turret) {
                 putF(es, 104, e->turret->pitch);
                 putF(es, 108, e->turret->yaw);
+                // The fire loop while the fire countdown runs (0x810b926: loopSound = loopFireSound's index).
+                if (!e->turret->loopSound.empty())
+                    if (const int li = sounds_.index(weaponKey(*w_, e->turret->weapon, "loopfiresound")); li >= 0) putI(es, 132, li + 1);
                 if (auto r = turretRings_.find(e->number); r != turretRings_.end()) {
                     const EventRing& ring = r->second.second;
                     putI(es, 164, ring.sequence);
@@ -1865,6 +1877,14 @@ void WorldGame::forwardToClients() {
                 if (u->obj == e->turret->owner) user = u->number;
         for (int i = std::max(seen, count - 4); i < count; ++i) ring.push(kEvFireWeaponMg42, user);
         seen = count;
+        // The end of the fire loop (0x810b926): the stop sound as the sound event 0xb3 with the sound's index.
+        int& stops = turretStopsSeen_[e->number];
+        if (e->turret->stopSounds < stops) stops = e->turret->stopSounds;
+        if (e->turret->stopSounds > stops) {
+            const int si = sounds_.index(weaponKey(*w_, e->turret->weapon, "stopfiresound"));
+            for (; stops < e->turret->stopSounds; ++stops)
+                if (si >= 0) ring.push(kEvSoundAlias, si + 1);
+        }
     }
     // Grenade bounces (0x810d5ba: G_AddEvent on the missile, EV_GRENADE_BOUNCE with the surface type of the hit).
     std::set<int> grenades;

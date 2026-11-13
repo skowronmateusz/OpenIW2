@@ -5,6 +5,7 @@
 // the turret and kills a second client in front of it with the turret weapon in the obituary, and a second use press
 // gets it off. Run on a listen server (gunner = MP client 2) and on a dedicated-style server where the gunner is MP
 // client 0, the client whose player state is the World's own. Needs IW2_MAIN.
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -147,9 +148,29 @@ void run(fs::Vfs& vfs, bool listen) {
     std::string flashFx;
     if (const auto* wd = view.weapon("30cal_stand_mp"))
         if (const auto it = wd->find("worldflasheffect"); it != wd->end()) flashFx = it->second;
+    // The turret's sounds in the front end (the loop and its stop come from the server's entity state and events).
+    struct Played { std::string alias; int handle; bool stopped = false; };
+    std::vector<Played> played;
+    view.playSound = [&](const std::string& alias, const game::Vec3*, float*, int) {
+        played.push_back({alias, int(played.size()) + 1});
+        return int(played.size());
+    };
+    view.stopSound = [&](int h) {
+        if (h > 0 && size_t(h) <= played.size()) played[size_t(h - 1)].stopped = true;
+    };
+    auto count = [&](const std::string& alias) { return int(std::count_if(played.begin(), played.end(), [&](const Played& p) { return p.alias == alias; })); };
+    auto looping = [&](const std::string& alias) {
+        return std::any_of(played.begin(), played.end(), [&](const Played& p) { return p.alias == alias && !p.stopped; });
+    };
+    std::string loopPlr, stopPlr;
+    if (const auto* wd = view.weapon("30cal_stand_mp")) {
+        if (const auto it = wd->find("loopfiresoundplayer"); it != wd->end()) loopPlr = it->second;
+        if (const auto it = wd->find("stopfiresoundplayer"); it != wd->end()) stopPlr = it->second;
+    }
     auto show = [&]() {
         if (const net::ClientSnapshot* snap = cg.net->latest()) {
             rv.apply(view, *snap, cg.net->configstrings, gunner, view.timeMs());
+            rv.turretEvents(view, *snap, cg.net->configstrings);
             psf = netgame::readPs(snap->ps);
             predicted = netgame::predictPlayer(view.collision(), psf, cg.net->commandsAfter(psf.commandTime), &predicted);
             view.frame();
@@ -226,6 +247,30 @@ void run(fs::Vfs& vfs, bool listen) {
     }
     CHECK(killed);
     CHECK(lockFired);
+    // A stretch without snapshots while attack is held (a bursty path): the front end's world runs on, the fire loop
+    // goes on and no stop sound plays; the loop is the own turret's player variant.
+    const int stopsHeld = count(stopPlr);
+    for (int i = 0; i < 6; ++i) {
+        g.frame();
+        view.frame();
+    }
+    for (int i = 0; i < 4; ++i) {
+        g.frame();
+        show();
+    }
+    std::cout << label << ": loop " << loopPlr << " playing " << looping(loopPlr) << ", stop sounds while held " << count(stopPlr) - stopsHeld << "\n";
+    CHECK(!loopPlr.empty() && !stopPlr.empty());
+    CHECK(looping(loopPlr));
+    CHECK(count(stopPlr) == stopsHeld);
+    // Attack released: the server's stop sound event plays once and the loop ends.
+    cg.buttons = 0;
+    for (int i = 0; i < 8; ++i) {
+        g.frame();
+        show();
+    }
+    std::cout << label << ": after the release: stop sounds " << count(stopPlr) - stopsHeld << ", loop playing " << looping(loopPlr) << "\n";
+    CHECK(count(stopPlr) == stopsHeld + 1);
+    CHECK(!looping(loopPlr));
     // The front end plays the turret's shots (EV_FIRE_WEAPON_MG42 on the turret): the muzzle flash at tag_flash.
     std::cout << label << ": flashes " << flashes << " shots " << t->turret->fireCount << "\n";
     CHECK(!flashFx.empty());
