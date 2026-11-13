@@ -186,7 +186,10 @@ private:
     UdpSocket sock_;
     ConnectionlessServer oob_;
     std::vector<Client> clients_;
+    // The entity baselines of the level: built once, for the first gamestate after newMap, and sent unchanged in every
+    // gamestate of that level; the snapshots code a new entity against them (docs/spec/net.md section 4, "Gamestate").
     std::map<int, std::vector<uint8_t>> baselines_;
+    bool baselinesBuilt_ = false;
     int64_t lastNowMs_ = 0;
     const bool frameTrace_ = [] { const char* e = std::getenv("IW2_NET_TRACE"); return e && std::atoi(e) >= 2; }();
     int64_t startMs_ = -1;

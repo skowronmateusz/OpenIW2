@@ -1237,6 +1237,17 @@ if(IW2_TEST_MAIN)
   set_tests_properties(mpdedicatedghost_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}" TIMEOUT 300)
 endif()
 
+# Bodies and dropped weapons of network clients that kill each other, go through their killcams and join again
+# (tests/test_mpbodies.cpp): iw2server as a child process, three scripted network clients; every client keeps every body
+# and item it saw, sees the same ones as the others and draws them (the baselines are the level's, docs/spec/net.md).
+add_executable(test_mpbodies tests/test_mpbodies.cpp)
+target_link_libraries(test_mpbodies PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpbodies_e2e COMMAND test_mpbodies)
+  set_tests_properties(mpbodies_e2e PROPERTIES TIMEOUT 240 ENVIRONMENT
+    "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache;IW2_BODIES_SERVER=$<TARGET_FILE:iw2server>")
+endif()
+
 # No test writes a session log into the real log folder (docs/logging.md): every test runs with IW2_LOG=0 and a log
 # folder in the build tree (tests/iw2server_log.sh turns the log on for its own temp folder).
 get_property(IW2_ALL_TESTS DIRECTORY PROPERTY TESTS)

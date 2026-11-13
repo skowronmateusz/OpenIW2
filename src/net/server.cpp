@@ -147,6 +147,7 @@ void Server::sendOutOfBand(const NetAddress& to, const std::string& text) {
 
 void Server::newMap(int newServerId) {
     serverId = newServerId;
+    baselinesBuilt_ = false; // the new level's baselines come with its first gamestate
     if (mapStarted_) snapFlags ^= 4;
     mapStarted_ = true;
     for (Client& c : clients_) {
@@ -582,7 +583,12 @@ void Server::sendGamestate(int slot) {
         ops.writeBigString(text);
     }
     std::vector<uint8_t> zero(kEntityStateSize, 0);
-    baselines_ = game_.baselines();
+    // Built once per level: a client that joins later must decode a new entity against the same baselines as the
+    // clients that joined earlier, since every snapshot codes it against this one set.
+    if (!baselinesBuilt_) {
+        baselines_ = game_.baselines();
+        baselinesBuilt_ = true;
+    }
     for (const auto& [number, state] : baselines_) {
         ops.writeByte(kGsBaseline);
         ops.writeBits(number, kEntityNumberBits);

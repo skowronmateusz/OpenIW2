@@ -324,6 +324,65 @@ void snapshotRateTest() {
     slow.disconnect();
 }
 
+
+// The baselines are made once per level (docs/spec/net.md section 4, "Gamestate"): a client that joins later gets the
+// baselines the first client got, although the game's entities have changed since, and only a new map makes new ones.
+struct ChangingGame : StubGame {
+    int baselineCalls = 0;
+    std::map<int, std::vector<uint8_t>> baselines() override {
+        ++baselineCalls;
+        std::vector<uint8_t> e(kEntityStateSize, 0);
+        putI(e, 4, 2 + baselineCalls); // another eType each time the game is asked
+        return {{100 + baselineCalls, e}};
+    }
+};
+
+void baselineOnceTest() {
+    MemoryUdp network;
+    ChangingGame game;
+    Server server(game, 11);
+    server.maxClients = 4;
+    server.serverId = 77;
+    if (!server.open(0)) return;
+    NetAddress addr;
+    NetAddress::parse("127.0.0.1:" + std::to_string(server.port()), addr, 28960);
+    GameClient first, later;
+    first.name = "first", later.name = "later";
+    int64_t now = 9000;
+    auto run = [&](int ms) {
+        for (int i = 0; i < ms; ++i) {
+            ++now;
+            for (GameClient* c : {&first, &later}) {
+                if (c->state() == ClientState::Disconnected) continue;
+                c->poll(now, 0);
+                if (c->state() >= ClientState::Primed && now % 8 == 0) {
+                    UserCmd u;
+                    u.serverTime = c->commandTime(now);
+                    c->sendCommand(u, now);
+                }
+            }
+            server.poll(now, 0);
+        }
+    };
+    CHECK(first.connect(addr, now));
+    run(400);
+    CHECK(first.state() == ClientState::Active);
+    CHECK(later.connect(addr, now));
+    run(400);
+    CHECK(later.state() == ClientState::Active);
+    CHECK(game.baselineCalls == 1);
+    CHECK(first.baselines == later.baselines);
+    CHECK(later.baselines.count(101) == 1 && later.baselines.size() == 1);
+    // A new map: the next gamestates carry the new level's baselines, the same for both.
+    server.newMap(78);
+    run(800);
+    CHECK(game.baselineCalls == 2);
+    CHECK(first.baselines.count(102) == 1 && first.baselines == later.baselines);
+    std::printf("baselines: %d built for two gamestates of a level and one more after a new map\n", game.baselineCalls);
+    first.disconnect();
+    later.disconnect();
+}
+
 // The wait for packets ends when the next frame is due (docs/spec/net.md section 10 "Server cadence"): a poll asked
 // to wait 40 ms with the frame due in 3 ms returns within a few ms, and the next poll runs that frame.
 void frameWaitTest() {
@@ -347,6 +406,7 @@ void frameWaitTest() {
 
 int main() {
     frameWaitTest();
+    baselineOnceTest();
     playoutTests();
     snapshotRateTest();
     MemoryUdp network;

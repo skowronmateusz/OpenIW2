@@ -174,7 +174,17 @@ the decompressed buffer.
   - 2: configstring: `int16 index` (0..2047, else fatal), big string. The texts are stored back to back in a buffer
     of 0x20000 bytes (overflow is fatal).
   - 3: baseline: entity number in 10 bits (0..1023), then the entity frame body of section 7 relative to an all-zero
-    entity state.
+    entity state. The baselines are made once per level (VAs in the 1.3 Linux dedicated server): the server's map
+    start (0x80938f0) copies the entity state of every entity from 1 to the entity count whose byte +0xf0 is set
+    (`TODO(spec)`: that byte; the linked flag fits) into a fixed array (0x8092c86 -> 0x844261c, 0x174 bytes per
+    entity), and every gamestate of that level writes the entries of that
+    array (0x808f4c4..0x808f533: each entry whose number is set, as op 3); the snapshots code an entity the delta
+    frame lacks against the same array (the entity list below). A client that joins while the level runs thus gets the
+    baselines every other client has. openiw2 builds them with the level's first gamestate and keeps them until the
+    next map (`net::Server`, a new level through `newMap`); built anew for each gamestate, a later joiner's baselines
+    replaced the ones the earlier clients decode against, and each entity new to their delta frame (a new body or
+    dropped weapon, the live entities after a killcam, a snapshot without a delta) came out wrong for them: bodies and
+    weapons gone, or of the wrong type.
   - 7: end, followed by `int32 clientNum` and `int32 checksumFeed` (the base of the user-command key, section 6).
 - Snapshot (6, MP 0x4136c0): `int32 serverTime`; `uint8 deltaNum` (0 = not delta-coded, otherwise the frame
   `messageNum - deltaNum`, where messageNum is the netchan sequence of this message); `uint8 snapFlags`; the player
@@ -1412,6 +1422,8 @@ Names the scripts register later in the game reach the clients as `d <index> <te
   multiplayer animation tree in both (`TODO(spec)`: the 1.3 animation numbering and its toggle bit). The client draws
   a body with its client's body model and the attached models of that client state, plays the animation of legsAnim
   once from the body's first snapshot and keeps its last frame; a dropped weapon has the weapon's world model.
+  `TODO(spec)`: the model of a body whose client has left (no client state) or joined again and not spawned yet (no
+  body model in its client state); openiw2 draws such a body only once its client state has a body model again.
 - Player eFlags (observed with two test clients): 4 crouched, 8 prone, 0x40 while firing: the movement code clears it every
   command and sets it when the attack button is held, pm_type is not 5, pm_flags has no 0x1000, the weapon state
   (+0xd8) is 0 or 3 and a further check passes (0x80e8bc6..0x80e8c38; `TODO(spec)`: 0x80ed5fc). The bits 0x20 / 0x40
