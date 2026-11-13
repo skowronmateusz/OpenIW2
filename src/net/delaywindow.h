@@ -1,5 +1,5 @@
 // The arrival delays of a stream of time-stamped messages over the last stretch of real time (docs/spec/net.md
-// section 10, "Client time on a bursty path" and "Commands on a bursty path"): snapshots on the client, command
+// section 10, "Commands on a bursty path"): the command
 // packets on the server. openiw2, no 1.3 counterpart.
 #pragma once
 

@@ -7,6 +7,8 @@
 //     snapshot's origin (a correction of the prediction);
 //   - how far A's track falls back from the furthest point of the current leg: on the server (A's snapshots), as A
 //     draws himself (the prediction with the error decay) and as B draws him (interpolated between snapshots).
+//   - how long after A drew himself at a place B draws him there, on the straight part of a leg (the whole path: A's
+//     commands, the server, the snapshot, B's clock).
 // Default profiles: "wan" (40-45 ms each way, +-10 ms jitter, 1.5 % loss, 2 % reordered) and "wifiburst" (a LAN peer
 // on Wi-Fi: 2-25 ms each way, +-15 ms jitter, 1 % loss and stretches of 80-180 ms that lose every datagram). A snap
 // above kMaxSnap units fails the test. "radio" (a LAN peer whose radio leaves the channel: both directions held for 220 ms
@@ -366,6 +368,12 @@ struct Stats {
     std::vector<float> serverBack;
     // A as B receives him, snapshot by snapshot (the server's track of A): the distance per snapshot while A walks.
     std::vector<float> obsStep;
+    // The same walk summed over whole game frames (50 ms of snapshot time): the snapshots between the frames are stamped 16
+    // or 17 ms apart for 16.67 ms of movement, so a single step scaled by its stamp span is 3 % off either way by the
+    // rounding alone, and the two kinds differ by 6 %. The evenness is judged on these.
+    std::vector<float> obsFrameStep;
+    float obsAccDist = 0;
+    int obsAccSpan = 0;
     int clockHolds = 0, clockLeaps = 0, clockFrames = 0; // A's frames whose command time stood (under half the frame) or leapt (over twice)
     int64_t clockLastMs = 0;
     int clockLastCmd = 0;
@@ -374,6 +382,7 @@ struct Stats {
     int drawnFrames = 0, drawnStands = 0, drawnJumps = 0;
     float drawnMax = 0;
     std::vector<int> drawnLead;
+    std::vector<int> seenDelay; // ms between A drawing himself at a place and B drawing him there
     int snapGaps = 0, snapGapsLong = 0; // snapshots received while measuring, those more than one frame after the previous
     int presses = 0, selectFlips = 0, serverWeaponChanges = 0; // IW2_LAG_ASWITCH
     std::vector<int> turretUse, turretFire, turretOff; // IW2_LAG_TURRET
@@ -393,6 +402,8 @@ struct Run {
     int64_t aSpawnMs = 0;
     int aPm = -1;
     bool haveSelf = false, haveOther = false;
+    int obsLastTime = 0; // the snapshot time of obsLast
+    std::deque<std::pair<int64_t, float>> selfTrail; // A's own drawn place along the walk, by wall time
     game::Vec lastSelf{}, lastOther{};
     Retreat rSelf, rOther, rServer;
     int64_t drawnLastMs = 0;
@@ -418,6 +429,12 @@ struct Run {
         c->vfs = &vfs;
         c->gc = std::make_unique<net::GameClient>();
         c->gc->name = name;
+        // IW2_LAG_SNAPS=<A>[,<B>]: the snapshots a second each client asks for (docs/debug-flags.md).
+        if (const char* sn = std::getenv("IW2_LAG_SNAPS")) {
+            int sa = 0, sb = 0;
+            const int got = std::sscanf(sn, "%d,%d", &sa, &sb);
+            if (got >= 1) c->gc->snaps = name == "lagB" && got >= 2 ? sb : sa;
+        }
         c->gc->connectTimeoutMs = 30000;  // the level load of the other client holds this one's frames
         net::NetAddress a;
         // IW2_LAG_REMOTE=<host:port>: the clients go straight to that server (a real path), no relay.
@@ -695,17 +712,34 @@ struct Run {
                 const float back = rSelf.add(d[0] * walkDir, dirChangeMs);
                 if (back > 0.01f) st.selfBack.push_back(back);
             }
+            selfTrail.emplace_back(now, d[0] * walkDir);
+            while (selfTrail.size() > 400) selfTrail.pop_front();
             lastSelf = d;
             haveSelf = true;
         } else {
             const net::ClientSnapshot *a = nullptr, *b = nullptr;
             float frac = 0;
-            if (!c.gc->interpolation(c.gc->renderTime(netNow), a, b, frac)) return;
+            if (!c.gc->interpolation(double(c.gc->renderTime(netNow)) + c.gc->timeFraction(), a, b, frac)) return;
             const int aNum = netgame::RemoteView::worldSlot(clients[0]->gc->clientNum, c.gc->clientNum);
             if (newSnap && measuring && now - dirChangeMs > 900 && clients[0]->menuStack.empty())
                 for (const auto& p : netgame::RemoteView::players(*last, *last, 0.0f, c.gc->clientNum, c.gc->configstrings)) {
                     if (p.client != aNum || p.dead || p.hidden) continue;
-                    const float d = std::hypot(p.origin[0] - obsLast[0], p.origin[1] - obsLast[1]);
+                    // Per 50 ms of snapshot time (the snapshots between the frames are 16 or 17 ms apart).
+                    const int span = last->serverTime - obsLastTime;
+                    const float d = std::hypot(p.origin[0] - obsLast[0], p.origin[1] - obsLast[1]) * (span > 0 && span < 50 ? 50.0f / float(span) : 1.0f);
+                    obsLastTime = last->serverTime;
+                    if (obsLegOk == dirChangeMs && d < 200.0f && span > 0) {
+                        st.obsAccDist += std::hypot(p.origin[0] - obsLast[0], p.origin[1] - obsLast[1]);
+                        st.obsAccSpan += span;
+                        if (st.obsAccSpan >= 50) {
+                            st.obsFrameStep.push_back(st.obsAccDist * 50.0f / float(st.obsAccSpan));
+                            st.obsAccDist = 0;
+                            st.obsAccSpan = 0;
+                        }
+                    } else {
+                        st.obsAccDist = 0;
+                        st.obsAccSpan = 0;
+                    }
                     if (obsLegOk == dirChangeMs && d < 200.0f) {
                         st.obsStep.push_back(d);
                         if (d < 0.5f) {
@@ -748,7 +782,9 @@ struct Run {
                     deathShotWall = 0;
                 }
             }
-            for (const auto& p : netgame::RemoteView::players(*a, *b, frac, c.gc->clientNum, c.gc->configstrings)) {
+            auto drawn = netgame::RemoteView::players(*a, *b, frac, c.gc->clientNum, c.gc->configstrings);
+            netgame::RemoteView::extrapolate(drawn, c.gc->pastNewestMs(double(c.gc->renderTime(netNow)) + c.gc->timeFraction()));
+            for (const auto& p : drawn) {
                 if (p.client != aNum || p.dead || p.hidden) continue;
                 const game::Vec o{p.origin[0], p.origin[1], p.origin[2]};
                 // B draws A one interpolation delay later: A's direction change shows up ~ a round trip later.
@@ -766,6 +802,18 @@ struct Run {
                         if (step > kDrawnJump && step < 200.0f) ++st.drawnJumps;
                         if (step < 200.0f) st.drawnMax = std::max(st.drawnMax, step);
                         st.drawnLead.push_back(last->serverTime - c.gc->renderTime(netNow));
+                        // How long ago A drew himself where B draws him now (the whole path: A's commands, the server,
+                        // the snapshot, B's clock), on a straight leg.
+                        if (now - dirChangeMs > 1500 && step > 0.3f) {
+                            const float at = o[0] * walkDir;
+                            for (size_t k = selfTrail.size(); k-- > 1;)
+                                if (selfTrail[k - 1].second <= at && selfTrail[k].second >= at) {
+                                    const float span = selfTrail[k].second - selfTrail[k - 1].second;
+                                    const float f = span > 0 ? (at - selfTrail[k - 1].second) / span : 0.0f;
+                                    st.seenDelay.push_back(int(now - selfTrail[k - 1].first - int64_t(f * float(selfTrail[k].first - selfTrail[k - 1].first))));
+                                    break;
+                                }
+                        }
                         if (std::getenv("IW2_LAG_TRACE") && step > kDrawnJump) std::printf("drawn t=%lld A moved %.1f in a frame of %d ms\n", (long long)netNow, double(step), dt);
                     }
                 }
@@ -791,7 +839,7 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
     setenv("IW2_NET_TRACE", "1", 1);
     if (std::getenv("IW2_LAG_REMOTE")) {
         server.port = 28960; // not started: the clients connect to the remote server
-    } else if (!server.start(serverExe, {mainDir, std::getenv("IW2_LAG_MAP") ? std::getenv("IW2_LAG_MAP") : "mp_toujane", "dm", "--port", "0", "--bots", std::getenv("IW2_LAG_BOTS") ? std::getenv("IW2_LAG_BOTS") : "0", "--maxclients", "20", "+set", "scr_dm_timelimit", "0",
+    } else if (!server.start(serverExe, {mainDir, std::getenv("IW2_LAG_MAP") ? std::getenv("IW2_LAG_MAP") : "mp_toujane", "dm", "--port", "0", "--bots", std::getenv("IW2_LAG_BOTS") ? std::getenv("IW2_LAG_BOTS") : "0", "--maxclients", "20", "+set", "sv_snaps", std::getenv("IW2_LAG_SVSNAPS") ? std::getenv("IW2_LAG_SVSNAPS") : "60", "+set", "scr_dm_timelimit", "0",
                                   "+set", "scr_dm_scorelimit", "0"})) {
         std::cerr << "cannot start the server\n";
         return false;
@@ -902,12 +950,21 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
                 s.obsStep.size(), double(s.maxOf(s.obsStep)), s.over(s.obsStep, 20.0f), s.obsStalls);
     std::printf("%s: A's command clock: %d frames, stood in %d, leapt in %d\n", prof.name.c_str(), s.clockFrames, s.clockHolds, s.clockLeaps);
     {
+        if (!s.seenDelay.empty()) {
+            std::vector<int> sd = s.seenDelay;
+            std::sort(sd.begin(), sd.end());
+            std::printf("%s: B draws A where A drew himself %d ms before (median; 10%% %d, 90%% %d, 99%% %d; %zu frames)\n", prof.name.c_str(), sd[sd.size() / 2],
+                        sd[sd.size() / 10], sd[sd.size() * 9 / 10], sd[sd.size() * 99 / 100], sd.size());
+        }
         std::vector<int> lead = s.drawnLead;
         std::sort(lead.begin(), lead.end());
         std::printf("%s: A as B draws him: %d frames, without a move %d, step over %.1f units %d (max %.1f); drawn time %d ms before the newest snapshot (median)\n",
                     prof.name.c_str(), s.drawnFrames, s.drawnStands, double(kDrawnJump), s.drawnJumps, double(s.drawnMax), lead.empty() ? 0 : lead[lead.size() / 2]);
     }
     std::printf("%s: snapshots: %d, %d of them more than one server frame (50 ms) after the previous one\n", prof.name.c_str(), s.snapGaps, s.snapGapsLong);
+    for (const auto& c : run.clients) // the whole connection: how many came as a delta of an earlier one, how many could not be read
+        std::printf("%s: %s got %d snapshots, %d of them deltas, %d dropped\n", prof.name.c_str(), c->gc->name.c_str(), c->gc->snapshots, c->gc->deltaSnapshots,
+                    c->gc->droppedSnapshots);
     auto pct = [&](const char* what, std::vector<int> h) {
         if (h.empty()) return;
         std::sort(h.begin(), h.end());
@@ -933,7 +990,7 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
     // snapshot"), so the steps of his walk between B's snapshots are alike; where his last command left him they differ
     // by a command (IW2_PLAYER_PLAIN=1 fails here).
     if (prof.name == "loopback") {
-        std::vector<float> steps = s.obsStep;
+        std::vector<float> steps = s.obsFrameStep;
         std::sort(steps.begin(), steps.end());
         const float median = steps.empty() ? 0.0f : steps[steps.size() / 2];
         int walking = 0, uneven = 0;
@@ -942,9 +999,11 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
             ++walking;
             if (std::fabs(d - median) > 0.06f * median) ++uneven;
         }
-        std::printf("%s: A's walk in B's snapshots: %d steps around the median %.2f units, %d more than 6 %% off it\n", prof.name.c_str(), walking,
-                    double(median), uneven);
-        if (walking < int(60 * seconds / 10.0) || uneven * 20 > walking) {
+        std::printf("%s: A's walk in B's snapshots: %d game frames around the median %.2f units, %d more than 6 %% off it\n", prof.name.c_str(),
+                    walking, double(median), uneven);
+        // A that spawned against a wall does not walk (the spawn point is the server's choice): nothing to judge then.
+        if (median < 1.0f) std::printf("%s: A did not walk (median step %.2f): the evenness is not judged in this run\n", prof.name.c_str(), double(median));
+        else if (walking < int(20 * seconds / 10.0) || uneven * 20 > walking) {
             std::printf("FAIL %s: the walking A's places in B's snapshots are uneven\n", prof.name.c_str());
             ok = false;
         }
@@ -958,7 +1017,7 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
         ok = false;
     }
     // A path that is dark at regular times: the clock must settle and run evenly (docs/spec/net.md section 10
-    // "Client time on a bursty path").
+    // "Client time: the even clock").
     if (prof.darkPeriodMs > 0 && (s.clockHolds > 0 || s.clockLeaps > 0)) {
         std::printf("FAIL %s: the command clock stood or leapt\n", prof.name.c_str());
         ok = false;

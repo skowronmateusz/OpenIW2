@@ -47,6 +47,14 @@ int main() {
         ShockEndSound k;
         CHECK(k.update(true, 4000, 1000, 3000) == A::PlayEnd);
         CHECK(k.update(true, 9000, 5000, 3000) == A::PlayEnd);    // a new shock already past its end: end again, no abort
+        // The stamp is the end time: the same shock seen with a start moved by a few ms long after its end counts as another
+        // one and starts the end sound again, with the overshoot as the sample offset (which the stream start then refuses
+        // when it is past the sample). A network client must therefore keep one start per shock (docs/spec/mp.md).
+        ShockEndSound m;
+        CHECK(m.update(true, 4000, 1000, 3000) == A::PlayEnd && m.offsetMs() == 0);
+        CHECK(m.update(true, 12000, 1000, 3000) == A::None);
+        CHECK(m.update(true, 12000, 1017, 3000) == A::PlayEnd && m.offsetMs() == 12000 - 4017);
+        CHECK(m.update(true, 12016, 1017, 3000) == A::None);
     }
     const ShockRecord r = parseShockFile(
         "cg_shock_screenBlendTime \"0.5\"\n"

@@ -10,10 +10,12 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <map>
 #include <utility>
 #include <vector>
 
 #include "net/client.h"
+#include "net/gameclient.h"
 #include "net/netfields.h"
 #include "net/server.h"
 
@@ -187,6 +189,22 @@ void playoutTests() {
         }
         CHECK(!held);
     }
+    // Long frames of the client itself (300 ms without a packet, twice within the window; each packet's newest command
+    // carries the client's time of the moment it was sent): the packets are not late, so this is no bursty path and
+    // nothing is held.
+    {
+        CommandPlayout p;
+        bool held = false;
+        for (int now = 0; now < 6000; now += 5) {
+            const bool stalled = (now >= 2000 && now < 2300) || (now >= 2900 && now < 3200);
+            if (now % 10 == 0 && !stalled) p.packet(now, now - 60);
+            if (now % 50 == 0) {
+                (void)p.due(now);
+                held = held || p.holding();
+            }
+        }
+        CHECK(!held);
+    }
     // A queue that only grows (commands far in the future) is cut at maxQueue.
     {
         CommandPlayout p;
@@ -201,6 +219,109 @@ void playoutTests() {
         CHECK(p.due(950).size() == 600 - p.maxQueue);
         CHECK(p.flush().size() == p.maxQueue && p.waiting() == 0);
     }
+}
+
+// docs/spec/net.md section 10 "Snapshot rate": a server that offers 60 snapshots a second cuts the 50 ms frame into
+// three steps. A client that asks for 60 gets a snapshot at every step, stamped with the frame's time plus the step;
+// one that asks for 20 gets one per frame as before; the game is asked for the places of every step once; a client
+// the game takes out of the steps (a killcam) falls back to one per frame without a time that goes back.
+struct RateGame : StubGame {
+    std::vector<int> prepared;           // snapshot times prepareSubFrame was called for
+    std::map<int, std::vector<int>> at;  // per slot: the times snapshotAt built
+    int perFrame = 0;                    // snapshots built through snapshot() directly
+    bool allowSlot0 = true;
+    void prepareSubFrame(int subMs) override { prepared.push_back(time + subMs); }
+    SnapshotView snapshotAt(int slot, int subMs) override {
+        at[slot].push_back(time + subMs);
+        SnapshotView v = StubGame::snapshot(slot);
+        v.serverTime = time + subMs;
+        return v;
+    }
+    SnapshotView snapshot(int slot) override {
+        ++perFrame;
+        return StubGame::snapshot(slot);
+    }
+    bool subFrameAllowed(int slot) override { return slot != 0 || allowSlot0; }
+};
+
+void snapshotRateTest() {
+    MemoryUdp network;
+    RateGame game;
+    Server server(game, 9);
+    server.maxClients = 4;
+    server.serverId = 77;
+    server.snapshotHz = 60;
+    if (!server.open(0)) return;
+    NetAddress addr;
+    NetAddress::parse("127.0.0.1:" + std::to_string(server.port()), addr, 28960);
+    GameClient fast, slow;
+    fast.name = "fast", slow.name = "slow";
+    fast.snaps = 60, slow.snaps = 20;
+    int64_t now = 7000;
+    CHECK(fast.connect(addr, now));
+    std::vector<int> fastTimes, slowTimes;
+    auto run = [&](int ms) {
+        for (int i = 0; i < ms; ++i) {
+            ++now;
+            for (GameClient* c : {&fast, &slow}) {
+                if (c->state() == ClientState::Disconnected) continue;
+                c->poll(now, 0);
+                if (c->state() >= ClientState::Primed && now % 8 == 0) {
+                    UserCmd u;
+                    u.serverTime = c->commandTime(now);
+                    c->sendCommand(u, now);
+                }
+            }
+            server.poll(now, 0);
+            if (const ClientSnapshot* s = fast.latest(); s && (fastTimes.empty() || fastTimes.back() != s->serverTime)) fastTimes.push_back(s->serverTime);
+            if (const ClientSnapshot* s = slow.latest(); s && (slowTimes.empty() || slowTimes.back() != s->serverTime)) slowTimes.push_back(s->serverTime);
+        }
+    };
+    run(400);
+    CHECK(fast.state() == ClientState::Active);
+    CHECK(slow.connect(addr, now));
+    run(400);
+    CHECK(slow.state() == ClientState::Active);
+    fastTimes.clear(), slowTimes.clear(), game.prepared.clear(), game.at.clear();
+    run(2000);
+    // The client that asked for 60: every step, 16 or 17 ms apart, on the frame's grid.
+    CHECK(fastTimes.size() >= 118 && fastTimes.size() <= 121);
+    bool grid = true, spacing = true;
+    for (size_t i = 0; i < fastTimes.size(); ++i) {
+        const int sub = fastTimes[i] % 50;
+        grid = grid && (sub == 0 || sub == 16 || sub == 33);
+        if (i) spacing = spacing && (fastTimes[i] - fastTimes[i - 1] == 16 || fastTimes[i] - fastTimes[i - 1] == 17);
+    }
+    CHECK(grid && spacing);
+    // The one that asked for 20: one per frame, built without a step.
+    CHECK(slowTimes.size() >= 39 && slowTimes.size() <= 41);
+    bool frames = true;
+    for (size_t i = 0; i < slowTimes.size(); ++i) frames = frames && slowTimes[i] % 50 == 0 && (!i || slowTimes[i] - slowTimes[i - 1] == 50);
+    CHECK(frames);
+    CHECK(game.at.count(1) == 0 && game.perFrame >= 39);
+    // The game prepared every step once, in rising order, before the snapshots of that time.
+    bool rising = true;
+    for (size_t i = 1; i < game.prepared.size(); ++i) rising = rising && game.prepared[i] > game.prepared[i - 1];
+    CHECK(rising && game.prepared.size() >= 118 && game.prepared.size() <= 121);
+    CHECK(game.at[0].size() + 2 >= fastTimes.size() && game.at[0].size() <= fastTimes.size() + 2); // what was built is what arrived
+    std::printf("snapshot rate: %zu snapshots in 2 s for snaps 60, %zu for snaps 20, %zu steps prepared\n", fastTimes.size(), slowTimes.size(),
+                game.prepared.size());
+    // Taken out of the steps (a killcam): one per frame, and the time never goes back at the change.
+    game.allowSlot0 = false;
+    const size_t before = fastTimes.size();
+    run(1000);
+    bool forward = true, perFrameNow = true;
+    for (size_t i = 1; i < fastTimes.size(); ++i) forward = forward && fastTimes[i] > fastTimes[i - 1];
+    for (size_t i = before + 2; i < fastTimes.size(); ++i) perFrameNow = perFrameNow && fastTimes[i] % 50 == 0 && fastTimes[i] - fastTimes[i - 1] == 50;
+    CHECK(forward && perFrameNow && fastTimes.size() - before >= 19 && fastTimes.size() - before <= 22);
+    game.allowSlot0 = true;
+    const size_t back = fastTimes.size();
+    run(1000);
+    CHECK(fastTimes.size() - back >= 58);
+    for (size_t i = 1; i < fastTimes.size(); ++i) forward = forward && fastTimes[i] > fastTimes[i - 1];
+    CHECK(forward);
+    fast.disconnect();
+    slow.disconnect();
 }
 
 // The wait for packets ends when the next frame is due (docs/spec/net.md section 10 "Server cadence"): a poll asked
@@ -227,6 +348,7 @@ void frameWaitTest() {
 int main() {
     frameWaitTest();
     playoutTests();
+    snapshotRateTest();
     MemoryUdp network;
     StubGame game;
     Server server(game, 7);

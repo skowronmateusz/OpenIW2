@@ -223,6 +223,11 @@ struct GrenadeState {
     // Angular trajectory (type 2, linear: base + delta·t; set at 0x5275f0, re-based on a bounce 0x525cb0).
     Vec3 aBase{}, aDelta{};
     int64_t aTime = 0;
+    // Multiplayer (VAs in the 1.3 Linux dedicated server): the surface type of the last impact (entity state
+    // surfaceType, 0x810d54f) and the bounce events in order, one surface type each (EV_GRENADE_BOUNCE 0xbb, 0x810d5ba);
+    // the network server sends them in the grenade's event ring (docs/spec/net.md section 11).
+    int impactSurface = 0;
+    std::vector<int> bounceEvents;
 };
 
 // A rocket missile entity (G_FireRocket 0x527810; src/game/rockets.cpp).
@@ -492,6 +497,10 @@ public:
     // The antilag time of the next clientFire calls (-1: none): a network client's last command time (0x80f546e passes
     // it to the fire with g_antilag on); only bullets are rewound (0x8120484).
     int fireAntilagTime = -1;
+    // The shooter drew the snapshots sent between the frames: the rewind takes the places of mpRecordSentPlaces
+    // (docs/spec/net.md section 10 "Snapshot rate") instead of the frame archive.
+    bool fireAntilagFine = false;
+    void mpRecordSentPlaces(int timeMs, std::vector<std::pair<int, Vec3>> places);
     // The archived origin of an MP client at `timeMs`, interpolated between the two server frames around it (0x8099dac).
     bool mpArchivedClientOrigin(int client, int timeMs, Vec3& out) const;
     const MpArchive* mpArchive() const { return mp_ ? &mp_->archive : nullptr; }
@@ -618,6 +627,10 @@ public:
     // A turret shot from the snapshots (EV_FIRE_WEAPON_MG42 on the turret entity): the flash at tag_flash, the shot's
     // sound, view shake and impact as in the turret fire (traced here, no damage) and the fire loop sound.
     void mpRemoteTurretFire(Entity& turret);
+    // A network client's turret sounds (docs/spec/turrets.md "Multiplayer"): the loop of the turret's entity state
+    // (loopSound, "" for none) and a stop sound event (0xb3) of its ring; the own turret's sounds are the weapon's
+    // player variants.
+    void mpSetRemoteTurretSound(Entity& turret, const std::string& loop, const std::string& stop);
     // A network client places a model with a trajectory (a grenade, a rocket, a falling weapon) at the time it draws
     // (docs/spec/net.md section 11 "Trajectories"); such an entity carries $nettraj and is not lerped by the world tick.
     void mpPlaceRemoteModel(int wire, const Vec3& origin, const Vec3* angles);
@@ -627,6 +640,12 @@ public:
     // A network client plays an explosion event of the server (docs/spec/net.md section 13): the sounds and effects of
     // the grenade or rocket explosion at the point, without damage.
     void mpRemoteExplosion(bool rocket, const std::string& weapon, const Vec3& at, const Vec3& dir, int surface);
+    // A network client's grenade bounce event (MP cgame 0x4e1524): grenade_bounce_<surface> at the drawn missile of
+    // that wire number and the impact table's grenade bounce effect.
+    void mpRemoteGrenadeBounce(int wire, int surface);
+    // The direction the cgame gives that effect: the event parameter (the surface type) through the direction-byte table
+    // (MP 0x4268c0, docs/spec/net.md section 11 "Grenade bounces"); zero outside the surface types.
+    static Vec3 mpBounceDirection(int parameter);
     void mpSetRemoteModels(const std::vector<RemoteModel>& models);
     void mpSetMenuNames(std::vector<std::string> names) { menus_ = std::move(names); }
     bool mpRemote() const { return mpRemote_; }
@@ -895,6 +914,13 @@ public:
     // A network client: the player state's damage feedback fields (docs/spec/mp-hud.md "Hit direction and damage
     // feedback"); a new damageEvent value is a new damage frame.
     void mpSetRemoteDamageFeedback(int event, int yaw, int pitch, int count);
+    // A network client: the snapshot's player state belongs to another client or another life than the previous one's (clientNum
+    // or the spawn count in stats[5] changed; MP cgame 0x4df9f1..0x4dfafc). The new damageEvent is no new damage, and the front
+    // end's respawn reset is due (takeDamageFeedbackReset).
+    void mpRemoteIdentityChanged(int event);
+    // The multiplayer client's respawn reset of the damage feedback (MP 0x4e0190: kicks, kick time and direction icons cleared): true
+    // once after a spawn of the own client or a change of identity of a network client's player state.
+    bool takeDamageFeedbackReset() { return std::exchange(damageFeedbackReset_, false); }
     // Game time (ms) of the last damage the player dealt to a living enemy actor (hitMarkerTrigger), -1 before the first. The front end
     // draws the hit marker from it when the option iw2_hitMarker is on (src/game/hitmarker.h).
     int64_t playerHitMarkerMs() const { return hitMarkerMs_; }
@@ -968,6 +994,7 @@ public:
         horiz = weaponFloat(playerTurret_->turret->weapon, "horizviewjitter");
         return true;
     }
+    Entity* playerTurretEntity() const { return playerOnTurret() && playerTurret_ && playerTurret_->turret && !playerTurret_->obj->removed ? playerTurret_ : nullptr; }
     std::string playerTurretWeapon() const { return playerOnTurret() && playerTurret_ && playerTurret_->turret ? playerTurret_->turret->weapon : std::string(); }
     // The view clamp on a turret (PM_UpdateViewAngles 0x50b120 with eFlags & 0x300): pitch and yaw within
     // base ± range (ps+0xe8 / +0xec, +0xf0 / +0xf4).
@@ -1889,6 +1916,7 @@ private:
     void syncEntityClips(); // src/game/entityclips.cpp
     void thinkTurret(Entity& t);
     void turretFireSound(Entity& t, bool playerOwner);
+    void setTurretLoop(Entity& t, const std::string& loop); // the turret's loop sound: started, changed or stopped
     void shootTurret(Entity& t);
     bool turretTag(Entity& t, const char* tag, Vec3& pos);
     bool turretAnglesTo(Entity& t, const Vec3& point, Vec3& angles);
@@ -1951,6 +1979,7 @@ private:
     bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
     DamageFeedback damageFeedback_;
     int remoteDamageEvent_ = -1; // the last damageEvent of the network client's snapshots
+    bool damageFeedbackReset_ = false;
     int64_t hitMarkerMs_ = -1, hitMarkerKillMs_ = -1;
     std::vector<Earthquake> earthquakes_;
     std::optional<Vec3> sunlight_;          // setsunlight override (config string 9); empty after resetsunlight

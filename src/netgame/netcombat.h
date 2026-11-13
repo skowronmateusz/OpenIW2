@@ -34,6 +34,8 @@ enum NetEvent : int {
     kEvPutawayWeapon = 0x9b,
     kEvFireWeapon = 0x9e,
     kEvFireWeaponLastShot = 0xa0,
+    kEvSoundAlias = 0xb3,       // a sound at the entity (parm: the sound index; 0x811f32e), e.g. a turret's stop fire sound
+    kEvGrenadeBounce = 0xbb,    // a grenade's bounce, on the missile (parm: the surface type; 0x810d5ba)
     kEvFireWeaponMg42 = 0xaf,   // a turret's shot, on the turret entity (parm: the gunner's entity number)
     kEvRechamberWeapon = 0xa1,
     kEvMeleeSwipe = 0xa3,
@@ -138,6 +140,7 @@ public:
     std::function<int(const std::string&)> weaponIndex;
     // The client's antilag time for its shots (the owner sets it before think; -1: the current positions).
     int antilagTime = -1;
+    bool antilagFine = false; // the shooter draws the snapshots sent between the frames (World::fireAntilagFine)
 
 private:
     void wire(game::World& w, int client);

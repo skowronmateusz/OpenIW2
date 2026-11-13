@@ -45,7 +45,8 @@ at the source. The convention itself (docs/spec/net.md section 1) is not an entr
   `src/netgame/worldgame.cpp:858`).
 - The give's clip fill (the 1.3 pistol has a loaded clip, openiw2 an empty one) (`docs/spec/net.md:738`).
 - Confirm the +0x1728 placement of non-archived HUD elements with a 1.3 server (`docs/spec/net.md:742`).
-- The 1.3 missile entity type (`docs/spec/net.md:750`).
+- The entity state of the 1.3 missile entity type 4, which openiw2 does not send (`docs/spec/net.md`, section 11
+  "Trajectories").
 - The VA of the 1.3 server's trajectory evaluator and the MP cgame's use of the trajectories of entities other than
   players (`docs/spec/net.md:753`).
 - The MP cgame's handling of a re-based trajectory at a bounce (the closest-point hold is openiw2's own rule)
@@ -236,6 +237,10 @@ Bots are openiw2's own design; the points raised here are decisions, stated at t
 - What routine 0x8060eb8 does for `killserver` (`docs/spec/dedicated.md` section 1).
 
 ## Turrets
+
+- Where the 1.3 cgame plays the player variants (loopFireSoundPlayer, stopFireSoundPlayer) for the local gunner's
+  turret, whose entity state carries loopFireSound and whose stop event carries stopFireSound
+  (`docs/spec/turrets.md:388`, `src/game/mpturret.cpp:168`).
 
 - The AI-turret fields 0x4e7150(+0x294, +0x298), the bumped-sentient team branch 0x54aafa..0x54ab45, the
   actor-turret link itself, 0x54e3f0 / 0x503e10 with the start argument, and the debug string at actor +0x21a0

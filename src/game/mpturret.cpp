@@ -162,6 +162,24 @@ void World::mpRemoteTurretFire(Entity& turret) {
     shootTurret(turret); // the world applies no damage in a network client (World::damage)
 }
 
+void World::mpSetRemoteTurretSound(Entity& turret, const std::string& loop, const std::string& stop) {
+    if (!mpRemote_ || !turret.turret || turret.obj->removed) return;
+    TurretState& ts = *turret.turret;
+    // The own turret plays the player variants (TODO(spec): where the 1.3 cgame picks loopFireSoundPlayer /
+    // stopFireSoundPlayer for the local gunner; the server sends loopFireSound and stopFireSound, docs/spec/turrets.md).
+    const bool own = playerOnTurret() && playerTurret_ == &turret;
+    auto variant = [&](const std::string& alias, const char* key, const char* playerKey) {
+        if (!own || alias.empty() || alias != weaponField(ts.weapon, key)) return alias;
+        const std::string p = weaponField(ts.weapon, playerKey);
+        return p.empty() ? alias : p;
+    };
+    if (!stop.empty()) {
+        const Vec3 at = turret.obj->get("origin").asVector();
+        startSound(variant(stop, "stopFireSound", "stopFireSoundPlayer"), &at);
+    }
+    setTurretLoop(turret, variant(loop, "loopFireSound", "loopFireSoundPlayer"));
+}
+
 void World::mpSetRemoteTurret(Entity* turret, uint32_t turretBits, int viewLocked) {
     if (!mpRemote_ || !player_) return;
     if (turret && (turret->obj->removed || !turret->turret)) turret = nullptr;

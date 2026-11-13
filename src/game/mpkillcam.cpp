@@ -327,6 +327,11 @@ void World::mpKillcamEndFrame() {
         ac.shockIndex = cl.shockIndex;
         ac.shockStartMs = cl.shockStartMs;
         ac.shockDurationMs = cl.shockDurationMs;
+        ac.damageEvent = cl.damageEvent;
+        ac.damageYaw = cl.damageYaw;
+        ac.damagePitch = cl.damagePitch;
+        ac.damageCount = cl.damageCount;
+        ac.spawnCount = cl.spawnCount;
         if (!ac.weapon.empty() && ac.weapon != "none") {
             Inventory& inv = inventory(*cl.ent);
             std::string k = ac.weapon;
@@ -492,12 +497,15 @@ bool World::mpArchivedClientOrigin(int client, int timeMs, Vec3& out) const {
 void World::mpAntilagRewind(int timeMs) {
     mpAntilagRestore();
     if (!mp_ || cvarFloat("g_antilag", 1.0f) == 0) return;
-    if (int(timeMs_) - timeMs <= 1000 / kServerFps) return;
+    // openiw2: a shooter who drew the snapshots sent between the frames is given the places of those snapshots, also
+    // within the last frame (the newest snapshot's place is not the live one: docs/spec/net.md section 10 "Snapshot rate").
+    const bool fine = fireAntilagFine && !mp_->sentPlaces.empty();
+    if (!fine && int(timeMs_) - timeMs <= 1000 / kServerFps) return;
     for (size_t i = 0; i < mp_->clients.size(); ++i) {
         const MpClient& cl = mp_->clients[i];
         if (cl.state != MpClientState::Active || !cl.ent || cl.ent->obj->get("sessionstate").toString() != "playing") continue;
         Vec3 o{};
-        if (!mpArchivedClientOrigin(int(i), timeMs, o)) continue;
+        if (fine ? !mp_->sentPlaces.at(int(i), timeMs, o) : !mpArchivedClientOrigin(int(i), timeMs, o)) continue;
         antilagSaved_.emplace_back(cl.ent, cl.ent->obj->get("origin"));
         cl.ent->obj->set("origin", Value(o));
     }
@@ -724,6 +732,10 @@ void World::mpSetSentOrigin(int client, const Vec3& live, const Vec3& sent) {
     cl.sentValid = true;
     cl.sentLive = live;
     cl.sentOrigin = sent;
+}
+
+void World::mpRecordSentPlaces(int timeMs, std::vector<std::pair<int, Vec3>> places) {
+    if (mp_) mp_->sentPlaces.record(timeMs, std::move(places));
 }
 
 void World::mpClearSentOrigin(int client) {

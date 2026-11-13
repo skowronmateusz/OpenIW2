@@ -3,6 +3,10 @@
 // at its own drawn time (16 ms render frames between 50 ms snapshots), so the drawn position moves every frame,
 // follows the server's parabola and never steps. Needs IW2_MAIN.
 #include <cmath>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <unistd.h>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -35,8 +39,11 @@ constexpr const char* kMap = "mp_carentan";
 
 game::Vec3 origin(Entity* e) { return e ? e->obj->get("origin").asVector() : game::Vec3{0, 0, 0}; }
 
-// A listen server (host player 0 and its World) with one network client, driven by an injected clock.
+// A listen server (host player 0 and its World) with one network client, driven by an injected clock. steps: the
+// client asks for 60 snapshots a second and the server is polled at every client step too, so it sends the snapshots
+// between its 50 ms game frames (sv_snaps 60); otherwise the client asks for 20, one per game frame.
 struct Game {
+    bool steps = false;
     World host;
     netgame::WorldGame game;
     net::Server server;
@@ -58,6 +65,7 @@ struct Game {
         server.info().gametype = "dm";
     }
     void clientStep() {
+        if (steps) server.poll(now, 0);
         client->poll(now, 1);
         if (client->state() >= net::ClientState::Primed) {
             net::UserCmd c;
@@ -75,6 +83,7 @@ struct Game {
     int connect(const std::string& name) {
         client = std::make_unique<net::GameClient>();
         client->name = name;
+        client->snaps = steps ? 60 : 20; // the snapshots a second it asks for (20: one per game frame, as a 1.3 client)
         net::NetAddress a;
         net::NetAddress::parse("127.0.0.1:" + std::to_string(server.port()), a, 28960);
         client->connect(a, now);
@@ -87,8 +96,10 @@ struct Game {
     }
 };
 
-void run(fs::Vfs& vfs) {
+void run(fs::Vfs& vfs, bool steps) {
+    std::cout << (steps ? "-- snapshots between the game frames\n" : "-- one snapshot per game frame\n");
     Game g(vfs);
+    g.steps = steps;
     g.host.mpAutoJoin(0);
     if (!g.server.open(0)) {
         std::cerr << "cannot open a UDP port\n";
@@ -141,10 +152,11 @@ void run(fs::Vfs& vfs) {
         g.clientStep();
         const net::ClientSnapshot *s0 = nullptr, *s1 = nullptr;
         float frac = 0;
-        const int t = g.client->renderTime(g.now);
-        if (!g.client->interpolation(t, s0, s1, frac)) continue;
+        if (!g.client->interpolation(g.client->renderTime(g.now), s0, s1, frac)) continue;
+        // The time the models with a trajectory are drawn at (docs/spec/net.md section 11 "Trajectories").
+        const int t = g.client->renderTime(g.now) - netgame::RemoteView::trajectoryDelayMs(g.client->snapshotIntervalMs());
         rv.apply(view, *g.client->latest(), g.client->configstrings, a, view.timeMs());
-        netgame::RemoteView::placeTrajectories(view, *s0, *s1, t);
+        netgame::RemoteView::placeTrajectories(view, g.client->snapshotsFrom(t), t);
         ++frames;
         if (!gren.grenade || gren.grenade->trType != 5) continue;  // airborne on the server only
         for (const auto& e : view.entities()) {
@@ -192,7 +204,17 @@ void run(fs::Vfs& vfs) {
 
     // A lobbed grenade that bounces off the walls and the floor: the drawn path never reverses into a wall and back
     // (the model stops where the server's bounce re-based it and waits there for at most the rest of that server
-    // frame), and the holds are short.
+    // frame), and the holds are short. Each bounce event of the server (EV_GRENADE_BOUNCE in the missile's event ring)
+    // plays the surface's bounce sound once at the drawn grenade, and the drawn angles follow the server's angular
+    // trajectory after every re-basing (docs/spec/net.md section 11).
+    struct Heard { std::string alias; game::Vec3 at; };
+    std::vector<Heard> heard;
+    view.playSound = [&](const std::string& alias, const game::Vec3* at, float*, int) {
+        if (alias.rfind("grenade_bounce_", 0) == 0) heard.push_back({alias, at ? *at : game::Vec3{0, 0, 0}});
+        return 0;
+    };
+    view.takeFxEvents();
+    std::vector<game::World::FxEvent> bounceFx; // the effects the bounce events start on the client
     g.host.playerThrowGrenade("frag_grenade_american_mp", {eye[0], eye[1], eye[2] + 60.0f}, {-45.0f, 0.0f, 0.0f}, {0, 0, 0});
     Entity* lob = nullptr;
     for (const auto& e : g.host.entities())
@@ -200,7 +222,10 @@ void run(fs::Vfs& vfs) {
     CHECK(lob != nullptr);
     if (!lob) return;
     std::vector<std::pair<int, game::Vec3>> path;
-    int rebases = 0;
+    int rebases = 0, spinChecks = 0, spinOff = 0, spinMoves = 0;
+    size_t serverBounces = 0;
+    game::Vec3 lastDrawnAngles{};
+    bool haveAngles = false;
     int64_t lastTrTime = lob->grenade->trTime;
     for (int step = 0; step < 150; ++step) {
         g.now += 16;
@@ -212,16 +237,34 @@ void run(fs::Vfs& vfs) {
         g.clientStep();
         const net::ClientSnapshot *s0 = nullptr, *s1 = nullptr;
         float frac = 0;
-        const int t = g.client->renderTime(g.now);
-        if (!g.client->interpolation(t, s0, s1, frac)) continue;
+        if (!g.client->interpolation(g.client->renderTime(g.now), s0, s1, frac)) continue;
+        // The time the models with a trajectory are drawn at (docs/spec/net.md section 11 "Trajectories").
+        const int t = g.client->renderTime(g.now) - netgame::RemoteView::trajectoryDelayMs(g.client->snapshotIntervalMs());
         rv.apply(view, *g.client->latest(), g.client->configstrings, a, view.timeMs());
-        netgame::RemoteView::placeTrajectories(view, *s0, *s1, t);
-        if (!lob->grenade || lob->grenade->trType != 5) continue;
+        const auto snaps = g.client->snapshotsFrom(t);
+        netgame::RemoteView::placeTrajectories(view, snaps, t);
+        rv.missileEvents(view, snaps);
+        for (auto& fx : view.takeFxEvents()) bounceFx.push_back(fx);
+        if (lob->obj->removed || !lob->grenade) break;
+        serverBounces = lob->grenade->bounceEvents.size();
+        if (lob->grenade->trType != 5) continue;
         if (lob->grenade->trTime != lastTrTime) ++rebases, lastTrTime = lob->grenade->trTime;
         for (const auto& e : view.entities()) {
             if (e->obj->removed || e->obj->get("model").toString().rfind("xmodel/projectile_", 0) != 0) continue;
             const game::Vec3 o = origin(e.get());
             if (std::fabs(o[0] - eye[0]) < 600.0f && std::fabs(o[1] - eye[1]) < 600.0f && o[2] < eye[2] + 400.0f) path.emplace_back(t, o);
+            const game::Vec3 an = e->obj->get("angles").asVector();
+            const game::GrenadeState& gs = *lob->grenade;
+            if (t - gs.aTime >= 100) { // the drawn snapshot carries the server's current angular path
+                ++spinChecks;
+                for (int k = 0; k < 3; ++k) {
+                    const float want = gs.aBase[size_t(k)] + gs.aDelta[size_t(k)] * float(t - gs.aTime) * 0.001f;
+                    if (std::fabs(std::remainder(an[size_t(k)] - want, 360.0f)) > 1.0f) ++spinOff;
+                }
+                if (haveAngles && std::fabs(std::remainder(an[2] - lastDrawnAngles[2], 360.0f)) > 0.5f) ++spinMoves;
+            }
+            lastDrawnAngles = an;
+            haveAngles = true;
         }
     }
     int reversals = 0, holds = 0, longestHold = 0, hold = 0;
@@ -248,6 +291,88 @@ void run(fs::Vfs& vfs) {
     CHECK(rebases >= 1);
     CHECK(reversals == 0);
     CHECK(longestHold <= 4);  // at most one server frame (50 ms) at a bounce
+    // The stepped run gets the snapshots between the game frames (shorter intervals than a frame).
+    std::cout << "lob: snapshot interval " << g.client->snapshotIntervalMs() << " ms\n";
+    CHECK(steps ? g.client->snapshotIntervalMs() < 50 : g.client->snapshotIntervalMs() >= 45);
+    std::cout << "lob: " << serverBounces << " bounce events on the server, " << heard.size() << " bounce sounds on the client;";
+    for (const Heard& h : heard) std::cout << " " << h.alias;
+    std::cout << "; angles checked in " << spinChecks << " frames, " << spinOff << " off the server's, the roll turning in " << spinMoves << "\n";
+    CHECK(serverBounces >= 1);
+    CHECK(heard.size() == serverBounces);
+    for (const Heard& h : heard) {  // at the drawn grenade, near the walls it hit
+        bool nearPath = false;
+        for (const auto& [pt, po] : path)
+            nearPath = nearPath || std::fabs(po[0] - h.at[0]) + std::fabs(po[1] - h.at[1]) + std::fabs(po[2] - h.at[2]) < 1.0f;
+        CHECK(nearPath);
+    }
+    // The bounce effect's direction is the surface type through the direction-byte table (docs/spec/net.md section 11
+    // "Grenade bounces"): one of the table's vectors, not the wall's normal and not always up.
+    {
+        const game::Vec3 up = game::World::mpBounceDirection(5), d0 = game::World::mpBounceDirection(0), d22 = game::World::mpBounceDirection(22);
+        CHECK(up[0] == 0 && up[1] == 0 && up[2] == 1);
+        CHECK(std::fabs(d0[0] + 0.525731f) < 1e-6f && d0[1] == 0 && std::fabs(d0[2] - 0.850651f) < 1e-6f);
+        CHECK(std::fabs(d22[0] + 0.5f) < 1e-6f && std::fabs(d22[1] - 0.809017f) < 1e-6f && std::fabs(d22[2] - 0.309017f) < 1e-6f);
+        for (int k = 0; k < 23; ++k) {
+            const game::Vec3 d = game::World::mpBounceDirection(k);
+            CHECK(std::fabs(d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - 1.0f) < 1e-4f);
+        }
+        const game::Vec3 none = game::World::mpBounceDirection(23), neg = game::World::mpBounceDirection(-1);
+        CHECK(none[0] == 0 && none[1] == 0 && none[2] == 0 && neg[2] == 0);
+        std::cout << "lob: " << bounceFx.size() << " bounce effects on the client\n";
+        int tableDirs = 0;
+        for (const auto& fx : bounceFx)
+            for (int k = 0; k < 23; ++k) {
+                const game::Vec3 d = game::World::mpBounceDirection(k);
+                if (fx.forward[0] == d[0] && fx.forward[1] == d[1] && fx.forward[2] == d[2]) { ++tableDirs; break; }
+            }
+        CHECK(!bounceFx.empty() && bounceFx.size() <= heard.size() && tableDirs == int(bounceFx.size()));
+    }
+    // A missile first seen with bounces behind it plays them, the last four at most (the cgame's reset gives a new
+    // missile the last played sequence 0); a ring sequence of 0 plays nothing.
+    if (const net::ClientSnapshot* base = g.client->latest()) {
+        int number = -1;
+        for (const auto& [n, es] : base->entities)
+            if ((es[4] & 0xff) == netgame::kEtGeneral) number = n;
+        CHECK(number >= 0);
+        if (number >= 0) {
+            auto run = [&](int seq) {
+                net::ClientSnapshot sn = *base;
+                sn.messageNum += 1000 + seq * 10;
+                std::vector<uint8_t> es = sn.entities[number];
+                sn.entities.clear();
+                const int32_t q = seq, ev = netgame::kEvGrenadeBounce, surf = 5;
+                std::memcpy(es.data() + 164, &q, 4);
+                for (int k = 0; k < 4; ++k) std::memcpy(es.data() + 168 + 4 * k, &ev, 4);
+                std::memcpy(es.data() + 136, &surf, 4);
+                sn.entities[900 + seq] = es; // a wire number the view has not seen
+                netgame::RemoteView fresh;
+                const size_t before = heard.size();
+                rv.apply(view, sn, g.client->configstrings, a, view.timeMs()); // the view gets the model
+                netgame::RemoteView::placeTrajectories(view, {&sn}, sn.serverTime);
+                fresh.missileEvents(view, {&sn});
+                return heard.size() - before;
+            };
+            const size_t n0 = run(0), n2 = run(2), n9 = run(9);
+            std::cout << "first sight: sequence 0 -> " << n0 << ", 2 -> " << n2 << ", 9 -> " << n9 << " bounce sounds\n";
+            CHECK(n0 == 0 && n2 == 2 && n9 == 4);
+            // The effect of each surface at that model: where the impact table has one, it points along the surface's vector.
+            view.takeFxEvents();
+            int withFx = 0, wrongDir = 0;
+            for (int k = 0; k < 23; ++k) {
+                view.mpRemoteGrenadeBounce(909, k);
+                const game::Vec3 d = game::World::mpBounceDirection(k);
+                for (const auto& fx : view.takeFxEvents()) {
+                    ++withFx;
+                    if (fx.forward[0] != d[0] || fx.forward[1] != d[1] || fx.forward[2] != d[2]) ++wrongDir;
+                }
+            }
+            std::cout << "bounce effects: " << withFx << " of 23 surfaces have one, " << wrongDir << " not along the table vector\n";
+            CHECK(withFx == 2 && wrongDir == 0);
+        }
+    }
+    CHECK(spinChecks >= 10);
+    CHECK(spinOff == 0);
+    CHECK(spinMoves * 10 >= spinChecks * 9);
     g.client->disconnect();
 }
 
@@ -261,7 +386,16 @@ int main() {
     }
     fs::Vfs vfs;
     vfs.mountDirectory(main);
-    run(vfs);
+    // The shipped impact table names no grenade bounce effect for any surface, so the bounce event's effect never plays
+    // with the game's own data. A table of the test gives two surfaces one, to see the effect and its direction.
+    const std::filesystem::path extra = std::filesystem::temp_directory_path() / ("iw2_test_mpnetgrenade_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(extra / "fx");
+    std::ofstream(extra / "fx" / "zz_test_impacts.csv") << "grenade_bounce,wood,fx/test/bounce_wood.efx\n"
+                                                        << "grenade_bounce,concrete,fx/test/bounce_concrete.efx\n";
+    vfs.mountDirectory(extra);
+    run(vfs, false);
+    run(vfs, true);
+    std::filesystem::remove_all(extra);
     std::cout << (failures ? "mpnetgrenade_e2e: FAILED\n" : "mpnetgrenade_e2e: ok\n");
     return failures ? 1 : 0;
 }

@@ -85,6 +85,14 @@ constexpr int kHudText = 1, kHudValue = 2, kHudTimer = 3, kHudMaterial = 4, kHud
 
 }  // namespace
 
+// A key of a weapon file (lower case), "" when the weapon or the key is missing.
+static std::string weaponKey(game::World& w, const std::string& weapon, const char* key) {
+    const auto* def = w.weapon(weapon);
+    if (!def) return {};
+    const auto it = def->find(key);
+    return it == def->end() ? std::string() : it->second;
+}
+
 int ConfigstringRange::index(const std::string& nameIn) {
     if (nameIn.empty()) return -1;
     std::string name = nameIn;
@@ -323,7 +331,11 @@ void WorldGame::setWorld(World* w, std::string map, std::string gametype, int se
     moves_.clear();
     otherRings_.clear();
     turretRings_.clear();
+    turretStopsSeen_.clear();
+    grenadeRings_.clear();
     sentOffhand_.clear();
+    framePrev_.clear(), frameCur_.clear(), subPlaces_.clear();
+    frameSeenTime_ = -1, subTime_ = -1;
     printsSent_ = chatSent_ = obituariesSeen_ = explosionsSeen_ = clientCommandsSent_ = 0;
     for (ConfigstringRange* r : {&weapons_, &materials_, &strings_, &models_, &effects_, &sounds_, &hints_, &headIcons_}) r->clear();
     // The game registers the default weapon first, so it is weapon 1, then every precached item in order; models,
@@ -762,6 +774,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
         const int t = std::max(cmd.serverTime, now - 1000);
         if (!(t < m.lastServerTime && now > t)) m.lastServerTime = t;
         m.combat->antilagTime = w_->cvarFloat("g_antilag", 1.0f) != 0 ? m.lastServerTime : now;
+        m.combat->antilagFine = m.subFrame;
     }
     if (!onTurret) m.combat->think(*w_, it->second, cmd, m.ps, usercmdMsec(prevTime, cmd.serverTime), cmdWeapon);
     // A script's weapon change goes to the client as the selection command (docs/spec/net.md section 10 "Weapon
@@ -856,7 +869,96 @@ void WorldGame::runFrame(int frameMs) {
         w_->mpSetSentOrigin(client, script::Vec3{live[0], live[1], live[2]}, script::Vec3{at[0], at[1], at[2]});
     }
     if (!worldOwnedByHost) w_->frame();
+    frameLenMs_ = frameMs;
+    if (!worldOwnedByHost) noteFrame();
     forwardToClients();
+}
+
+// The places the last game frame left the clients at (the bots' way between two frames, prepareSubFrame), taken once
+// per world time: after the frame, or when a host-owned world is seen to have stepped.
+void WorldGame::noteFrame() {
+    if (w_->timeMs() == frameSeenTime_) return;
+    frameSeenTime_ = w_->timeMs();
+    framePrev_ = std::move(frameCur_);
+    frameCur_.clear();
+    const auto& st = w_->mpState();
+    for (size_t n = 0; n < st.clients.size(); ++n) {
+        const auto& cl = st.clients[n];
+        if (cl.state == game::MpClientState::Free || !cl.ent) continue;
+        const Value o = cl.ent->obj->get("origin"), a = cl.ent->obj->get("angles");
+        frameCur_[int(n)] = {o.isVector() ? o.asVector() : script::Vec3{}, a.isVector() ? a.asVector()[1] : 0.0f, cl.spawnCount};
+    }
+}
+
+int WorldGame::subFrameMs(int64_t nowMs) {
+    if (!worldOwnedByHost) return -1;
+    if (w_->timeMs() != frameSeenTime_) {
+        noteFrame();
+        frameSeenAtMs_ = nowMs;
+    }
+    return int(std::clamp<int64_t>(nowMs - frameSeenAtMs_, 0, frameLenMs_ - 1));
+}
+
+// docs/spec/net.md section 10 "Snapshot rate": the clients' places at `serverTime() + subMs`. A network client's walk
+// is sampled at that time (EvenTrack); a client the game frame moves (a bot) is on the way from the frame before to
+// the last frame, by the part of the frame that has passed; the host's own player and a client without a track are
+// where they are. The places are kept for the antilag rewind.
+void WorldGame::prepareSubFrame(int subMs) {
+    static const bool plainPlayers = std::getenv("IW2_PLAYER_PLAIN") != nullptr;
+    subTime_ = serverTime() + subMs;
+    subPlaces_.clear();
+    std::vector<std::pair<int, script::Vec3>> record;
+    const auto& st = w_->mpState();
+    const float f = std::clamp(float(subMs) / float(std::max(frameLenMs_, 1)), 0.0f, 1.0f);
+    for (size_t n = 0; n < st.clients.size(); ++n) {
+        const auto& cl = st.clients[n];
+        if (cl.state == game::MpClientState::Free || !cl.ent) continue;
+        const Value o = cl.ent->obj->get("origin"), a = cl.ent->obj->get("angles");
+        FramePlace p{o.isVector() ? o.asVector() : script::Vec3{}, a.isVector() ? a.asVector()[1] : 0.0f, cl.spawnCount};
+        Move* mv = nullptr;
+        for (const auto& [slot, client] : mp_)
+            if (client == int(n))
+                if (auto it = moves_.find(slot); it != moves_.end()) mv = &it->second;
+        if (mv) {
+            EvenTrack::Vec at{};
+            const auto& live = mv->lastOrigin;
+            const bool moved = std::fabs(p.origin[0] - live[0]) + std::fabs(p.origin[1] - live[1]) + std::fabs(p.origin[2] - live[2]) > 0.01f;
+            if (!plainPlayers && mv->havePs && !moved && mv->track.sample(subTime_, at)) p.origin = {at[0], at[1], at[2]};
+        } else if (int(n) != st.localClient) {
+            const auto prev = framePrev_.find(int(n));
+            const auto cur = frameCur_.find(int(n));
+            // Only while he stands where the frame left him and did not spawn in it, and not over a placement.
+            if (prev != framePrev_.end() && cur != frameCur_.end() && prev->second.spawnCount == cl.spawnCount &&
+                cur->second.spawnCount == cl.spawnCount && cur->second.origin == p.origin) {
+                const script::Vec3& a0 = prev->second.origin;
+                const script::Vec3& a1 = cur->second.origin;
+                const float d2 = (a1[0] - a0[0]) * (a1[0] - a0[0]) + (a1[1] - a0[1]) * (a1[1] - a0[1]) + (a1[2] - a0[2]) * (a1[2] - a0[2]);
+                if (d2 < 100.0f * 100.0f) {
+                    for (size_t k = 0; k < 3; ++k) p.origin[k] = a0[k] + (a1[k] - a0[k]) * f;
+                    float dy = std::fmod(cur->second.yaw - prev->second.yaw, 360.0f);
+                    if (dy > 180.0f) dy -= 360.0f;
+                    if (dy < -180.0f) dy += 360.0f;
+                    p.yaw = prev->second.yaw + dy * f;
+                }
+            }
+        }
+        subPlaces_[int(n)] = p;
+        if (cl.state == game::MpClientState::Active) record.emplace_back(int(n), p.origin);
+    }
+    w_->mpRecordSentPlaces(subTime_, std::move(record));
+}
+
+bool WorldGame::subFrameAllowed(int slot) {
+    const auto it = mp_.find(slot);
+    return it == mp_.end() || !killcamFrame(it->second).frame;
+}
+
+net::SnapshotView WorldGame::snapshotAt(int slot, int subMs) {
+    if (subTime_ != serverTime() + subMs) prepareSubFrame(subMs);
+    subSnapshot_ = true;
+    net::SnapshotView v = snapshot(slot);
+    subSnapshot_ = false;
+    return v;
 }
 
 int WorldGame::serverTime() const { return static_cast<int>(w_->timeMs()); }
@@ -916,10 +1018,15 @@ void WorldGame::writePlayerEntity(std::vector<uint8_t>& es, int client, const En
     re.clientNum = client;
     // The place the other clients get: his walk sampled evenly (docs/spec/net.md section 10 "Player positions in a
     // snapshot"), or the entity's origin.
-    const auto o = w_->mpSnapshotOrigin(client);
+    auto o = w_->mpSnapshotOrigin(client);
     const auto a = e.obj->get("angles");
-    for (int i = 0; i < 3; ++i) re.origin[i] = o[size_t(i)];
     if (a.isVector()) re.angles[1] = a.asVector()[1];
+    if (subSnapshot_)  // a snapshot between the frames: the place at its time ("Snapshot rate")
+        if (const auto sp = subPlaces_.find(client); sp != subPlaces_.end()) {
+            o = sp->second.origin;
+            re.angles[1] = sp->second.yaw;
+        }
+    for (int i = 0; i < 3; ++i) re.origin[i] = o[size_t(i)];
     writeEntity(es, re);
     for (const auto& [s, n] : mp_)
         if (n == client)
@@ -981,7 +1088,7 @@ void WorldGame::writePlayerEntity(std::vector<uint8_t>& es, int client, const En
     // world) on the ground. openiw2: trTime is the snapshot time, not the player's command time, so the trajectory
     // evaluates to the origin (no 50 ms lead along the velocity).
     putI(es, 12, 3);
-    putI(es, 16, serverTime());
+    putI(es, 16, subSnapshot_ ? subTime_ : serverTime());
     putI(es, 20, 50);
     putI(es, 48, 1);
     // The top follows the client's stance (its move box, docs/spec/mp-pmove.md "Players against each other").
@@ -1114,16 +1221,16 @@ void WorldGame::writeKillcamPlayerState(std::vector<uint8_t>& ps, const KillcamF
     const game::ArchivedClient& c = kc.frame->clients[size_t(kc.client)];
     const game::MpViewState& vs = c.view;
     // The followed client's player state over the spectator's (0x80f6916): movement type normal, its movement flags
-    // with the spectator's follow bit 0x100000 kept (here the stance and aim bits of the recorded view state), entity
-    // flags 0x400000, and its client number (the copy takes the whole player state; docs/spec/mp-hud.md "The recorded
-    // view state").
+    // without 0x800000 and with the follow bit 0x400000 (here the stance and aim bits of the recorded view state), and its
+    // client number (the copy takes the whole player state; docs/spec/mp-hud.md "The recorded view state"). The entity
+    // flags are the followed client's with the spectator's own bit 0x100000; they are not archived here (0).
     putI(ps, 4, 0);
     int pmf = kPmfFollow;
     if (vs.viewHeightTarget <= 11) pmf |= kPmfProne;
     else if (vs.viewHeightTarget <= 40) pmf |= kPmfCrouch;
     if (vs.adsHeld) pmf |= kPmfAds;
     putI(ps, 12, pmf);
-    putI(ps, 160, kEfKillcam);
+    putI(ps, 160, 0);
     putI(ps, 204, kc.client);
     for (int i = 0; i < 3; ++i) {
         putF(ps, 20 + 4 * i, c.origin[size_t(i)]);
@@ -1165,6 +1272,13 @@ void WorldGame::writeKillcamPlayerState(std::vector<uint8_t>& ps, const KillcamF
     putI(ps, 1496, c.shockIndex);
     putI(ps, 1500, c.shockIndex ? int32_t(c.shockStartMs + (serverTime() - kc.frame->timeMs)) : 0);
     putI(ps, 1504, c.shockIndex ? c.shockDurationMs : 0);
+    // Its damage feedback and spawn count, as the copy of the whole player state has them (docs/spec/mp-hud.md "Hit
+    // direction and damage feedback"): the viewer gets the followed client's flash, kick and icons.
+    putI(ps, 284, c.damageEvent & 0xff);
+    putI(ps, 288, c.damageYaw & 0xff);
+    putI(ps, 292, c.damagePitch & 0xff);
+    putI(ps, 296, c.damageCount & 0x7f);
+    putI(ps, 320, c.spawnCount & 0xff);
     putI(ps, 228, c.hands.empty() ? 0 : models_.index(c.hands) + 1);
     if (wn > 0 && wn < 64) {
         putI(ps, 1348 + 4 * (wn / 32), int32_t(1u << (wn % 32)));
@@ -1177,7 +1291,8 @@ void WorldGame::writeKillcamPlayerState(std::vector<uint8_t>& ps, const KillcamF
 
 net::SnapshotView WorldGame::snapshot(int slot) {
     net::SnapshotView v;
-    v.serverTime = serverTime();
+    v.serverTime = subSnapshot_ ? subTime_ : serverTime();
+    if (auto mv = moves_.find(slot); mv != moves_.end()) mv->second.subFrame = subSnapshot_;
     v.ps.assign(size_t(net::kPlayerStateSize), 0);
     const int self = mp_.count(slot) ? mp_[slot] : -1;
     static const Move noMove{};
@@ -1269,6 +1384,7 @@ net::SnapshotView WorldGame::snapshot(int slot) {
         putI(v.ps, 288, sc.damageYaw & 0xff);
         putI(v.ps, 292, sc.damagePitch & 0xff);
         putI(v.ps, 296, sc.damageCount & 0x7f);
+        putI(v.ps, 320, sc.spawnCount & 0xff);    // stats[5]: the spawn count (ClientSpawn 0x80f926d..0x80f92d5)
         putI(v.ps, 1496, sc.shockIndex);
         putI(v.ps, 1500, int32_t(sc.shockStartMs));
         putI(v.ps, 1504, sc.shockDurationMs);
@@ -1464,6 +1580,16 @@ net::SnapshotView WorldGame::snapshot(int slot) {
                 }
                 writeTrajectory(es, kAposTrajectory, ar);
             }
+            // The surface type of its last impact (0x810d54f) and its bounce events (docs/spec/net.md section 11).
+            putI(es, 136, g.impactSurface);
+            if (auto r = grenadeRings_.find(e->number); r != grenadeRings_.end() && !kc.frame) {
+                const EventRing& ring = r->second.second;
+                putI(es, 164, ring.sequence);
+                for (int i = 0; i < 4; ++i) {
+                    putI(es, 168 + 4 * i, ring.events[size_t(i)]);
+                    putI(es, 184 + 4 * i, ring.parms[size_t(i)]);
+                }
+            }
         } else if (e->rocket) {
             const game::RocketState& r = *e->rocket;
             Trajectory tr;
@@ -1525,6 +1651,9 @@ net::SnapshotView WorldGame::snapshot(int slot) {
             if (e->turret) {
                 putF(es, 104, e->turret->pitch);
                 putF(es, 108, e->turret->yaw);
+                // The fire loop while the fire countdown runs (0x810b926: loopSound = loopFireSound's index).
+                if (!e->turret->loopSound.empty())
+                    if (const int li = sounds_.index(weaponKey(*w_, e->turret->weapon, "loopfiresound")); li >= 0) putI(es, 132, li + 1);
                 if (auto r = turretRings_.find(e->number); r != turretRings_.end()) {
                     const EventRing& ring = r->second.second;
                     putI(es, 164, ring.sequence);
@@ -1756,7 +1885,26 @@ void WorldGame::forwardToClients() {
                 if (u->obj == e->turret->owner) user = u->number;
         for (int i = std::max(seen, count - 4); i < count; ++i) ring.push(kEvFireWeaponMg42, user);
         seen = count;
+        // The end of the fire loop (0x810b926): the stop sound as the sound event 0xb3 with the sound's index.
+        int& stops = turretStopsSeen_[e->number];
+        if (e->turret->stopSounds < stops) stops = e->turret->stopSounds;
+        if (e->turret->stopSounds > stops) {
+            const int si = sounds_.index(weaponKey(*w_, e->turret->weapon, "stopfiresound"));
+            for (; stops < e->turret->stopSounds; ++stops)
+                if (si >= 0) ring.push(kEvSoundAlias, si + 1);
+        }
     }
+    // Grenade bounces (0x810d5ba: G_AddEvent on the missile, EV_GRENADE_BOUNCE with the surface type of the hit).
+    std::set<int> grenades;
+    for (const auto& e : w_->entities()) {
+        if (!e->grenade || e->obj->removed) continue;
+        grenades.insert(e->number);
+        auto& [seen, ring] = grenadeRings_[e->number];
+        const std::vector<int>& bounces = e->grenade->bounceEvents;
+        for (size_t i = std::max(seen, bounces.size() > 4 ? bounces.size() - 4 : 0); i < bounces.size(); ++i) ring.push(kEvGrenadeBounce, bounces[i]);
+        seen = bounces.size();
+    }
+    std::erase_if(grenadeRings_, [&](const auto& r) { return !grenades.count(r.first); }); // a freed grenade's ring goes with it
     // A map_restart rebuilds the world's state in place: its logs start again.
     if (st.prints.size() < printsSent_) printsSent_ = 0;
     if (st.chat.size() < chatSent_) chatSent_ = 0;

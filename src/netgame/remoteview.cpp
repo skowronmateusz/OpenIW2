@@ -280,6 +280,24 @@ int RemoteView::stance(const net::ClientSnapshot& snap) {
     return (f & kPmfProne) ? 2 : (f & kPmfCrouch) ? 1 : 0;
 }
 
+void RemoteView::damageFeedback(game::World& w, const std::vector<const net::ClientSnapshot*>& snaps) {
+    for (const net::ClientSnapshot* s : snaps) {
+        if (!s || !s->valid || s->ps.size() < 324) continue;
+        // Not newer than the last one seen: skipped; a much older number is a new connection (as for the event rings),
+        // whose first player state counts as another identity.
+        if (feedbackSnapshot_ >= 0 && s->messageNum <= feedbackSnapshot_) {
+            if (feedbackSnapshot_ - s->messageNum < 1000) continue;
+            psIdentity_ = -1;
+        }
+        feedbackSnapshot_ = s->messageNum;
+        const std::vector<uint8_t>& ps = s->ps;
+        const int identity = (getI(ps, 204) & 0xff) | ((getI(ps, 320) & 0xff) << 8);
+        if (identity != psIdentity_) w.mpRemoteIdentityChanged(getI(ps, 284) & 0xff);
+        else w.mpSetRemoteDamageFeedback(getI(ps, 284) & 0xff, getI(ps, 288) & 0xff, getI(ps, 292) & 0xff, getI(ps, 296) & 0x7f);
+        psIdentity_ = identity;
+    }
+}
+
 void RemoteView::apply(game::World& w, const net::ClientSnapshot& snap, const std::map<int, std::string>& cs, int self,
                        int64_t worldTimeMs, PredictedAmmo* predicted) {
     if (!snap.valid || snap.messageNum == lastSnapshot_) return;
@@ -316,10 +334,17 @@ void RemoteView::apply(game::World& w, const net::ClientSnapshot& snap, const st
     // The local player's shell shock (ps+0x5d8 index, +0x5dc start in server time, +0x5e0 duration): the name is the
     // configstring of the index; the start moves to the world's clock like the HUD times.
     {
+        // The start moves onto the client clock once per shock (a new index, start or duration) and then stays: a start
+        // converted again with every snapshot would move with the measured clock offset and replay the shock's end sound
+        // (docs/spec/mp.md "Per-client player state").
         const int index = getI(ps, 1496) & 15;
         const std::string* name = index ? cfg(cs, kShockConfigstrings + index) : nullptr;
-        w.mpSetRemoteShellShock(name ? *name : std::string(), int64_t(getI(ps, 1500)) + (worldTimeMs - snap.serverTime),
-                                getI(ps, 1504) & 0xffff);
+        const std::array<int, 3> shock{index, getI(ps, 1500), getI(ps, 1504) & 0xffff};
+        if (shock != shock_) {
+            shock_ = shock;
+            shockStartMs_ = int64_t(shock[1]) + (worldTimeMs - snap.serverTime);
+        }
+        w.mpSetRemoteShellShock(name ? *name : std::string(), shockStartMs_, shock[2]);
     }
 
     // The local player: health, team, name, inventory.
@@ -330,8 +355,11 @@ void RemoteView::apply(game::World& w, const net::ClientSnapshot& snap, const st
         if (const int vm = getI(ps, 228) & 0xff; vm > 0)
             if (const std::string* n = cfg(cs, kModelConfigstrings + vm - 1)) p->obj->set("$viewmodel", Value(*n));
         p->obj->set("maxhealth", Value(getI(ps, 308)));
-        if (!following(snap)) // the damage feedback of the own player state (hit direction icons, view kick)
-            w.mpSetRemoteDamageFeedback(getI(ps, 284) & 0xff, getI(ps, 288) & 0xff, getI(ps, 292) & 0xff, getI(ps, 296) & 0x7f);
+        // The damage feedback of the snapshot's player state (red flash, view kick, hit direction icons), the followed
+        // client's while following. A player state of another client or another life (clientNum, or the spawn count in
+        // stats[5]) is no new damage: the cgame overwrites the old state with it and runs its respawn reset (docs/spec/mp-hud.md
+        // "Hit direction and damage feedback").
+        damageFeedback(w, {&snap});
         if (const auto c = snap.clients.find(self); c != snap.clients.end()) {
             p->obj->set("name", Value(clientStateName(c->second)));
             p->obj->set("sessionteam", Value(std::string(teamName(getI(c->second, 4) & 3))));
@@ -455,18 +483,6 @@ void RemoteView::apply(game::World& w, const net::ClientSnapshot& snap, const st
                     if (e->turret) {
                         e->turret->pitch = getF(es, 104);
                         e->turret->yaw = getF(es, 108);
-                        // Its shots: each new EV_FIRE_WEAPON_MG42 of the event ring (first sight: none replayed).
-                        const int seq = getI(es, 164) & 0xff;
-                        auto ts = turretSeq_.find(number);
-                        if (ts == turretSeq_.end()) {
-                            turretSeq_[number] = seq;
-                        } else {
-                            int from = ts->second;
-                            if (((seq - from) & 0xff) > 4) from = (seq - 4) & 0xff;
-                            for (int s = from; s != seq; s = (s + 1) & 0xff)
-                                if ((getI(es, 168 + 4 * (s & 3)) & 0xff) == kEvFireWeaponMg42) w.mpRemoteTurretFire(*e);
-                            ts->second = seq;
-                        }
                     }
                 }
             if (m.mapNumber >= 0) models.push_back(m);
@@ -532,33 +548,142 @@ void RemoteView::trajectoryAt(const std::vector<uint8_t>& ea, const std::vector<
     else std::memcpy(out, pb.base, sizeof pb.base);
 }
 
-void RemoteView::placeTrajectories(game::World& w, const net::ClientSnapshot& a, const net::ClientSnapshot& b, int t) {
-    if (!b.valid) return;
-    // The server's frame length is not known here (sv_fps): the snapshots themselves give the span.
-    const int spanMs = a.valid && b.serverTime > a.serverTime ? b.serverTime - a.serverTime : game::kServerFrameMs;
-    // Over the newer snapshot's entities: one the older snapshot lacks (just thrown) starts its path at its start time.
-    for (const auto& [number, es] : b.entities) {
-        const int type = getI(es, 4) & 0xff;
-        if (type != kEtGeneral && type != kEtItem) continue;
-        const std::vector<uint8_t>* ea = nullptr;
-        if (a.valid && &a != &b)
-            if (const auto it = a.entities.find(number); it != a.entities.end() && (getI(it->second, 4) & 0xff) == type) ea = &it->second;
-        const Trajectory pb = readTrajectory(es, kPosTrajectory);
-        if (!trajectoryMoves(pb) && !(ea && trajectoryMoves(readTrajectory(*ea, kPosTrajectory)))) continue;
-        float o[3];
-        if (ea) trajectoryAt(*ea, &es, t, o, spanMs);
-        else evaluateTrajectory(pb, std::max(t, pb.time), o);
-        game::Vec3 angles{};
-        // The angles turn along the current path (TODO(spec): a bounce's new spin before its snapshot time).
-        const Trajectory apos = readTrajectory(ea && t < pb.time ? *ea : es, kAposTrajectory);
-        const bool turns = trajectoryMoves(apos);
-        if (turns) {
-            float an[3];
-            evaluateTrajectory(apos, std::max(t, apos.time), an);
-            angles = {an[0], an[1], an[2]};
+int RemoteView::trajectoryDelayMs(int snapshotIntervalMs) {
+    return snapshotIntervalMs > 0 && snapshotIntervalMs < game::kServerFrameMs ? game::kServerFrameMs - snapshotIntervalMs : 0;
+}
+
+void RemoteView::placeTrajectories(game::World& w, const std::vector<const net::ClientSnapshot*>& snaps, int t) {
+    if (snaps.empty() || !snaps.front()->valid) return;
+    // A re-basing happened in the game frame that ends at the new path's start time: the hit is searched over one
+    // frame before it, or over the span of the two snapshots when that is longer (a lost snapshot).
+    const auto sameType = [](const std::vector<uint8_t>& es, int type) { return (getI(es, 4) & 0xff) == type; };
+    const auto samePath = [](const Trajectory& x, const Trajectory& y) {
+        return x.type == y.type && x.time == y.time && std::memcmp(x.base, y.base, sizeof x.base) == 0;
+    };
+    std::set<int> placed;
+    for (size_t first = 0; first < snaps.size(); ++first) {
+        // first == 0: the models of the drawn snapshot; later ones: models thrown since, at their path's start.
+        for (const auto& [number, es] : snaps[first]->entities) {
+            const int type = getI(es, 4) & 0xff;
+            if ((type != kEtGeneral && type != kEtItem) || !placed.insert(number).second) continue;
+            const Trajectory pa = readTrajectory(es, kPosTrajectory);
+            // The next snapshot that carries another path for it.
+            const std::vector<uint8_t>* next = nullptr;
+            int span = game::kServerFrameMs;
+            for (size_t k = first + 1; k < snaps.size() && !next; ++k) {
+                const auto it = snaps[k]->entities.find(number);
+                if (it == snaps[k]->entities.end() || !sameType(it->second, type)) break; // gone: nothing follows
+                if (!samePath(readTrajectory(it->second, kPosTrajectory), pa)) {
+                    next = &it->second;
+                    span = std::max(span, snaps[k]->serverTime - snaps[k - 1]->serverTime);
+                }
+            }
+            if (!trajectoryMoves(pa) && !(next && trajectoryMoves(readTrajectory(*next, kPosTrajectory)))) continue;
+            float o[3];
+            // A model thrown since the drawn snapshot waits at its path's start until the drawn time reaches it.
+            const int at = first == 0 ? t : std::max(t, pa.time);
+            trajectoryAt(es, next, at, o, span);
+            game::Vec3 angles{};
+            // The angles turn along the current path (TODO(spec): a bounce's new spin before its snapshot time).
+            const Trajectory pb = next ? readTrajectory(*next, kPosTrajectory) : pa;
+            const Trajectory apos = readTrajectory(next && t >= pb.time ? *next : es, kAposTrajectory);
+            const bool turns = trajectoryMoves(apos);
+            if (turns) {
+                float an[3];
+                evaluateTrajectory(apos, std::max(t, apos.time), an);
+                angles = {an[0], an[1], an[2]};
+            }
+            w.mpPlaceRemoteModel(number, {o[0], o[1], o[2]}, turns ? &angles : nullptr);
         }
-        w.mpPlaceRemoteModel(number, {o[0], o[1], o[2]}, turns ? &angles : nullptr);
     }
+}
+
+bool RemoteView::newerSnapshot(int messageNum, int& last, std::map<int, int>& seqs) {
+    if (last >= 0 && messageNum <= last && last - messageNum < 1000) return false;
+    if (last >= 0 && messageNum < last) seqs.clear();
+    last = messageNum;
+    return true;
+}
+
+void RemoteView::predictTurret(game::World& w, PredictedTurret& pt, int commandTime, bool attack) {
+    game::Entity* t = w.playerTurretEntity();
+    if (!t) {
+        pt.clear();
+        return;
+    }
+    const auto* def = w.weapon(t->turret->weapon);
+    const auto key = [&](const char* k) -> std::string {
+        if (!def) return {};
+        const auto it = def->find(k);
+        return it == def->end() ? std::string() : it->second;
+    };
+    const int fireTimeMs = int(std::atof(key("firetime").c_str()) * 1000.0f);
+    const bool wasLooping = pt.turret() == t->number && pt.looping();
+    const int shots = pt.command(t->number, commandTime, attack, fireTimeMs);
+    for (int i = 0; i < shots; ++i) w.mpRemoteTurretFire(*t);
+    const bool looping = pt.looping();
+    w.mpSetRemoteTurretSound(*t, looping ? key("loopfiresound") : std::string(), wasLooping && !looping ? key("stopfiresound") : std::string());
+}
+
+void RemoteView::turretEvents(game::World& w, const net::ClientSnapshot& s, const std::map<int, std::string>& cs,
+                              PredictedTurret* own) {
+    // Only a snapshot newer than the last one checked: the drawn pair steps back when the clock does, and an older
+    // ring would play its last events again. A much older number is a new connection: its rings start afresh.
+    if (!s.valid || !newerSnapshot(s.messageNum, turretEventsSnapshot_, turretSeq_)) return;
+    const auto sound = [&](int index) {
+        const std::string* n = index > 0 ? cfg(cs, kSoundConfigstrings + index - 1) : nullptr;
+        return n ? *n : std::string();
+    };
+    std::set<int> present;
+    for (const auto& [number, es] : s.entities) {
+        if ((getI(es, 4) & 0xff) != kEtTurret || number < kFirstMapEntity) continue;
+        game::Entity* e = nullptr;
+        for (const auto& p : w.entities())
+            if (p->mapIndex > 0 && kFirstMapEntity + p->mapIndex - 1 == number) e = p.get();
+        if (!e || !e->turret) continue;
+        present.insert(number);
+        const bool predicted = own && own->turret() == e->number && w.playerTurretEntity() == e;
+        // Its shots and stop sounds: each new event of the ring (first sight: none replayed).
+        std::string stop;
+        const int seq = getI(es, 164) & 0xff;
+        if (auto ts = turretSeq_.find(number); ts == turretSeq_.end()) {
+            turretSeq_[number] = seq;
+        } else {
+            int from = ts->second;
+            if (((seq - from) & 0xff) > 4) from = (seq - 4) & 0xff;
+            for (int q = from; q != seq; q = (q + 1) & 0xff) {
+                const int ev = getI(es, 168 + 4 * (q & 3)) & 0xff;
+                if (ev == kEvFireWeaponMg42 && !(predicted && own->serverShot(e->number))) w.mpRemoteTurretFire(*e);
+                else if (ev == kEvSoundAlias) stop = sound(getI(es, 184 + 4 * (q & 3)) & 0xff);
+            }
+            ts->second = seq;
+        }
+        // The fire loop of its entity state (the own turret's: the prediction's).
+        if (!predicted) w.mpSetRemoteTurretSound(*e, sound(getI(es, 132) & 0xff), stop);
+    }
+    std::erase_if(turretSeq_, [&](const auto& t) { return !present.count(t.first); });
+}
+
+void RemoteView::missileEvents(game::World& w, const std::vector<const net::ClientSnapshot*>& snaps) {
+    if (snaps.empty() || !snaps.front()->valid) return;
+    const net::ClientSnapshot& s = *snaps[snaps.size() > 1 ? 1 : 0];
+    if (!newerSnapshot(s.messageNum, missileEventsSnapshot_, missileSeq_)) return; // as for the turrets
+    std::set<int> present;
+    for (const auto& [number, es] : s.entities) {
+        if ((getI(es, 4) & 0xff) != kEtGeneral) continue;
+        present.insert(number);
+        const int seq = getI(es, 164) & 0xff;
+        // First sight: a missile's last played sequence starts at 0 (the cgame's reset of a new entity, by type, MP
+        // 0x4df100), so the bounces it brings along play, the last four at most; a ring sequence of 0 plays nothing.
+        auto it = missileSeq_.find(number);
+        if (it == missileSeq_.end()) it = missileSeq_.emplace(number, 0).first;
+        int from = it->second;
+        if (((seq - from) & 0xff) > 4) from = (seq - 4) & 0xff; // more than the ring holds: the last four
+        for (int q = from; q != seq; q = (q + 1) & 0xff)
+            if ((getI(es, 168 + 4 * (q & 3)) & 0xff) == kEvGrenadeBounce) w.mpRemoteGrenadeBounce(number, getI(es, 136) & 0x1f);
+        it->second = seq;
+    }
+    std::erase_if(missileSeq_, [&](const auto& m) { return !present.count(m.first); });
 }
 
 std::string sayCommand(bool team, const std::string& text) {

@@ -506,7 +506,9 @@ void World::runGrenade(Entity& e) {
                     return;
                 }
                 const int64_t hitMs = timeMs_ - 50 + int64_t(50.0f * tr.fraction);
+                g.impactSurface = int((tr.surfaceFlags >> 20) & 0x1f);
                 if (bounceGrenade(e, tr, hitMs) && !tr.startSolid) {
+                    g.bounceEvents.push_back(g.impactSurface);
                     // The bounce event (0x5262bf): EV_POTATO_BOUNCE 0xbd for the weapon "potato", else
                     // EV_GRENADE_BOUNCE 0xbe, with the surface type (surface flags >> 20 & 0x1f). The client
                     // (0x4ba8d0 case 0xbd/0xbe) plays <potato|grenade>_bounce_<surface> (sounds built at 0x4a28c5 /

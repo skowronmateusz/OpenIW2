@@ -273,6 +273,22 @@ void worldTests(const iw2::fs::Vfs& vfs) {
         CHECK(!cl2.anim.torsoActive);
         CHECK(cl2.ent->anim->nodeStates()[size_t(t2.find("torso"))].goalWeight == 0);
     }
+    // The shellshock method on a living client starts the script's "shellshock" event (docs/spec/mp.md "Per-client player
+    // state"): its torso plays the event's animation for the others to see.
+    if (cl2.ent && cl2.ent->anim) {
+        const AnimTree& t2 = cl2.ent->anim->tree();
+        std::vector<iw2::script::Value> args{iw2::script::Value(std::string("default")), iw2::script::Value(3.0f)};
+        iw2::script::Thread th;
+        iw2::script::CallContext cc{w.vm(), th, iw2::script::Value(cl2.ent->obj), std::span<iw2::script::Value>(args)};
+        w.vm().builtin("shellshock")(cc);
+        CHECK(cl2.shockIndex > 0 && w.mpPlayerInput(c2)->shocked);
+        w.frame();
+        CHECK(!w.mpPlayerInput(c2)->shocked && cl2.anim.torsoActive);
+        const int shockAnim = t2.find("pb_stand_shellshock");
+        CHECK(shockAnim >= 0 && cl2.ent->anim->nodeStates()[size_t(shockAnim)].goalWeight > 0.9f);
+        for (int i = 0; i < 110; ++i) w.frame(); // the event's 5 s pass
+        CHECK(!cl2.anim.torsoActive);
+    }
     // Hit locations: bullets at a standing client meet its bone hit boxes (head, torso, legs), not its box.
     if (cl2.ent) {
         const auto o = cl2.ent->obj->get("origin").asVector();

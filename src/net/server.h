@@ -3,6 +3,7 @@
 // timeouts. The game itself sits behind ServerGame; the core knows nothing about worlds or scripts.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -43,6 +44,15 @@ public:
     virtual void runFrame(int frameMs) = 0;
     virtual int serverTime() const = 0;
     virtual SnapshotView snapshot(int slot) = 0;
+    // Snapshots between two game frames (docs/spec/net.md section 10 "Snapshot rate"): prepareSubFrame is called once
+    // for every snapshot time `serverTime() + subMs` (0 <= subMs < frame) before the snapshots of that time are built
+    // with snapshotAt. subFrameAllowed: false while this client must get one snapshot per game frame.
+    virtual void prepareSubFrame(int subMs) { (void)subMs; }
+    virtual SnapshotView snapshotAt(int slot, int subMs) { (void)subMs; return snapshot(slot); }
+    virtual bool subFrameAllowed(int slot) { (void)slot; return true; }
+    // The time passed since the game's last frame when the game steps on its own clock (a listen host's world); -1:
+    // the server's frame schedule tells.
+    virtual int subFrameMs(int64_t nowMs) { (void)nowMs; return -1; }
     // The client number the gamestate tells the client (its own entity and client state number); the slot by default.
     virtual int clientNumber(int slot) { return slot; }
 };
@@ -87,6 +97,11 @@ public:
     void newMap(int newServerId);
     int maxClients = 8;
     int frameMs = 50;            // sv_fps 20
+    // sv_snaps (openiw2): the snapshots a second offered to a client that asks for more than 30 (userinfo `snaps`).
+    // Above the frame rate the frame is cut into steps, and the snapshots between two game frames carry the time
+    // passed since the frame (docs/spec/net.md section 10 "Snapshot rate").
+    int snapshotHz = 60;
+    int subSteps() const { return std::max(1, snapshotHz * frameMs / 1000); }
     int timeoutMs = 240000;      // sv_timeout 240 s (docs/spec/net.md section 4a)
     int zombieMs = 2000;         // sv_zombietime 2 s
     bool publicServer = false;   // dedicated 2: a LAN address does not lift the rate
@@ -143,6 +158,7 @@ public:
         int timeoutCount = 0;        // consecutive failing timeout checks
         int rate = 5000;
         int snapshotMs = 50;         // 1000 / snaps
+        bool subFrame = false;       // gets snapshots between the game frames
         std::string pendingDrop;     // dropped at the next send (a server command overflow)
         int lastSnapshotServerTime = -1;  // the server time of the last snapshot sent (one per game frame)
         int64_t lastSnapshotMs = 0;
@@ -161,7 +177,7 @@ private:
     void applyUserinfo(Client& c);
     void updatePing(Client& c);
     void sendGamestate(int slot);
-    int sendSnapshot(int slot);
+    int sendSnapshot(int slot, int subMs = -1);
     void writeServerCommands(int slot, Msg& ops);
 
     ServerGame& game_;
@@ -173,6 +189,7 @@ private:
     const bool frameTrace_ = [] { const char* e = std::getenv("IW2_NET_TRACE"); return e && std::atoi(e) >= 2; }();
     int64_t startMs_ = -1;
     int64_t nextFrameMs_ = 0;
+    int lastSubTime_ = -1;  // the last snapshot time prepared between two frames
     int64_t clockResetUntilMs_ = -1;  // end of the window in which a client may run one older command
     int64_t timeDriftBase_ = INT64_MAX;  // real time minus server time at the last jump (or its lowest since)
     static constexpr int kTimeJumpMs = 500;           // a server behind its frame schedule by more: a time jump

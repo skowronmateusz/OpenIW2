@@ -313,11 +313,25 @@ movement) must not reach the local player when `self` is another client (a bot o
   compares it with the configstrings 0x48e + 1..15, case-insensitively), the duration 0..60 s in milliseconds
   (script errors otherwise). It stores the index, the level time and the duration in the client's player state
   (+0x5d8 / +0x5dc / +0x5e0, the net fields `shockType` / `shockStartTime` / `shockDuration`), so it reaches only that
-  client's snapshot. With the client alive (health > 0) it also adds a predictable player-state event (0x12, parameter
-  0) — TODO(spec): what the client does with that event. `stopshellshock` (0x811642a) clears the three fields.
+  client's snapshot. With the client alive (health > 0) it also starts the player animation script's event 18,
+  `shellshock` (0x81163c2..0x81163fc: the event routine 0x80d96ee of docs/spec/mp-players.md with event 0x12, no
+  parameter, forced), so the other players see the shocked one's `shellshock` animation of `mp/playeranim.script`; it is
+  not a player-state event and the shocked client's own view needs nothing from it. `stopshellshock` (0x811642a) clears
+  the three fields.
   Implemented: the fields per `MpClient`; the local view shows the local client's; the network game publishes the
   shock names as configstrings 0x48e + index and writes the three fields into the client's own snapshot, and the
-  client's view takes the start time onto its own clock like the HUD times and loads the shock record by name.
+  client's view loads the shock record by name.
+  The MP cgame reads the three fields from the current snapshot's player state every frame (0x4cff72..0x4cffc5; index
+  0 selects record 0 with the start and duration of the `cg_shellshock` test command, 0x151ad78 / 0x151ad7c) and
+  compares the start with its own time, which runs in the server's time: a shock has one start for its whole life.
+  openiw2's front end keeps its own clock, so `RemoteView::apply` moves the start onto it once per shock (a new
+  index, start or duration in the player state) and keeps that value. Before, the start was converted again with
+  every snapshot from the measured offset between the two clocks; when that offset was measured anew (it is held only
+  within 16 ms) the start moved, the stamp of the end sound (docs/spec/sound.md "Shell shock end sounds") no longer
+  matched and `shellshock_end` played again, any time after a shock and as often as the offset moved, because the
+  fields stay in the player state after the shock is over. Tests: tests/test_mpnetcombat.cpp (the start of one shock
+  does not move with the offset; a new shock takes the new one), tests/test_shellshock.cpp (a moved start replays the
+  end sound, an unchanged one does not).
 - `freezeControls` (0x80fd204) writes the client field +0x27b4 of `self`; the client think (0x80f5de9) sets ps pm_flags 0x8000 from it and
   clears the flag otherwise, so a network client's move runs frozen as in docs/spec/controls.md "freezecontrols" (no move bytes, only the
   stance buttons, velocity zeroed, no stance change, lean or weapon button; scripts read the held buttons) and the flag goes out in the

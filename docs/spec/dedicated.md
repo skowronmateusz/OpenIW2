@@ -112,6 +112,9 @@ line of eight dashes and every key of the client's userinfo padded to 20 charact
 byte against the 1.3 Linux dedicated server (getinfo, getstatus, getchallenge, rcon status / serverinfo / dumpuser and
 a bad password): only the natural values differ (ping, addresses, challenges).
 
+openiw2 adds the dvar `sv_snaps` (default 60, 20 to 100, read when the server starts; not a server-info cvar): the
+snapshots a second offered to clients that ask for them (docs/spec/net.md section 10 "Snapshot rate").
+
 ## 4. Remote console (0x8097188)
 
 A connectionless packet `rcon <password> <command…>`:

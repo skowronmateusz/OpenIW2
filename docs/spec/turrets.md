@@ -367,6 +367,28 @@ What the client learns (VAs in the 1.3 Linux dedicated server; player-state offs
   tag_flash, view shake, impact of its own trace from tag_flash, fire countdown), and the fire loop / cooldown sounds
   follow for its own turret (player sounds) and other turrets. TODO(spec): the own-turret flag's effect inside
   0x4d5c50, the original's bullet hit events (the client traces instead), the event parm without a gunner (1022 sent).
+- The fire loop and its end are the server's (0x810b926, run every frame for a turret with a client user, 0x810bb61,
+  and for one without a client, 0x810bed7): the entity state's loopSound (+0x84) is cleared, and while the fire
+  countdown (turret info +0x28, fireTime · 3 after a shot) runs it is the turret's loopFireSound index (info byte
+  +0x40) and the countdown drops by 50; when it ends and stopFireSound (+0x42) is set, loopSound is cleared again and
+  the sound event 0xb3 with the stop sound's index goes on the turret (0x811f32e -> G_AddEvent). The four bytes
+  +0x40..+0x43 are loopFireSound, loopFireSoundPlayer, stopFireSound, stopFireSoundPlayer (weapon def +0xb0..+0xbc,
+  set at 0x810c826..0x810c902; the weapon field table entries at 0x8186c58..0x8186c7c); this function reads only the
+  first and the third. Getting off (0x810b9a4) zeroes the countdown and loopSound without a stop sound. The cgame's
+  0xb3 handler (VAs in the patch 1.3 MP executable, 0x4e18c3) plays the configstring sound of the event parameter at
+  the entity; the cgame checks a snapshot's events when it becomes the next one of the drawn pair (docs/spec/net.md
+  section 11, "Grenade bounces"), so the shots and the stop are paced by the client's clock.
+  openiw2 had kept the client's own fire countdown, restarted by each arriving shot event, with the shots taken from
+  the newest snapshot as it arrived: on a bursty path (a phone hotspot) a stretch of 150 ms without a snapshot ran
+  the countdown out, the cooldown sound played and the loop stopped while attack was held, and the late shots then
+  came at once (in 0.2.5 as well). Now the server sends the loop in loopSound and the stop as event 0xb3
+  (`TurretState::stopSounds`), and the network client takes the shots, the stop sound and the loop from the newer
+  snapshot of its drawn pair (`RemoteView::turretEvents`, `World::mpSetRemoteTurretSound`), only from a snapshot newer
+  than the last one checked (the pair steps back with a clock reset); its world runs no fire countdown sound of its own. The own turret plays loopFireSoundPlayer / stopFireSoundPlayer instead of the sent
+  loopFireSound / stopFireSound (TODO(spec): where the 1.3 cgame makes that choice). Test:
+  tests/test_mpturretview.cpp (for the gunner's and a watcher's front end: a stretch without snapshots while attack
+  is held keeps the loop and plays no stop sound; the release plays the stop sound once and ends the loop; the watcher
+  hears loopFireSound, the gunner loopFireSoundPlayer; an older snapshot and the newer one again replay nothing).
   The ammo counter keeps the hand weapon: the server does not change ps.weapon on a turret (no write in 0x810a708..
   0x810c5f0); TODO(spec): whether the client ammo ownerdraw hides itself on a turret.
 - The player state to entity state copy (0x80dfe64) copies eFlags, and with any 0x300 bit set puts viewLockEntity in

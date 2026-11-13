@@ -206,6 +206,35 @@ void World::mpRemoteExplosion(bool rocket, const std::string& weapon, const Vec3
     else grenadeExplosionEffects(weapon, at, dir, surface);
 }
 
+void World::mpRemoteGrenadeBounce(int wire, int surface) {
+    if (!mp_ || !mpRemote_ || surface < 0 || surface >= 23) return;
+    const auto it = remoteModels_.find(wire);
+    if (it == remoteModels_.end() || !it->second || it->second->obj->removed) return;
+    const Vec3 at = it->second->obj->get("origin").asVector();
+    static const char* const kSurf[] = {"default", "bark", "brick", "carpet", "cloth", "concrete", "dirt", "flesh",
+                                        "foliage", "glass", "grass", "gravel", "ice", "metal", "mud", "paper",
+                                        "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
+    startSound(std::string("grenade_bounce_") + kSurf[surface], &at, nullptr, {}, kWorldSoundOwner);
+    // The effect's direction is the event parameter, the surface type, put through the direction-byte table (MP 0x4268c0).
+    if (const std::string& fx = impactEffect(8, surface); !fx.empty()) fxEvents_.push_back({fx, at, mpBounceDirection(surface)});
+}
+
+Vec3 World::mpBounceDirection(int parameter) {
+    // Entries 0..22 of the 162 unit vectors at MP 0x5ce768: the ones a surface type can select.
+    static const float kDir[23][3] = {
+        {-0.525731f, 0.000000f, 0.850651f}, {-0.442863f, 0.238856f, 0.864188f}, {-0.295242f, 0.000000f, 0.955423f},
+        {-0.309017f, 0.500000f, 0.809017f}, {-0.162460f, 0.262866f, 0.951056f}, {0.000000f, 0.000000f, 1.000000f},
+        {0.000000f, 0.850651f, 0.525731f},  {-0.147621f, 0.716567f, 0.681718f}, {0.147621f, 0.716567f, 0.681718f},
+        {0.000000f, 0.525731f, 0.850651f},  {0.309017f, 0.500000f, 0.809017f},  {0.525731f, 0.000000f, 0.850651f},
+        {0.295242f, 0.000000f, 0.955423f},  {0.442863f, 0.238856f, 0.864188f},  {0.162460f, 0.262866f, 0.951056f},
+        {-0.681718f, 0.147621f, 0.716567f}, {-0.809017f, 0.309017f, 0.500000f}, {-0.587785f, 0.425325f, 0.688191f},
+        {-0.850651f, 0.525731f, 0.000000f}, {-0.864188f, 0.442863f, 0.238856f}, {-0.716567f, 0.681718f, 0.147621f},
+        {-0.688191f, 0.587785f, 0.425325f}, {-0.500000f, 0.809017f, 0.309017f},
+    };
+    if (parameter < 0 || parameter >= 23) return Vec3{0, 0, 0};
+    return Vec3{kDir[parameter][0], kDir[parameter][1], kDir[parameter][2]};
+}
+
 void World::mpPlaceRemoteModel(int wire, const Vec3& origin, const Vec3* angles) {
     const auto it = remoteModels_.find(wire);
     if (it == remoteModels_.end() || !it->second || it->second->obj->removed) return;

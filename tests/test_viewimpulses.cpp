@@ -65,6 +65,37 @@ int main() {
     ViewImpulses e;
     e.damage(0, 0, 10, f, l, 0 + 1);
     CHECK(near(e.damageKick(101, 0, false)[0], 6.0f));
+    { // The red flash (0x4bdbe0, docs/spec/ui.md "Damage feedback"): 500 ms, |remaining * pitch kick * 0.002| capped at 5, times 0.14.
+        ViewImpulses fl;
+        CHECK(fl.damageFlashAlpha(0) == 0 && fl.damageFlashAlpha(1000) == 0); // no damage yet
+        // A light fall in multiplayer: count 20 * 0.2 = 4, raised to the minimum kick 5. Alpha 0.7 at once, linear to 0.
+        fl.damage(255, 255, 20, f, l, 1000, ViewImpulses::kMpKickScale);
+        CHECK(near(fl.damageKick(1100, 0, false)[0], -5.0f));
+        CHECK(near(fl.damageFlashAlpha(1000), 0.7f));
+        CHECK(near(fl.damageFlashAlpha(1250), 0.35f));
+        CHECK(near(fl.damageFlashAlpha(1400), 0.14f));
+        CHECK(fl.damageFlashAlpha(1500) == 0 && fl.damageFlashAlpha(3000) == 0);
+        // A heavy hit: count 100 * 0.2 = 20. The cap holds 0.7 until remaining * 20 / 500 < 5 (the last 125 ms).
+        fl.damage(255, 255, 100, f, l, 2000, ViewImpulses::kMpKickScale);
+        CHECK(near(fl.damageKick(2100, 0, false)[0], -20.0f));
+        CHECK(near(fl.damageFlashAlpha(2000), 0.7f) && near(fl.damageFlashAlpha(2375), 0.7f));
+        CHECK(near(fl.damageFlashAlpha(2450), 0.7f * 0.4f));
+        // The same count in single player kicks three times as far (cg_viewKickScale 0.6).
+        ViewImpulses sp;
+        sp.damage(255, 255, 100, f, l, 2000);
+        CHECK(near(sp.damageKick(2100, 0, false)[0], -60.0f));
+        // Only the pitch kick counts: a shot from the side (roll kick only) gives no flash, one from the front the full one.
+        ViewImpulses side;
+        side.damage(64, 0, 50, f, l, 1000, ViewImpulses::kMpKickScale); // the shot travels along +y, the view looks along +x
+        CHECK(std::fabs(side.damageKick(1100, 0, false)[1]) > 9.0f);
+        CHECK(side.damageFlashAlpha(1000) < 0.01f);
+        ViewImpulses front;
+        front.damage(128, 0, 50, f, l, 1000, ViewImpulses::kMpKickScale); // travels along -x: from the front
+        CHECK(near(front.damageFlashAlpha(1000), 0.7f));
+        // The multiplayer respawn reset: kicks cleared, so the running flash and kick end.
+        front.clearDamage();
+        CHECK(front.damageFlashAlpha(1000) == 0 && front.damageKick(1100, 0, false)[0] == 0);
+    }
     { // The landing dip on the gun (0x4b6397): a quarter of the eye's.
         ViewImpulses g;
         g.land(100.0f, 0, 1000);

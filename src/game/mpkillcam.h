@@ -132,6 +132,9 @@ struct ArchivedClient {
     int shockIndex = 0;        // the shell shock of the player state (precache index, 0 none), its start and duration
     int64_t shockStartMs = 0;
     int shockDurationMs = 0;
+    // The damage feedback fields of the player state (damageEvent, damageYaw, damagePitch, damageCount) and its spawn count
+    // (stats[5]): the copy of the followed client's player state carries them, so the replay shows his red flashes and kicks.
+    int damageEvent = 0, damageYaw = 0, damagePitch = 0, damageCount = 0, spawnCount = 0;
     MpViewState view;          // the recorded view state (the weapon field above is the same as view.weapon)
     MpEventRing ring;          // the client's event ring at the end of the frame
 };

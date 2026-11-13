@@ -234,12 +234,22 @@ float scopeOverlayDrawAlpha(float overlayAlpha, bool onTurret);
 class ViewImpulses {
 public:
     // cgame's reset on a new level / respawn (0x4ba570): no landing yet.
-    void reset() { landTime_ = -1; landChange_ = 0; damageTime_ = 0; stepTime_ = 0; stepChange_ = 0; }
-    // A damage event (cgame 0x4ba2a0 on a new ps damageEvent): kick = clamp(count * cg_viewKickScale (0.6), 5, cg_viewKickMax
-    // (90)); `fwd` and `left` are the view axes rows 0 and 1 (left = +y for yaw 0). A world hit (both bytes 255) kicks
-    // the pitch back by the full amount. `timeMs` is the client clock when the event is seen (the original stores the snapshot
-    // time, 0x4ba53d; here the world time would lie ahead of the clock and flip the kick. TODO(spec): the snapshot's time against cg.time then).
-    void damage(int yawByte, int pitchByte, int count, const V3& fwd, const V3& left, int64_t timeMs);
+    void reset() { landTime_ = -1; landChange_ = 0; damageTime_ = 0; stepTime_ = 0; stepChange_ = 0; damagePitch_ = damageRoll_ = 0; flashEnd_ = 0; }
+    // A damage event (cgame 0x4ba2a0 on a new ps damageEvent with a damage count): kick = clamp(count * scale, 5, 90). The scale is
+    // cg_viewKickScale (0.6) in single player and the constant 0.2 in the multiplayer client (kMpKickScale; docs/spec/ui.md
+    // "Damage feedback", docs/spec/mp-hud.md); 90 is cg_viewKickMax. `fwd` and `left` are the view axes rows 0 and 1 (left = +y
+    // for yaw 0). A world hit (both bytes 255) kicks the pitch back by the full amount. `timeMs` is the client clock when the
+    // event is seen (the original stores the snapshot time, 0x4ba53d; here the world time would lie ahead of the clock and flip
+    // the kick. TODO(spec): the snapshot's time against cg.time then). The red flash ends 500 ms after `timeMs`.
+    static constexpr float kSpKickScale = 0.6f, kMpKickScale = 0.2f;
+    void damage(int yawByte, int pitchByte, int count, const V3& fwd, const V3& left, int64_t timeMs, float scale = kSpKickScale);
+    // The multiplayer client's respawn reset (MP 0x4e024c..0x4e0274): both kicks and the kick's start time become 0. The flash
+    // end time stays, but the flash is a product with the pitch kick.
+    void clearDamage() { damageTime_ = 0; damagePitch_ = damageRoll_ = 0; }
+    // Alpha of the red full-screen flash (0x4bdbe0; colour kDamageFlashRgb) at `timeMs`: |remaining ms * pitch kick * 0.002|
+    // capped at 5, times 0.2 * 0.7; 0 once the 500 ms are over.
+    float damageFlashAlpha(int64_t timeMs) const;
+    static constexpr float kDamageFlashRgb[3] = {0.2f, 0.0f, 0.0f};
     // The landing report of the player state (pmove crashLand): a heavy landing (fall height above 12, no damage) or the
     // fall damage dips the view; both end as a negative z change at `timeMs` (0x4babe2 / 0x4babe8).
     // minHeight / maxHeight: the fall damage dvars (SP 200 / 350, MP 256 / 480; docs/spec/mp-pmove.md).
@@ -265,7 +275,7 @@ public:
     static int dipFromDamage(int damage, float minHeight = 200.0f, float maxHeight = 350.0f); // the cgame rebuilds h from the damage (0x4bab6e) with the fall damage dvars
 
 private:
-    int64_t landTime_ = -1, damageTime_ = 0, stepTime_ = 0;
+    int64_t landTime_ = -1, damageTime_ = 0, stepTime_ = 0, flashEnd_ = 0;
     float stepChange_ = 0;
     float landChange_ = 0, damagePitch_ = 0, damageRoll_ = 0;
 };

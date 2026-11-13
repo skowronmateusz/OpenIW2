@@ -280,6 +280,44 @@ script runs) is the menu a `show`/`hide`/`setfocus` command acts on (inferred fr
 
 The client handler of the pickup events 0x90 / 0x91 (0x4bad52) calls 0x4ba680 with the item index only when the event's entity is the local client. It draws no pickup icon, text or flash of its own (the on-screen text is the separate `gm` message of Pickup_Weapon). It looks the index up in the item table (0x5a66f8): weapon items only. A weapon of class "item" does nothing. An offhand weapon (def +0x84 set) runs 0x4b8ba0 when no offhand is selected (0xf79700 is 0): it stores the weapon there and touches the `offhandinfo` HUD fade (0xf79a48 = level time, window flag +0xe8 |= 4, through the generic touch 0x4a6130). Any other weapon runs the weapon select 0x4b8360 when no weapon is selected (0xf796e0 is 0): the weapon becomes the selected one, the weapon-change time 0xf796e4 is stamped, `offhandinfo` (0x4a6130(4)) and the ammo display `weaponinfo` (0xf79a40) are touched, and a toggled aim ends unless the weapon is the old one's altWeapon. With a weapon already selected the pickup changes nothing on the HUD. Port: `pickupHudAction`, `World::takePickupEvents`, applied in iw2view next to the other HUD fade touches. TODO(spec): where 0xf79700 is reset (the port takes "the weapon became the player's offhand" as "none was selected").
 
+## Damage feedback (cgame 0x4ba2a0)
+
+VAs in the patch 1.3 SP executable; the multiplayer client's copies are in docs/spec/mp-hud.md.
+
+Trigger (0x4ba1b7..0x4ba1e4, and the same test at 0x4ba66c): the player state's damageEvent differs from the previous player
+state's and its damageCount is not 0. Nothing below happens for a changed damageEvent with a count of 0. The arguments are
+damageYaw, damagePitch and damageCount.
+
+1. Kick size: count × `cg_viewKickScale` (float, default 0.6, range 0..10, registered at 0x4a1b2f), at least 5, at most
+   `cg_viewKickMax` (default 90, 0x4a1b59).
+2. Damage from the world (yaw and pitch both 255): pitch kick = −size, roll kick = 0. Otherwise the direction v is the negated
+   forward vector of the angles (pitch byte, yaw byte) × 360 / 255; roll kick = (v · view left) × size, pitch kick =
+   −(v · view forward) × size, and the oldest of the 8 direction icon slots takes the snapshot time, `cg_hudDamageIconTime`
+   and the yaw byte's angle with ±10 degrees of noise (0x4ba41b..0x4ba517).
+3. In both cases (0x4ba523..0x4ba561): the flash end time 0xf79798 = client time + 500; the kick's start time 0xf79764 = the
+   snapshot's server time; when the stamp 0xf79a3c is older than the client time it becomes the client time and the menu named
+   "Health" gets its visible flag (window flags +0xe8 bit 0x4, see "Menu focus and mouse routing"), so the health bar comes up and
+   fades by its own fade time from that stamp.
+
+Red flash (0x4bdbe0, called from the 2D pass 0x4bfa70 at 0x4bfacd, right before the direction icons 0x4bdcb0, only with a
+snapshot): while the flash end time lies ahead of the client time, v = |remaining ms × pitch kick × 0.002|, at most 5; the
+whole screen (x and y from −10, the screen size + 10 wide and high) is filled through the white material 0x1107440 with the
+colour (0.2, 0, 0) and alpha v × 0.2 × 0.7. Only the pitch kick counts: a hit from the side (roll kick only) gives almost no
+flash, a fall or a hit from the front or behind the full one. With the minimum kick of 5 the alpha starts at 0.7 and falls to 0
+over the 500 ms; a larger kick holds 0.7 until remaining × kick / 500 drops below 5.
+
+View kick: docs/spec/weapons.md ("Damage kick on the gun") and `ViewImpulses::damageKick`. Direction icons (0x4bdcb0): the
+`hit_direction` material, `cg_hudDamageIconWidth` 128 × `cg_hudDamageIconHeight` 64, `cg_hudDamageIconOffset` 128 below the
+screen centre, turned by view yaw − icon yaw, alpha 2 − 2 × elapsed / duration capped at 1, not under a scope overlay unless
+`cg_hudDamageIconInScope`.
+
+The single-player client has no writer of the kicks, the kick's start time or the flash end time besides this routine
+(the client state is cleared as a whole with a new level); the multiplayer client's respawn reset is in docs/spec/mp-hud.md.
+
+Implemented: `ViewImpulses::damage` / `damageFlashAlpha` (src/game/viewweapon.h), drawn by iw2view before the direction
+icons. openiw2 had no red flash at all and gave the health bar touch and an icon for a count of 0. Test:
+tests/test_viewimpulses.cpp.
+
 ## Brightness (r_gamma)
 
 - Menu: the graphics options page (`ui/options_graphics.menu`) has a slider item bound to the float dvar `r_gamma`, range 0.5 .. 3 (the item

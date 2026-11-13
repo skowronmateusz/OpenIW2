@@ -207,7 +207,7 @@ struct ServerProcess {
 // ---------------------------------------------------------------------------------------------------------------
 // A scripted network client (iw2view's client side of the network game)
 
-constexpr uint32_t kFollowBit = 0x100000;  // pm_flags of a followed player state (killcam)
+constexpr uint32_t kFollowBit = 0x400000;  // pm_flags of a followed player state (killcam)
 constexpr int kEntitynumNone = 1023;       // groundEntityNum (ps+0x60) of a player in the air
 
 struct Scenario {
@@ -370,6 +370,7 @@ struct Observer {
     int pmType = -1;
     int health = 0;
     int64_t lastDamageMs = -100000;  // the server's health fell (a hit also pushes the player: not predictable)
+    int damageCount = 0;             // how often it fell
     int teleportBit = -1;            // the player state's teleport bit (eFlags 2): it toggles with every spawn
     int restartBit = -1;             // the snapshot flag 4: it flips with every map_restart (an sd round restart places the players again)
     int64_t lastTeleportMs = -100000; // one of them changed: the server placed the player without a command
@@ -402,7 +403,7 @@ struct Life {
     float jumpBaseZ = 0, jumpApex = -1e9f;
     std::vector<float> apexes;
     int openJump = -1;  // the jump being measured
-    int predictedJumpsAtStart = 0, landsAtStart = 0, eventsAtStart = 0, landsAtSpawn = 0;
+    int predictedJumpsAtStart = 0, landsAtStart = 0, eventsAtStart = 0, landsAtSpawn = 0, damageAtStart = 0;
     std::string pressDetail, grenadeDetail;
     float freeHeight = 44;  // over the head at the first press (a ceiling ends the jump early)
     bool mantled = false;   // a press next to a ledge mantled (the jump button is the mantle button): no jump to measure
@@ -417,6 +418,12 @@ struct Life {
     int grenadeClipNow = -1;
     std::set<int> grenadeKinds;
     std::vector<float> grenadeSteps;
+    // What the throw looked like in the snapshots, for the report of a missing grenade: the weapon states and the own
+    // events of the player state, its health, and every general entity with its trajectory types.
+    std::vector<int> grenadeStates, grenadeEvents;
+    std::map<int, std::set<int>> grenadeEnts;
+    int grenadeEventSeq = -1, grenadeMinHealth = 1 << 30, grenadeSnaps = 0, grenadeLastMsg = -1;
+    int grenadePressFrames = 0, grenadePressCmds = 0;
     // stance
     std::map<int, int> stanceSeen;
     bool scoreboardAnswered = false;
@@ -623,7 +630,10 @@ struct Soak {
         bool newSnap = false;
         if (last) {
             c.rv.apply(*c.view, *last, c.gc->configstrings, c.gc->clientNum, c.view->timeMs(), &c.predictedWeapon.ammo);
-            if (a && b) netgame::RemoteView::placeTrajectories(*c.view, *a, *b, c.gc->renderTime(netNow));
+            if (a && b) {
+                const int trajTime = c.gc->renderTime(netNow) - netgame::RemoteView::trajectoryDelayMs(c.gc->snapshotIntervalMs());
+                netgame::RemoteView::placeTrajectories(*c.view, c.gc->snapshotsFrom(trajTime), trajTime);
+            }
             c.rv.playerEvents(*c.view, *last, c.gc->configstrings, c.gc->clientNum);
             c.rv.followEvents(*c.view, *last, c.gc->configstrings, c.view->timeMs());
             newSnap = last->messageNum != c.lastSnapMsg;
@@ -822,7 +832,7 @@ struct Soak {
         const bool following = (uint32_t(pmFlags) & kFollowBit) != 0;
         const int health = getI(last->ps, 300);
         if (!netgame::RemoteView::following(*last)) {
-            if (o.health > 0 && health < o.health) o.lastDamageMs = now;
+            if (o.health > 0 && health < o.health) o.lastDamageMs = now, ++o.damageCount;
             o.health = health;
             const int bit = getI(last->ps, 160) & 2;
             if (o.teleportBit >= 0 && bit != o.teleportBit) o.lastTeleportMs = now;
@@ -1095,6 +1105,7 @@ struct Soak {
                     life.freeHeight = up.fraction * 44;
                     life.predictedJumpsAtStart = c.predictedJumps;
                     life.landsAtStart = c.predictedLands;
+                    life.damageAtStart = obs[0].damageCount;
                     life.eventsAtStart = c.playedEventKinds[0];
                 }
             }
@@ -1158,6 +1169,7 @@ struct Soak {
         if (phase(29.0, 29.4)) {
             sc.buttons |= game::Button::Frag;
             c.pitch = -20.0f;
+            ++life.grenadePressFrames;
         }
         if (once(10, 29.0) && c.view->player()) {
             const game::Inventory& inv = c.view->inventory(*c.view->player());
@@ -1175,6 +1187,21 @@ struct Soak {
             }
             for (const auto& [n, es] : last->entities)
                 if ((getI(es, 4) & 0xff) == netgame::kEtGeneral) life.grenadeKinds.insert(getI(es, 12));
+            // Every snapshot received in the window, not only the newest of each frame.
+            for (const net::ClientSnapshot* sn : c.gc->snapshotsFrom(-1e18)) {
+                if (!sn->valid || sn->messageNum <= life.grenadeLastMsg) continue;
+                life.grenadeLastMsg = sn->messageNum;
+                ++life.grenadeSnaps;
+                const int st = getI(sn->ps, 216) & 31;
+                if (life.grenadeStates.empty() || life.grenadeStates.back() != st) life.grenadeStates.push_back(st);
+                life.grenadeMinHealth = std::min(life.grenadeMinHealth, getI(sn->ps, 300));
+                const int seq = getI(sn->ps, 164) & 0xff;
+                if (life.grenadeEventSeq < 0) life.grenadeEventSeq = seq;
+                for (; life.grenadeEventSeq != seq; life.grenadeEventSeq = (life.grenadeEventSeq + 1) & 0xff)
+                    life.grenadeEvents.push_back(getI(sn->ps, size_t(168 + 4 * (life.grenadeEventSeq & 3))) & 0xff);
+                for (const auto& [n, es] : sn->entities)
+                    if ((getI(es, 4) & 0xff) == netgame::kEtGeneral) life.grenadeEnts[n].insert(getI(es, 12));
+            }
             watchGrenade(c, *last);
         }
         if (once(8, 33.0)) evaluateGrenade(c);
@@ -1245,8 +1272,9 @@ struct Soak {
         const int lands = c.predictedLands - life.landsAtStart;
         const int skipped = 3 - life.jumpPresses;  // slots without a settled on-ground state
         char b[700];
-        std::snprintf(b, sizeof b, "apex heights %s(expected %.0f), predicted jump starts %d, landings %d for %d presses%s;%s", all.c_str(),
-                      mp.jumpHeight, jumps, lands, life.jumpPresses, skipped > 0 ? ", slots skipped for no settled state" : "",
+        const int hits = obs[0].damageCount - life.damageAtStart; // hits taken since the first press
+        std::snprintf(b, sizeof b, "apex heights %s(expected %.0f), predicted jump starts %d, landings %d for %d presses%s, hits taken meanwhile %d;%s",
+                      all.c_str(), mp.jumpHeight, jumps, lands, life.jumpPresses, skipped > 0 ? ", slots skipped for no settled state" : "", hits,
                       life.pressDetail.c_str());
         gReport.note(currentMapKey + " life " + std::to_string(life.number) + ": " + b);
         apexByMap[currentMapKey].push_back(best);
@@ -1318,7 +1346,20 @@ struct Soak {
         std::snprintf(b, sizeof b, "grenade seen %d, drawn steps %zu, frames without motion in flight %d of %d; %s, server clip after %d, trajectory kinds %zu, origin %.0f %.0f %.0f yaw %.0f", life.grenadeSeen ? 1 : 0,
                       life.grenadeSteps.size(), still, moving, life.grenadeDetail.c_str(), life.grenadeClipNow, life.grenadeKinds.size(), c.ps.origin[0], c.ps.origin[1], c.ps.origin[2], c.yaw);
         gReport.note(currentMapKey + " life " + std::to_string(life.number) + ": " + b);
-        if (!life.grenadeSeen) gReport.add("grenade.missing", b);
+        if (!life.grenadeSeen) {
+            std::ostringstream d;
+            d << b << "; press frames " << life.grenadePressFrames << ", snapshots in the window " << life.grenadeSnaps << ", lowest health "
+              << life.grenadeMinHealth << ", weapon states";
+            for (int st : life.grenadeStates) d << ' ' << st;
+            d << ", own events" << std::hex;
+            for (int ev : life.grenadeEvents) d << ' ' << ev;
+            d << std::dec << ", general entities";
+            for (const auto& [n, kinds] : life.grenadeEnts) {
+                d << ' ' << n << ':';
+                for (int k : kinds) d << k << '/';
+            }
+            gReport.add("grenade.missing", d.str());
+        }
         if (moving > 4 && still * 5 > moving) gReport.add("grenade.stutter", b);
     }
 
@@ -1516,7 +1557,21 @@ int run(fs::Vfs& vfs, const std::string& mainDir) {
     soak.addClient("soakA", uint16_t(soak.server.port));
     soak.addClient("soakB", uint16_t(soak.server.port));
 
-    const int64_t deadline = gStart + int64_t(mapsWanted) * int64_t(std::atof(minutes.c_str()) * 60000.0 + 45000.0) + 60000;
+    // The time the run may take: a time limit and a change per map. An sd map is not ended by the time limit: it plays its
+    // two rounds (scr_sd_roundlimit above), each up to the round length when nobody is eliminated, so every pass of the
+    // rotation over an sd map gets a second round's time (a run with two full rounds otherwise ran out of time one map short).
+    int sdMaps = 0;
+    {
+        std::istringstream rot(rotation);
+        std::string tok, gt;
+        while (rot >> tok) {
+            if (tok == "gametype") rot >> gt;
+            else if (tok == "map" && rot >> tok && gt == "sd") ++sdMaps;
+        }
+        sdMaps *= (mapsWanted + std::max(1, countRotation(rotation)) - 1) / std::max(1, countRotation(rotation));
+    }
+    const int64_t mapMs = int64_t(std::atof(minutes.c_str()) * 60000.0);
+    const int64_t deadline = gStart + int64_t(mapsWanted) * (mapMs + 45000) + int64_t(sdMaps) * (mapMs + 30000) + 60000;
     int64_t lastRss = 0, lastFrame = nowMs();
     int64_t lastProgress = 0, lastRejoin = nowMs();
     while (nowMs() < deadline && soak.mapsPlayed < mapsWanted) {

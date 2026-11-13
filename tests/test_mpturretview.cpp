@@ -5,6 +5,7 @@
 // the turret and kills a second client in front of it with the turret weapon in the obituary, and a second use press
 // gets it off. Run on a listen server (gunner = MP client 2) and on a dedicated-style server where the gunner is MP
 // client 0, the client whose player state is the World's own. Needs IW2_MAIN.
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -112,6 +113,7 @@ void run(fs::Vfs& vfs, bool listen) {
     }
     const int gunner = g.connect("gunner");
     const int victim = g.connect("victim");
+    const int watcher = g.connect("watcher"); // stays out of the game (no team): another front end that sees the turret
     std::cout << label << ": gunner " << gunner << " victim " << victim << "\n";
     CHECK(gunner >= 0 && victim >= 0);
     if (gunner < 0 || victim < 0) return;
@@ -147,9 +149,82 @@ void run(fs::Vfs& vfs, bool listen) {
     std::string flashFx;
     if (const auto* wd = view.weapon("30cal_stand_mp"))
         if (const auto it = wd->find("worldflasheffect"); it != wd->end()) flashFx = it->second;
+    // The turret's sounds in the front end (the loop and its stop come from the server's entity state and events).
+    struct Played { std::string alias; int handle; bool stopped = false; };
+    std::vector<Played> played;
+    view.playSound = [&](const std::string& alias, const game::Vec3*, float*, int) {
+        played.push_back({alias, int(played.size()) + 1});
+        return int(played.size());
+    };
+    view.stopSound = [&](int h) {
+        if (h > 0 && size_t(h) <= played.size()) played[size_t(h - 1)].stopped = true;
+    };
+    auto count = [&](const std::string& alias) { return int(std::count_if(played.begin(), played.end(), [&](const Played& p) { return p.alias == alias; })); };
+    auto looping = [&](const std::string& alias) {
+        return std::any_of(played.begin(), played.end(), [&](const Played& p) { return p.alias == alias && !p.stopped; });
+    };
+    std::string loopPlr, stopPlr;
+    if (const auto* wd = view.weapon("30cal_stand_mp")) {
+        if (const auto it = wd->find("loopfiresoundplayer"); it != wd->end()) loopPlr = it->second;
+        if (const auto it = wd->find("stopfiresoundplayer"); it != wd->end()) stopPlr = it->second;
+    }
+    // The own turret's fire is predicted on the client's commands (docs/spec/net.md section 10 "Predicted turret
+    // fire"); predict() alone is a frame whose snapshots have not come yet.
+    netgame::PredictedTurret pt;
+    auto predict = [&]() {
+        if (const net::UserCmd* lc = cg.net->lastCommand()) netgame::RemoteView::predictTurret(view, pt, lc->serverTime, (lc->buttons & 1) != 0);
+        view.frame();
+        for (const auto& f : view.takeFxEvents())
+            if (f.path == flashFx && f.tag == "tag_flash") ++flashes;
+    };
+    // The watcher's front end: the turret's loop and its stop come from the server's entity state and event ring.
+    World wview(vfs, kMap, true);
+    wview.mpStartRemote();
+    netgame::RemoteView wrv;
+    std::vector<Played> wplayed;
+    wview.playSound = [&](const std::string& alias, const game::Vec3*, float*, int) {
+        wplayed.push_back({alias, int(wplayed.size()) + 1});
+        return int(wplayed.size());
+    };
+    wview.stopSound = [&](int h) {
+        if (h > 0 && size_t(h) <= wplayed.size()) wplayed[size_t(h - 1)].stopped = true;
+    };
+    auto wcount = [&](const std::string& alias) { return int(std::count_if(wplayed.begin(), wplayed.end(), [&](const Played& p) { return p.alias == alias; })); };
+    auto wlooping = [&](const std::string& alias) {
+        return std::any_of(wplayed.begin(), wplayed.end(), [&](const Played& p) { return p.alias == alias && !p.stopped; });
+    };
+    std::string loopSnd, stopSnd;
+    if (const auto* wd = view.weapon("30cal_stand_mp")) {
+        if (const auto it = wd->find("loopfiresound"); it != wd->end()) loopSnd = it->second;
+        if (const auto it = wd->find("stopfiresound"); it != wd->end()) stopSnd = it->second;
+    }
+    Client& cw = g.clients[2];
+    int wflashes = 0;
+    std::vector<net::ClientSnapshot> wsnaps, gsnaps; // the last few snapshots of the watcher and the gunner
+    auto wframe = [&]() {
+        wview.frame();
+        for (const auto& f : wview.takeFxEvents())
+            if (f.path == flashFx && f.tag == "tag_flash") ++wflashes;
+    };
+    auto showWatcher = [&]() {
+        if (const net::ClientSnapshot* snap = cw.net->latest()) {
+            wrv.apply(wview, *snap, cw.net->configstrings, watcher, wview.timeMs());
+            wrv.turretEvents(wview, *snap, cw.net->configstrings);
+            wframe();
+            wsnaps.push_back(*snap);
+            if (wsnaps.size() > 4) wsnaps.erase(wsnaps.begin());
+        }
+        if (const net::ClientSnapshot* snap = cg.net->latest()) {
+            gsnaps.push_back(*snap);
+            if (gsnaps.size() > 4) gsnaps.erase(gsnaps.begin());
+        }
+    };
     auto show = [&]() {
+        showWatcher();
         if (const net::ClientSnapshot* snap = cg.net->latest()) {
             rv.apply(view, *snap, cg.net->configstrings, gunner, view.timeMs());
+            if (const net::UserCmd* lc = cg.net->lastCommand()) netgame::RemoteView::predictTurret(view, pt, lc->serverTime, (lc->buttons & 1) != 0);
+            rv.turretEvents(view, *snap, cg.net->configstrings, &pt);
             psf = netgame::readPs(snap->ps);
             predicted = netgame::predictPlayer(view.collision(), psf, cg.net->commandsAfter(psf.commandTime), &predicted);
             view.frame();
@@ -206,6 +281,7 @@ void run(fs::Vfs& vfs, bool listen) {
     CHECK(vt && std::fabs(vt->turret->yaw - t->turret->yaw) < 0.5f);
     cg.yaw = ta[1];
     // Attack: the turret fires and kills the victim in front of it; the obituary names the turret weapon.
+    const int flashes0 = flashes, shots0 = t->turret->fireCount;
     cg.buttons = game::Button::Attack;
     const size_t obits = g.host.mpState().obituaryLog.size();
     bool killed = false;
@@ -226,6 +302,89 @@ void run(fs::Vfs& vfs, bool listen) {
     }
     CHECK(killed);
     CHECK(lockFired);
+    // Every shot of the server is drawn once: predicted and matched by its event, not played a second time.
+    std::cout << label << ": flashes " << flashes - flashes0 << " for " << t->turret->fireCount - shots0 << " server shots, "
+              << pt.pending() << " predicted shots unmatched\n";
+    CHECK(flashes - flashes0 == t->turret->fireCount - shots0);
+    CHECK(pt.pending() <= 1);
+    // A stretch without snapshots while attack is held (a bursty path): the front end's world runs on, the fire loop
+    // goes on and no stop sound plays; the loop is the own turret's player variant.
+    // The drawn pair stepping back (a clock reset) and forward again replays no event: no flash, no stop sound, and
+    // the gunner's predicted shots keep their matches.
+    {
+        CHECK(wsnaps.size() == 4 && gsnaps.size() == 4);
+        const int wf0 = wflashes, f0 = flashes, pending0 = pt.pending(), wstops0 = wcount(stopSnd), stops0 = count(stopPlr);
+        if (wsnaps.size() == 4 && gsnaps.size() == 4) {
+            wrv.turretEvents(wview, wsnaps[0], cw.net->configstrings);
+            wrv.turretEvents(wview, wsnaps[3], cw.net->configstrings);
+            wframe();
+            rv.turretEvents(view, gsnaps[0], cg.net->configstrings, &pt);
+            rv.turretEvents(view, gsnaps[3], cg.net->configstrings, &pt);
+            view.frame();
+            for (const auto& f : view.takeFxEvents())
+                if (f.path == flashFx && f.tag == "tag_flash") ++flashes;
+        }
+        std::cout << label << ": a step back and forward: watcher flashes " << wflashes - wf0 << ", gunner flashes " << flashes - f0
+                  << ", predicted shots unmatched " << pending0 << " -> " << pt.pending() << "\n";
+        CHECK(wflashes == wf0 && flashes == f0 && pt.pending() == pending0);
+        CHECK(wcount(stopSnd) == wstops0 && count(stopPlr) == stops0);
+    }
+    const int stopsHeld = count(stopPlr), wstopsHeld = wcount(stopSnd);
+    const bool wloopFiring = wlooping(loopSnd);
+    for (int i = 0; i < 6; ++i) {
+        g.frame();
+        view.frame();
+        wframe();
+    }
+    for (int i = 0; i < 4; ++i) {
+        g.frame();
+        show();
+    }
+    std::cout << label << ": loop " << loopPlr << " playing " << looping(loopPlr) << ", stop sounds while held " << count(stopPlr) - stopsHeld << "\n";
+    CHECK(!loopPlr.empty() && !stopPlr.empty());
+    CHECK(looping(loopPlr));
+    CHECK(count(stopPlr) == stopsHeld);
+    std::cout << label << ": watcher: loop " << loopSnd << " while firing " << wloopFiring << ", after the gap " << wlooping(loopSnd)
+              << ", stop sounds while held " << wcount(stopSnd) - wstopsHeld << "\n";
+    CHECK(!loopSnd.empty() && !stopSnd.empty() && loopSnd != loopPlr);
+    CHECK(wloopFiring && wlooping(loopSnd));
+    CHECK(wcount(stopSnd) == wstopsHeld);
+    CHECK(wcount(loopPlr) == 0);
+    // Attack released: the server's stop sound event plays once and the loop ends.
+    cg.buttons = 0;
+    for (int i = 0; i < 8; ++i) {
+        g.frame();
+        show();
+    }
+    std::cout << label << ": after the release: stop sounds " << count(stopPlr) - stopsHeld << ", loop playing " << looping(loopPlr) << "\n";
+    CHECK(count(stopPlr) == stopsHeld + 1);
+    CHECK(!looping(loopPlr));
+    std::cout << label << ": watcher after the release: stop sounds " << wcount(stopSnd) - wstopsHeld << ", loop playing " << wlooping(loopSnd) << "\n";
+    CHECK(wcount(stopSnd) == wstopsHeld + 1);
+    CHECK(!wlooping(loopSnd));
+    // A press whose snapshots have not come yet: the predicted shot's flash and the fire loop start in that frame; the
+    // server's shots that follow are matched, not drawn twice.
+    {
+        const int f0 = flashes, s0 = t->turret->fireCount;
+        cg.buttons = game::Button::Attack;
+        g.frame();
+        predict();
+        std::cout << label << ": press before its snapshot: " << flashes - f0 << " flash, loop " << looping(loopPlr) << "\n";
+        CHECK(flashes - f0 == 1);
+        CHECK(looping(loopPlr));
+        for (int i = 0; i < 5; ++i) {
+            g.frame();
+            show();
+        }
+        cg.buttons = 0;
+        for (int i = 0; i < 6; ++i) {
+            g.frame();
+            show();
+        }
+        std::cout << label << ": that burst: " << flashes - f0 << " flashes for " << t->turret->fireCount - s0 << " server shots\n";
+        CHECK(flashes - f0 == t->turret->fireCount - s0);
+        CHECK(!looping(loopPlr));
+    }
     // The front end plays the turret's shots (EV_FIRE_WEAPON_MG42 on the turret): the muzzle flash at tag_flash.
     std::cout << label << ": flashes " << flashes << " shots " << t->turret->fireCount << "\n";
     CHECK(!flashFx.empty());

@@ -42,6 +42,12 @@ public:
     ~GameClient();
 
     std::string name = "player";
+    // Userinfo `snaps` and `rate` (docs/spec/net.md section 4a). openiw2 asks for the snapshots between the game
+    // frames (section 10 "Snapshot rate"; a 1.3 client sends 20); IW2_SNAPS overrides.
+    int snaps = 60;
+    // The server's limit (90000 bytes a second): at 25000, the 1.3 client's highest menu value, a full server's
+    // snapshots are too large for 60 a second (measured: 43 a second with 12 bots).
+    int rate = 90000;
     std::string error;        // why the client disconnected
     // The reason for the error dialog (docs/spec/net.md section 14): a localization key, parameters behind 0x15, or plain
     // text. dropFromServer: the server ended the connection (`w` server command), else the connection was refused or lost.
@@ -86,6 +92,15 @@ public:
     // the player saw. Marks the clock as extrapolating when it reaches the newest snapshot's time - 5 ms.
     int commandTime(int64_t nowMs) const;
     int renderTime(int64_t nowMs) const { return commandTime(nowMs); }
+    // The part of the last client time below the millisecond (the even clock; 0 with the plain rule).
+    double timeFraction() const { return clock_.fraction(); }
+    // Past the newest snapshot (docs/spec/net.md section 10 "Past the newest snapshot"): how far the drawn time t lies
+    // past it, at most kExtrapolateMs (0 when it is not past it).
+    static constexpr int kExtrapolateMs = 30;
+    float pastNewestMs(double t) const {
+        if (!latest_.valid || t <= double(latest_.serverTime)) return 0.0f;
+        return float(std::min(t - double(latest_.serverTime), double(kExtrapolateMs)));
+    }
     int timeDelta() const { return clock_.delta(); }
     bool extrapolating() const { return clock_.extrapolating(); }
     // The time delta rule of the 1.3 client, applied once per received snapshot (docs/spec/net.md section 10):
@@ -111,6 +126,11 @@ public:
     // t may carry a fraction of a millisecond (openiw2: the drawn frame's real time below the millisecond, so that the
     // fraction moves on by the frame's real length and not by 8 or 9 whole ms).
     bool interpolation(double t, const ClientSnapshot*& a, const ClientSnapshot*& b, float& frac) const;
+    // The kept snapshots from the one drawn at t on: the newest one at or before t first (the oldest kept one when t
+    // lies before all), then every later one in time order. Empty without a snapshot.
+    std::vector<const ClientSnapshot*> snapshotsFrom(double t) const;
+    // The interval between the snapshots as the clock has it (the newest two with the plain rule); 0: not known.
+    int snapshotIntervalMs() const;
     int snapshots = 0;
     int deltaSnapshots = 0;
     int droppedSnapshots = 0;
@@ -154,6 +174,8 @@ private:
     bool haveDelta_ = false;
     int64_t lastPollMs_ = 0;
     bool lateRead_ = false;              // this poll follows a long gap
+    int arrivalAgeMs_ = 0;               // how long the packet being handled waited in the socket
+    bool arrivalKnown_ = false;          // the system told when it arrived
     mutable ClientClock clock_;          // the client time (docs/spec/net.md section 10); IW2_CLOCK_PLAIN=1: the plain 1.3 rule
     // The last commands (the prediction runs those after the snapshot). The original keeps 128; openiw2 keeps more, so
     // that a server which holds this client's commands (docs/spec/net.md section 10 "Commands on a bursty path") does
