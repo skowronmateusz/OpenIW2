@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -40,6 +41,12 @@ using game::World;
 using script::Value;
 
 constexpr const char* kMap = "mp_carentan";
+
+int32_t getI(const std::vector<uint8_t>& b, size_t off) {
+    int32_t v = 0;
+    if (off + 4 <= b.size()) std::memcpy(&v, b.data() + off, 4);
+    return v;
+}
 
 game::Vec3 origin(const Entity* e) { return e ? e->obj->get("origin").asVector() : game::Vec3{0, 0, 0}; }
 
@@ -172,7 +179,7 @@ void run(fs::Vfs& vfs, bool listen) {
     // fire"); predict() alone is a frame whose snapshots have not come yet.
     netgame::PredictedTurret pt;
     auto predict = [&]() {
-        if (const net::UserCmd* lc = cg.net->lastCommand()) netgame::RemoteView::predictTurret(view, pt, lc->serverTime, (lc->buttons & 1) != 0);
+        if (const net::UserCmd* lc = cg.net->lastCommand()) netgame::RemoteView::predictTurret(view, pt, lc->serverTime, (lc->buttons & 1) != 0, cg.net->latest());
         view.frame();
         for (const auto& f : view.takeFxEvents())
             if (f.path == flashFx && f.tag == "tag_flash") ++flashes;
@@ -223,7 +230,7 @@ void run(fs::Vfs& vfs, bool listen) {
         showWatcher();
         if (const net::ClientSnapshot* snap = cg.net->latest()) {
             rv.apply(view, *snap, cg.net->configstrings, gunner, view.timeMs());
-            if (const net::UserCmd* lc = cg.net->lastCommand()) netgame::RemoteView::predictTurret(view, pt, lc->serverTime, (lc->buttons & 1) != 0);
+            if (const net::UserCmd* lc = cg.net->lastCommand()) netgame::RemoteView::predictTurret(view, pt, lc->serverTime, (lc->buttons & 1) != 0, cg.net->latest());
             rv.turretEvents(view, *snap, cg.net->configstrings, &pt);
             psf = netgame::readPs(snap->ps);
             predicted = netgame::predictPlayer(view.collision(), psf, cg.net->commandsAfter(psf.commandTime), &predicted);
@@ -385,6 +392,43 @@ void run(fs::Vfs& vfs, bool listen) {
         CHECK(flashes - f0 == t->turret->fireCount - s0);
         CHECK(!looping(loopPlr));
     }
+    // A player state of pm_type 4 or more (the intermission's 5), or one that follows another client (a killcam of a
+    // killer on a turret), predicts no turret shot and ends a predicted fire loop with its stop sound (PM_Weapon's
+    // early-out; no prediction while following, docs/spec/turrets.md "Multiplayer").
+    for (const bool followCase : {false, true}) {
+        cg.buttons = game::Button::Attack;
+        g.frame();
+        predict(); // a shot predicted at once, the loop runs
+        CHECK(looping(loopPlr));
+        const int f0 = flashes, stops0 = count(stopPlr);
+        for (int i = 0; i < 4; ++i) {
+            g.frame();
+            net::ClientSnapshot blocked = *cg.net->latest();
+            if (followCase) {
+                const int32_t flags = getI(blocked.ps, 12) | 0x400000;
+                std::memcpy(blocked.ps.data() + 12, &flags, 4);
+            } else {
+                netgame::PsFields f = netgame::readPs(blocked.ps);
+                f.pmType = 5;
+                netgame::writePs(blocked.ps, f);
+            }
+            if (const net::UserCmd* lc = cg.net->lastCommand()) netgame::RemoteView::predictTurret(view, pt, lc->serverTime, true, &blocked);
+            view.frame();
+            for (const auto& f : view.takeFxEvents())
+                if (f.path == flashFx && f.tag == "tag_flash") ++flashes;
+        }
+        std::cout << label << (followCase ? ": following" : ": pm_type 5") << " on the turret: " << flashes - f0 << " predicted flashes, stop sounds "
+                  << count(stopPlr) - stops0 << ", loop " << looping(loopPlr) << "\n";
+        CHECK(flashes == f0);
+        CHECK(count(stopPlr) == stops0 + 1);
+        CHECK(!looping(loopPlr));
+        CHECK(pt.pending() == 0);
+        cg.buttons = 0;
+        for (int i = 0; i < 10; ++i) {
+            g.frame();
+            show();
+        }
+    }
     // The front end plays the turret's shots (EV_FIRE_WEAPON_MG42 on the turret): the muzzle flash at tag_flash.
     std::cout << label << ": flashes " << flashes << " shots " << t->turret->fireCount << "\n";
     CHECK(!flashFx.empty());
@@ -403,6 +447,40 @@ void run(fs::Vfs& vfs, bool listen) {
     CHECK(!t->turret->inUse);
     CHECK((psf.eFlags & 0x300) == 0 && psf.viewLockEntity == 1023);
     CHECK(!view.playerOnTurret());
+    // On the gun with attack held when the map ends (dm.gsc endMap -> spawnIntermission): the intermission spawn takes
+    // the gunner off (docs/spec/turrets.md "Multiplayer"); his snapshot says so, the turret stops, the front end fires
+    // nothing more.
+    pg->obj->set("origin", Value(behind));
+    cg.yaw = ta[1];
+    for (int i = 0; i < 4; ++i) {
+        g.frame();
+        show();
+    }
+    cg.buttons = game::Button::Activate;
+    for (int i = 0; i < 2; ++i) g.frame();
+    cg.buttons = game::Button::Attack;
+    for (int i = 0; i < 8; ++i) {
+        g.frame();
+        show();
+    }
+    CHECK(g.host.mpClientOnTurret(gunner) && view.playerOnTurret());
+    g.host.vm().start("maps/mp/gametypes/dm", "endMap", {}, Value(g.host.vm().level()));
+    for (int i = 0; i < 6; ++i) {
+        g.frame();
+        show();
+    }
+    const int endFlashes = flashes, endShots = t->turret->fireCount;
+    for (int i = 0; i < 20; ++i) {
+        g.frame();
+        show();
+    }
+    std::cout << label << ": intermission with attack held: pm_type " << psf.pmType << ", eFlags 0x" << std::hex << psf.eFlags << std::dec
+              << ", lock entity " << psf.viewLockEntity << ", " << flashes - endFlashes << " flashes, " << t->turret->fireCount - endShots << " shots\n";
+    CHECK(pg->obj->get("sessionstate").toString() == "intermission");
+    CHECK(psf.pmType == 5 && (psf.eFlags & 0x300) == 0 && psf.viewLockEntity == 1023);
+    CHECK(!g.host.mpClientOnTurret(gunner) && !t->turret->inUse && !view.playerOnTurret());
+    CHECK(flashes == endFlashes && t->turret->fireCount == endShots);
+    CHECK(!looping(loopPlr));
     CHECK(g.host.vm().errors().empty());
 }
 

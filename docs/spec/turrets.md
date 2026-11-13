@@ -340,6 +340,29 @@ death and the obituary name the turret weapon (for example `mg42_bipod_stand_mp`
 the means of death follows the turret weapon's rifleBullet (`MOD_RIFLE_BULLET` for the shipped MP turrets). The weapon
 class settings (`scr_allow_*`) only control the menu weapons; they do not touch turrets.
 
+Getting a client off its turret besides the use press (VAs in the 1.3 Linux dedicated server; the release itself is
+0x810b9a4, the getting-off code above):
+- The turret think (0x810bb0a) aims and fires only while the owner entity's turret byte (+0x162) is 1 and the owner's
+  client is in session state playing (gclient +0x26a8, the field the `sessionstate` setter 0x80f7efc writes: 0 playing,
+  1 dead, 2 spectator, 3 intermission); otherwise it releases the turret (0x810bb6e). A client put into another session
+  state, spectator or intermission, is taken off the gun by the next think.
+- ClientSpawn (0x80f910e) begins with a release: when the client's player state has pm_flags 0x800000 (the flag the
+  end-of-frame update sets for a playing or dead client that does not follow another, docs/spec/mp-chat.md) and eFlags
+  0x300, the turret named by viewLockEntity (ps +0x594) is released (0x80f9139..0x80f9172) before the spawn clears the
+  client. `spawnIntermission` (`dm.gsc:485-508`, the same in the other gametypes) sets the session state intermission
+  and calls `spawn`, so a gunner at the end of the map is off the gun before the intermission view starts; with movement
+  type 5 he fires nothing (the PM_Weapon early-out for pm_type >= 4, docs/spec/net.md section 13).
+The release clears the turret bits of eFlags and the view lock (above), so the client learns it from the next
+snapshot. openiw2: `World::thinkPlayerTurret` releases a multiplayer user whose session state is not playing, and the MP
+`spawn` method releases the client's turret first (the local player's and a network client's; the spawn place wins over
+the place the release would put the player back to). The client's predicted turret fire
+(`netgame::RemoteView::predictTurret`, docs/spec/net.md section 10 "Predicted turret fire") follows the PM_Weapon rule:
+no predicted shot, and the predicted fire loop stops, while the player state's pm_type is 4 or more, and none while it
+follows another client (a killcam of a killer on a turret copies his turret bits; the cgame predicts nothing then,
+docs/spec/net.md section 10). Tests `tests/test_mpturretdamage.cpp` (a local and a network gunner at endMap),
+`tests/test_mpturretview.cpp` (a network gunner holding attack at endMap, on a listen and a dedicated server; pm_type 5
+and a followed state on the turret).
+
 openiw2: the local player uses the turret code of the SP game; a non-local client (network client) uses the same use,
 think and release with its own state (`MpClient::turretUse`) swapped in once per server frame (src/game/mpturret.cpp): a
 use press (+activate or +usereload) on a usable turret mounts it, the server then holds the client 34 units behind the

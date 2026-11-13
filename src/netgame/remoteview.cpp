@@ -606,7 +606,7 @@ bool RemoteView::newerSnapshot(int messageNum, int& last, std::map<int, int>& se
     return true;
 }
 
-void RemoteView::predictTurret(game::World& w, PredictedTurret& pt, int commandTime, bool attack) {
+void RemoteView::predictTurret(game::World& w, PredictedTurret& pt, int commandTime, bool attack, const net::ClientSnapshot* latest) {
     game::Entity* t = w.playerTurretEntity();
     if (!t) {
         pt.clear();
@@ -618,6 +618,14 @@ void RemoteView::predictTurret(game::World& w, PredictedTurret& pt, int commandT
         const auto it = def->find(k);
         return it == def->end() ? std::string() : it->second;
     };
+    // pm_type 4 and up (spectator, intermission, dead): the weapon step does nothing (PM_Weapon's early-out), so no
+    // predicted shot; following another client nothing is predicted at all. A predicted fire loop ends with its stop
+    // sound (docs/spec/turrets.md "Multiplayer").
+    if (!latest || readPs(latest->ps).pmType >= 4 || following(*latest)) {
+        if (pt.turret() == t->number && pt.looping()) w.mpSetRemoteTurretSound(*t, std::string(), key("stopfiresound"));
+        pt.clear();
+        return;
+    }
     const int fireTimeMs = int(std::atof(key("firetime").c_str()) * 1000.0f);
     const bool wasLooping = pt.turret() == t->number && pt.looping();
     const int shots = pt.command(t->number, commandTime, attack, fireTimeMs);

@@ -419,6 +419,14 @@ void World::registerMpBuiltins() {
         if (!e || !e->isPlayer || mpClientOf(*e) < 0) return entitySpawn(c);
         const Vec3 o = c.arg(0).asVector();
         const Vec3 a = c.arg(1).isVector() ? c.arg(1).asVector() : Vec3{0, 0, 0};
+        // ClientSpawn first gets the client off a map turret (0x80f9139..0x80f9172), e.g. spawnIntermission's spawn of a gunner
+        // at the end of the map; the spawn place below replaces the place the release puts the player back to.
+        if (e == player_) {
+            if (playerOnTurret() && playerTurret_ && playerTurret_->turret && !playerTurret_->obj->removed) releasePlayerTurret(*playerTurret_);
+            turretRelease_.reset();
+        } else {
+            mpClientTurretRelease(size_t(mpClientOf(*e)));
+        }
         e->obj->set("origin", Value(o));
         e->obj->set("angles", Value(Vec3{0, a[1], 0}));
         e->velocity = {0, 0, 0};

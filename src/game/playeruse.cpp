@@ -508,7 +508,10 @@ void World::thinkPlayerTurret() {
         return;
     }
     TurretState& ts = *t.turret;
-    if (playerUseState_ != 1 || !isAlive(*player_)) {
+    // In multiplayer the turret think also needs its user in session state playing (0x810bb0a): a spectator or a client
+    // at the intermission is taken off the gun (docs/spec/turrets.md "Multiplayer").
+    const bool mpNotPlaying = mp_ && player_->obj->get("sessionstate").isString() && player_->obj->get("sessionstate").toString() != "playing";
+    if (playerUseState_ != 1 || !isAlive(*player_) || mpNotPlaying) {
         releasePlayerTurret(t);
         return;
     }

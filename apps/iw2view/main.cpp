@@ -10489,7 +10489,7 @@ int main(int argc, char** argv) {
                 int shots = 0;
                 const net::UserCmd* weaponCmd = netClient && world->player() ? netClient->lastCommand() : nullptr;
                 // The own turret's fire, predicted on this command (cleared off a turret).
-                if (weaponCmd) netgame::RemoteView::predictTurret(*world, netPredictedTurret, weaponCmd->serverTime, (weaponCmd->buttons & 1) != 0);
+                if (weaponCmd) netgame::RemoteView::predictTurret(*world, netPredictedTurret, weaponCmd->serverTime, (weaponCmd->buttons & 1) != 0, netClient->latest());
                 if (onTurret) {
                     if (weaponCmd) shots = netPredictedWeapon.idle(weaponCmd->serverTime);
                 } else if (weaponCmd) {

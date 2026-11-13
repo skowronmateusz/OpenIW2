@@ -68,8 +68,11 @@ public:
     void turretEvents(game::World& w, const net::ClientSnapshot& next, const std::map<int, std::string>& cs,
                       PredictedTurret* own = nullptr);
     // One command of the client on its own turret (docs/spec/net.md section 10 "Predicted turret fire"): the predicted
-    // shots (flash, shake, impact) and the fire loop and its end, at once. Off a turret the prediction is cleared.
-    static void predictTurret(game::World& w, PredictedTurret& pt, int commandTime, bool attack);
+    // shots (flash, shake, impact) and the fire loop and its end, at once. Off a turret the prediction is cleared, and
+    // so it is while the newest snapshot's player state has a pm_type of 4 or more (spectator, intermission, dead:
+    // PM_Weapon does nothing then) or follows another client (a killcam: nothing is predicted, 0x4deae0), which also
+    // ends a running fire loop. latest: the newest snapshot (nullptr: none yet).
+    static void predictTurret(game::World& w, PredictedTurret& pt, int commandTime, bool attack, const net::ClientSnapshot* latest);
     // How far behind the players' drawn time the models with a trajectory are drawn (docs/spec/net.md section 11
     // "Trajectories"): with snapshots between the game frames, the part of a game frame the snapshot interval does not
     // cover, so that the frame that re-bases a path has been received when the drawn time reaches the hit.

@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -182,6 +183,77 @@ void remoteKill(iw2::fs::Vfs& vfs, const std::string& classes) {
     CHECK(w.vm().errors().empty());
 }
 
+// The end of the map (dm.gsc endMap -> spawnIntermission -> spawn): a local gunner and a network gunner, both holding
+// attack, are taken off their turrets by the intermission spawn (ClientSpawn's release, 0x80f9139..0x80f9172), the
+// turrets are free, nothing puts the local player back behind the gun, and the turret think (0x810bb0a: the user must be
+// playing) keeps them off while attack stays held (docs/spec/turrets.md "Multiplayer").
+void intermission(iw2::fs::Vfs& vfs) {
+    World w(vfs, "mp_carentan", true);
+    w.mpStart("dm");
+    const int c0 = w.mpConnect("local");
+    w.mpBegin(c0);
+    run(w, 1);
+    w.mpAutoJoin(c0);
+    const int c1 = w.mpConnect("gunner");
+    w.mpBegin(c1);
+    run(w, 1);
+    w.mpAutoJoin(c1);
+    run(w, 5);
+    Entity* p0 = w.mpClientEntity(c0);
+    Entity* p1 = w.mpClientEntity(c1);
+    CHECK(p0 && p1 && p0 == w.player());
+    if (!p0 || !p1) return;
+    std::vector<Entity*> turrets;
+    for (const auto& e : w.entities())
+        if (e->turret && !e->obj->removed) turrets.push_back(e.get());
+    CHECK(turrets.size() >= 2);
+    if (turrets.size() < 2) return;
+    auto behind = [](Entity& t, V3& look) {
+        const V3 o = t.obj->get("origin").asVector(), a = t.obj->get("angles").asVector();
+        const float yaw = a[1] * float(M_PI) / 180.0f;
+        look = {0, a[1], 0};
+        return V3{o[0] - std::cos(yaw) * 34.0f, o[1] - std::sin(yaw) * 34.0f, o[2] - 20.0f};
+    };
+    V3 look0, look1;
+    p0->obj->set("origin", Value(behind(*turrets[0], look0)));
+    p1->obj->set("origin", Value(behind(*turrets[1], look1)));
+    World::PlayerCommand c;
+    c.viewAngles = look0;
+    w.setPlayerCommand(c);
+    w.mpSetView(c1, look1, 60.0f);
+    w.mpSetButtons(c1, 0);
+    w.frame();
+    c.buttons = 8;
+    w.setPlayerCommand(c);
+    w.mpSetButtons(c1, 8);
+    w.frame();
+    c.buttons = 1; // attack held from here on
+    w.setPlayerCommand(c);
+    w.mpSetButtons(c1, 1);
+    run(w, 3);
+    CHECK(w.playerOnTurret());
+    CHECK(w.mpClientOnTurret(c1));
+    CHECK(turrets[0]->turret->inUse && turrets[1]->turret->inUse);
+    (void)w.takeTurretRelease();
+    w.vm().start("maps/mp/gametypes/dm", "endMap", {}, Value(w.vm().level()));
+    run(w, 3);
+    CHECK(p0->obj->get("sessionstate").toString() == "intermission");
+    CHECK(p1->obj->get("sessionstate").toString() == "intermission");
+    CHECK(!w.playerOnTurret());
+    CHECK(!w.mpClientOnTurret(c1));
+    uint32_t bits = 0;
+    int lock = 0;
+    CHECK(w.mpClientTurretUse(c0, bits, lock) == nullptr && bits == 0);
+    CHECK(w.mpClientTurretUse(c1, bits, lock) == nullptr && bits == 0);
+    CHECK(!turrets[0]->turret->inUse && !turrets[0]->turret->owner);
+    CHECK(!turrets[1]->turret->inUse && !turrets[1]->turret->owner);
+    // The intermission spawn's place stands: no release moves the local player back behind the gun.
+    CHECK(!w.takeTurretRelease());
+    run(w, 20);
+    CHECK(!w.playerOnTurret() && !w.mpClientOnTurret(c1));
+    CHECK(w.vm().errors().empty());
+}
+
 } // namespace
 
 int main() {
@@ -196,6 +268,7 @@ int main() {
         localKill(vfs, classes);
         remoteKill(vfs, classes);
     }
+    intermission(vfs);
     if (failures) std::cerr << failures << " failure(s)\n";
     return failures ? 1 : 0;
 }
