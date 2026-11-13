@@ -42,6 +42,17 @@ std::string messageArgText(const Value& v) {
     return textOf(v);
 }
 
+std::string World::gameMessageText(CallContext& c, std::string* warn) const {
+    std::vector<HintArg> args;
+    for (size_t i = 0; i < c.args.size(); ++i) {
+        const Value& v = c.arg(i);
+        if (std::holds_alternative<script::LocalizedString>(v.v)) args.push_back({true, std::get<script::LocalizedString>(v.v).key});
+        else args.push_back({false, messageArgText(v), v.isObject()}); // a player entity gives its name (MP_CONNECTED &&1) without the letter check, other entities are an error
+    }
+    return buildHintString(args, "Game Message", cvarFloat("loc_warnings", 0.0f) != 0.0f, cvarFloat("loc_warningsAsErrors", 0.0f) != 0.0f,
+                           warn);
+}
+
 // State message (FUN_004f10b0): active/current → obj_update "<text>"; done → obj_complete
 // "GAME_OBJECTIVECOMPLETED"; failed → obj_update "GAME_OBJECTIVEFAILED". A current message within 100 ms of the
 // previous one is dropped.
@@ -154,15 +165,8 @@ void World::registerCampaignBuiltins() {
     // arguments go through buildHintString (src/game/hintstring.h, what = "Game Message", 0x587be0).
     auto printMessage = [this](const char* command) {
         return [this, command](CallContext& c) {
-            std::vector<HintArg> args;
-            for (size_t i = 0; i < c.args.size(); ++i) {
-                const Value& v = c.arg(i);
-                if (std::holds_alternative<script::LocalizedString>(v.v)) args.push_back({true, std::get<script::LocalizedString>(v.v).key});
-                else args.push_back({false, messageArgText(v), v.isObject()}); // a player entity gives its name (MP_CONNECTED &&1) without the letter check, other entities are an error
-            }
             std::string warn;
-            const std::string text = buildHintString(args, "Game Message", cvarFloat("loc_warnings", 0.0f) != 0.0f,
-                                                     cvarFloat("loc_warningsAsErrors", 0.0f) != 0.0f, &warn);
+            const std::string text = gameMessageText(c, &warn);
             if (!warn.empty()) std::fprintf(stderr, "%s", warn.c_str());
             clientCommands_.push_back({command, text});
             // No print of the raw argument here: the client logs the localized message (iw2view, docs/spec/mp-hud.md).

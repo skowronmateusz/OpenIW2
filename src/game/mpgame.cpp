@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -28,9 +29,9 @@ std::string textOf(const Value& v) {
     return v.toString();
 }
 
-// Message text as the 1.3 server sends it (docs/spec/net.md section 10): a localized string's key, then each further
-// argument behind 0x15 (observed: "MP_CONNECTED" 0x15 name, "MP_GAIN_POINTS_BY_ELIMINATING" 0x15 "50").
-// TODO(spec): further arguments after a plain first argument (openiw2 joins them with spaces).
+// The value of setClientCvar (docs/spec/net.md section 10): a localized string's key, then each further argument behind
+// 0x15. iprintln / iprintlnbold use the message builder instead (World::gameMessageText).
+// TODO(spec): setClientCvar's own builder (further arguments, a localized one among them).
 std::string wireText(CallContext& c, size_t first) {
     if (c.argc() <= first) return {};
     const bool localized = std::holds_alternative<script::LocalizedString>(c.arg(first).v);
@@ -584,8 +585,13 @@ void World::registerMpBuiltins() {
                 MpClient& cl = clientOf(c);
                 target = int(&cl - mp_->clients.data());
             }
-            mp_->prints.push_back(name + "[" + std::to_string(target) + "] " + wireText(c, 0));
-            if (target >= 0 && target != mp_->localClient) return Value();
+            // The same text the local client gets (World::gameMessageText; docs/spec/mp-hud.md "Game messages in the log").
+            std::string warn;
+            mp_->prints.push_back(name + "[" + std::to_string(target) + "] " + gameMessageText(c, &warn));
+            if (target >= 0 && target != mp_->localClient) {
+                if (!warn.empty()) std::fprintf(stderr, "%s", warn.c_str()); // the local path (base) prints its own
+                return Value();
+            }
             return base(c);
         });
     }

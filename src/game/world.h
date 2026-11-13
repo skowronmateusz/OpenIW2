@@ -904,6 +904,11 @@ public:
     PlayerUseHint vehicleUseHint(const std::string& turretWeapon);
     // A float dvar by name (cvars, case-insensitive) or `def` when it is unset or not a number.
     float cvarFloat(const std::string& name, float def) const;
+    // The text of an iprintln / iprintlnbold call (the message builder 0x4eb9b0, in the 1.3 Linux dedicated server 0x8110720):
+    // the arguments joined by buildHintString (a localized reference behind 0x14 unless it comes first, a plain value or a
+    // player's name behind 0x15), so a localized argument such as &"WEAPON_MP40" is localized by the client too. Throws the
+    // script errors of the builder; `warn` receives its letter warning.
+    std::string gameMessageText(script::CallContext& c, std::string* warn = nullptr) const;
     // After the player's death: no view weapon (ent+2 = 0, cgame 0x4b6a0a) and the dead view yaw (ps+0x10c).
     bool playerDeadWeaponless() const { return playerDeadWeaponless_; }
     // P_DamageFeedback (0x4e7040): damageEvent (ps+0xf8) counts damage frames; pitch/yaw (ps+0x100/+0xfc) are the

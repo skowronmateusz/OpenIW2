@@ -269,6 +269,14 @@ iw2view writes that localized text to stdout (`[gm]` / `[gmb]`), never the raw `
 An entity argument must be a player (else the script error "Entity is not a player") and is sent as its name followed by
 `^7` (message builder at VAs in the 1.3 Linux dedicated server 0x8110720, format at 0x8110844); `dm.gsc` passes the
 connecting player to `MP_CONNECTED` this way. Before, openiw2 sent the entity's debug text instead of the name.
+The arguments are joined by the same builder as in single player (the 1.3 Linux dedicated server's 0x8110720, the shape
+of 0x4eb9b0 in docs/spec/turrets.md): a localized-string argument (value type 3) is preceded by 0x14 when text comes before
+it (0x81107ca..0x81107d6); a player argument (0x81108a2) and a plain value (0x81109e0) are preceded by 0x15 when they start a
+plain run. The respawn-weapon message (`dm.gsc:927` / `dm.gsc:929`) passes the weapon's localized name from
+`_weapons.gsc:788` as its argument, so the client gets the message key, 0x14 and the weapon key, and localizes both (the
+segment rules of src/game/textmessage.h). The network path of openiw2 used to put 0x15 before every argument, so a network
+client showed the weapon's raw key (`WEAPON_MP40`) where the listen server's own client showed the name; now both use
+`World::gameMessageText`.
 TODO(spec): whether the original also echoes these messages to its console.
 
 ## Killcam

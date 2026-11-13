@@ -147,8 +147,23 @@ int main() {
     // dm.gsc:933 tells only that client ("self iprintln") which weapon it respawns with: not on the local screen.
     CHECK(!hasPrint(w, "MP_YOU_WILL_RESPAWN_WITH"));
     bool told = false;
-    for (const auto& l : w.mpState().prints) told |= l.rfind("iprintln[1] MP_YOU_WILL_RESPAWN_WITH", 0) == 0;
+    std::string toldText;
+    for (const auto& l : w.mpState().prints)
+        if (l.rfind("iprintln[1] MP_YOU_WILL_RESPAWN_WITH", 0) == 0) told = true, toldText = l.substr(12);
     CHECK(told);
+    {
+        // The weapon's name is a localized argument (_weapons.gsc:788): it goes on the wire behind 0x14, so the network
+        // client localizes it too (the message builder, docs/spec/mp-hud.md "Game messages in the log").
+        const size_t sep = toldText.find('\x14');
+        CHECK(sep != std::string::npos && toldText.compare(sep + 1, std::string::npos, "WEAPON_LEEENFIELD") == 0);
+        CHECK(toldText.find('\x15') == std::string::npos);
+        const std::string key = toldText.substr(0, sep);
+        const std::string phrase = "Odrodzisz sie z &&1", name = "Lee-Enfield";
+        const std::string shown = iw2::game::localizeTextMessage(toldText, [&](const std::string& k) -> const std::string* {
+            return k == key ? &phrase : k == "WEAPON_LEEENFIELD" ? &name : nullptr;
+        });
+        CHECK(shown == "Odrodzisz sie z Lee-Enfield");
+    }
     CHECK(field(p1, "sessionstate") == "playing");
     CHECK(field(p1, "$weapon") == "thompson_mp"); // still the old weapon in this life
     w.mpDebugDamage(c1, c0, 500, "MOD_RIFLE_BULLET");
