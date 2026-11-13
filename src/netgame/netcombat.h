@@ -34,6 +34,7 @@ enum NetEvent : int {
     kEvPutawayWeapon = 0x9b,
     kEvFireWeapon = 0x9e,
     kEvFireWeaponLastShot = 0xa0,
+    kEvGrenadeBounce = 0xbb,    // a grenade's bounce, on the missile (parm: the surface type; 0x810d5ba)
     kEvFireWeaponMg42 = 0xaf,   // a turret's shot, on the turret entity (parm: the gunner's entity number)
     kEvRechamberWeapon = 0xa1,
     kEvMeleeSwipe = 0xa3,

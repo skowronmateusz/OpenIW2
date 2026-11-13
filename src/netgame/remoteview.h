@@ -52,6 +52,11 @@ public:
     // time, as it did on the server. A model the first snapshot lacks (thrown since) waits at the start of the path
     // of the first snapshot that holds it.
     static void placeTrajectories(game::World& w, const std::vector<const net::ClientSnapshot*>& snaps, int t);
+    // The missiles' entity events (EV_GRENADE_BOUNCE: the surface's bounce sound and effect at the drawn missile), from
+    // the same snapshots as placeTrajectories: those of the snapshot after the drawn one (the cgame checks a
+    // snapshot's events when it becomes the next one of the drawn pair, docs/spec/net.md section 11), once each; a
+    // missile's events from before its first sight are old.
+    void missileEvents(game::World& w, const std::vector<const net::ClientSnapshot*>& snaps);
     // How far behind the players' drawn time the models with a trajectory are drawn (docs/spec/net.md section 11
     // "Trajectories"): with snapshots between the game frames, the part of a game frame the snapshot interval does not
     // cover, so that the frame that re-bases a path has been received when the drawn time reaches the hit.
@@ -101,6 +106,8 @@ private:
     bool lastEventsFollowing_ = false; // the follow bit of the last snapshot playerEvents saw
     std::map<int, int> eventSeq_;  // client -> last event sequence played
     std::map<int, int> turretSeq_; // turret wire number -> last event sequence played
+    std::map<int, int> missileSeq_; // missile wire number -> last event sequence played
+    int missileEventsSnapshot_ = -1; // messageNum of the snapshot whose missile events were checked last
     int lastFollowSnapshot_ = -1;
     int followSeq_ = -1;            // the followed player state's last event sequence played (-1: not following)
     int followFires_ = 0;           // shots played since the killcam started

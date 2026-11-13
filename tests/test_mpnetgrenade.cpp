@@ -35,8 +35,10 @@ constexpr const char* kMap = "mp_carentan";
 
 game::Vec3 origin(Entity* e) { return e ? e->obj->get("origin").asVector() : game::Vec3{0, 0, 0}; }
 
-// A listen server (host player 0 and its World) with one network client, driven by an injected clock.
+// A listen server (host player 0 and its World) with one network client, driven by an injected clock. steps: the
+// server is polled at every client step too, so it sends the snapshots between its 50 ms game frames (sv_snaps 60).
 struct Game {
+    bool steps = false;
     World host;
     netgame::WorldGame game;
     net::Server server;
@@ -58,6 +60,7 @@ struct Game {
         server.info().gametype = "dm";
     }
     void clientStep() {
+        if (steps) server.poll(now, 0);
         client->poll(now, 1);
         if (client->state() >= net::ClientState::Primed) {
             net::UserCmd c;
@@ -87,8 +90,10 @@ struct Game {
     }
 };
 
-void run(fs::Vfs& vfs) {
+void run(fs::Vfs& vfs, bool steps) {
+    std::cout << (steps ? "-- snapshots between the game frames\n" : "-- one snapshot per game frame\n");
     Game g(vfs);
+    g.steps = steps;
     g.host.mpAutoJoin(0);
     if (!g.server.open(0)) {
         std::cerr << "cannot open a UDP port\n";
@@ -193,7 +198,15 @@ void run(fs::Vfs& vfs) {
 
     // A lobbed grenade that bounces off the walls and the floor: the drawn path never reverses into a wall and back
     // (the model stops where the server's bounce re-based it and waits there for at most the rest of that server
-    // frame), and the holds are short.
+    // frame), and the holds are short. Each bounce event of the server (EV_GRENADE_BOUNCE in the missile's event ring)
+    // plays the surface's bounce sound once at the drawn grenade, and the drawn angles follow the server's angular
+    // trajectory after every re-basing (docs/spec/net.md section 11).
+    struct Heard { std::string alias; game::Vec3 at; };
+    std::vector<Heard> heard;
+    view.playSound = [&](const std::string& alias, const game::Vec3* at, float*, int) {
+        if (alias.rfind("grenade_bounce_", 0) == 0) heard.push_back({alias, at ? *at : game::Vec3{0, 0, 0}});
+        return 0;
+    };
     g.host.playerThrowGrenade("frag_grenade_american_mp", {eye[0], eye[1], eye[2] + 60.0f}, {-45.0f, 0.0f, 0.0f}, {0, 0, 0});
     Entity* lob = nullptr;
     for (const auto& e : g.host.entities())
@@ -201,7 +214,10 @@ void run(fs::Vfs& vfs) {
     CHECK(lob != nullptr);
     if (!lob) return;
     std::vector<std::pair<int, game::Vec3>> path;
-    int rebases = 0;
+    int rebases = 0, spinChecks = 0, spinOff = 0, spinMoves = 0;
+    size_t serverBounces = 0;
+    game::Vec3 lastDrawnAngles{};
+    bool haveAngles = false;
     int64_t lastTrTime = lob->grenade->trTime;
     for (int step = 0; step < 150; ++step) {
         g.now += 16;
@@ -217,13 +233,29 @@ void run(fs::Vfs& vfs) {
         // The time the models with a trajectory are drawn at (docs/spec/net.md section 11 "Trajectories").
         const int t = g.client->renderTime(g.now) - netgame::RemoteView::trajectoryDelayMs(g.client->snapshotIntervalMs());
         rv.apply(view, *g.client->latest(), g.client->configstrings, a, view.timeMs());
-        netgame::RemoteView::placeTrajectories(view, g.client->snapshotsFrom(t), t);
-        if (!lob->grenade || lob->grenade->trType != 5) continue;
+        const auto snaps = g.client->snapshotsFrom(t);
+        netgame::RemoteView::placeTrajectories(view, snaps, t);
+        rv.missileEvents(view, snaps);
+        if (lob->obj->removed || !lob->grenade) break;
+        serverBounces = lob->grenade->bounceEvents.size();
+        if (lob->grenade->trType != 5) continue;
         if (lob->grenade->trTime != lastTrTime) ++rebases, lastTrTime = lob->grenade->trTime;
         for (const auto& e : view.entities()) {
             if (e->obj->removed || e->obj->get("model").toString().rfind("xmodel/projectile_", 0) != 0) continue;
             const game::Vec3 o = origin(e.get());
             if (std::fabs(o[0] - eye[0]) < 600.0f && std::fabs(o[1] - eye[1]) < 600.0f && o[2] < eye[2] + 400.0f) path.emplace_back(t, o);
+            const game::Vec3 an = e->obj->get("angles").asVector();
+            const game::GrenadeState& gs = *lob->grenade;
+            if (t - gs.aTime >= 100) { // the drawn snapshot carries the server's current angular path
+                ++spinChecks;
+                for (int k = 0; k < 3; ++k) {
+                    const float want = gs.aBase[size_t(k)] + gs.aDelta[size_t(k)] * float(t - gs.aTime) * 0.001f;
+                    if (std::fabs(std::remainder(an[size_t(k)] - want, 360.0f)) > 1.0f) ++spinOff;
+                }
+                if (haveAngles && std::fabs(std::remainder(an[2] - lastDrawnAngles[2], 360.0f)) > 0.5f) ++spinMoves;
+            }
+            lastDrawnAngles = an;
+            haveAngles = true;
         }
     }
     int reversals = 0, holds = 0, longestHold = 0, hold = 0;
@@ -250,6 +282,20 @@ void run(fs::Vfs& vfs) {
     CHECK(rebases >= 1);
     CHECK(reversals == 0);
     CHECK(longestHold <= 4);  // at most one server frame (50 ms) at a bounce
+    std::cout << "lob: " << serverBounces << " bounce events on the server, " << heard.size() << " bounce sounds on the client;";
+    for (const Heard& h : heard) std::cout << " " << h.alias;
+    std::cout << "; angles checked in " << spinChecks << " frames, " << spinOff << " off the server's, the roll turning in " << spinMoves << "\n";
+    CHECK(serverBounces >= 1);
+    CHECK(heard.size() == serverBounces);
+    for (const Heard& h : heard) {  // at the drawn grenade, near the walls it hit
+        bool nearPath = false;
+        for (const auto& [pt, po] : path)
+            nearPath = nearPath || std::fabs(po[0] - h.at[0]) + std::fabs(po[1] - h.at[1]) + std::fabs(po[2] - h.at[2]) < 1.0f;
+        CHECK(nearPath);
+    }
+    CHECK(spinChecks >= 10);
+    CHECK(spinOff == 0);
+    CHECK(spinMoves * 10 >= spinChecks * 9);
     g.client->disconnect();
 }
 
@@ -263,7 +309,8 @@ int main() {
     }
     fs::Vfs vfs;
     vfs.mountDirectory(main);
-    run(vfs);
+    run(vfs, false);
+    run(vfs, true);
     std::cout << (failures ? "mpnetgrenade_e2e: FAILED\n" : "mpnetgrenade_e2e: ok\n");
     return failures ? 1 : 0;
 }

@@ -206,6 +206,20 @@ void World::mpRemoteExplosion(bool rocket, const std::string& weapon, const Vec3
     else grenadeExplosionEffects(weapon, at, dir, surface);
 }
 
+void World::mpRemoteGrenadeBounce(int wire, int surface) {
+    if (!mp_ || !mpRemote_ || surface < 0 || surface >= 23) return;
+    const auto it = remoteModels_.find(wire);
+    if (it == remoteModels_.end() || !it->second || it->second->obj->removed) return;
+    const Vec3 at = it->second->obj->get("origin").asVector();
+    static const char* const kSurf[] = {"default", "bark", "brick", "carpet", "cloth", "concrete", "dirt", "flesh",
+                                        "foliage", "glass", "grass", "gravel", "ice", "metal", "mud", "paper",
+                                        "plaster", "rock", "sand", "snow", "water", "wood", "asphalt"};
+    startSound(std::string("grenade_bounce_") + kSurf[surface], &at, nullptr, {}, kWorldSoundOwner);
+    // TODO(spec): the cgame turns the event parameter (the surface type) into the effect's direction with the
+    // direction-byte table (0x4268c0); the table is not reproduced here and the effect points up.
+    if (const std::string& fx = impactEffect(8, surface); !fx.empty()) fxEvents_.push_back({fx, at, Vec3{0, 0, 1}});
+}
+
 void World::mpPlaceRemoteModel(int wire, const Vec3& origin, const Vec3* angles) {
     const auto it = remoteModels_.find(wire);
     if (it == remoteModels_.end() || !it->second || it->second->obj->removed) return;

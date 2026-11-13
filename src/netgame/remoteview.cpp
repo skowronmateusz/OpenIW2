@@ -582,6 +582,30 @@ void RemoteView::placeTrajectories(game::World& w, const std::vector<const net::
     }
 }
 
+void RemoteView::missileEvents(game::World& w, const std::vector<const net::ClientSnapshot*>& snaps) {
+    if (snaps.empty() || !snaps.front()->valid) return;
+    const net::ClientSnapshot& s = *snaps[snaps.size() > 1 ? 1 : 0];
+    if (s.messageNum == missileEventsSnapshot_) return;
+    missileEventsSnapshot_ = s.messageNum;
+    std::set<int> present;
+    for (const auto& [number, es] : s.entities) {
+        if ((getI(es, 4) & 0xff) != kEtGeneral) continue;
+        present.insert(number);
+        const int seq = getI(es, 164) & 0xff;
+        auto it = missileSeq_.find(number);
+        if (it == missileSeq_.end()) { // first sight: the ring's events are old (CG reset of a new entity)
+            missileSeq_[number] = seq;
+            continue;
+        }
+        int from = it->second;
+        if (((seq - from) & 0xff) > 4) from = (seq - 4) & 0xff; // more than the ring holds: the last four
+        for (int q = from; q != seq; q = (q + 1) & 0xff)
+            if ((getI(es, 168 + 4 * (q & 3)) & 0xff) == kEvGrenadeBounce) w.mpRemoteGrenadeBounce(number, getI(es, 136) & 0x1f);
+        it->second = seq;
+    }
+    std::erase_if(missileSeq_, [&](const auto& m) { return !present.count(m.first); });
+}
+
 std::string sayCommand(bool team, const std::string& text) {
     return std::string(team ? "say_team" : "say") + " \x15" + text;
 }

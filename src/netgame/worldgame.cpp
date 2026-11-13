@@ -323,6 +323,7 @@ void WorldGame::setWorld(World* w, std::string map, std::string gametype, int se
     moves_.clear();
     otherRings_.clear();
     turretRings_.clear();
+    grenadeRings_.clear();
     sentOffhand_.clear();
     framePrev_.clear(), frameCur_.clear(), subPlaces_.clear();
     frameSeenTime_ = -1, subTime_ = -1;
@@ -1562,6 +1563,16 @@ net::SnapshotView WorldGame::snapshot(int slot) {
                 }
                 writeTrajectory(es, kAposTrajectory, ar);
             }
+            // The surface type of its last impact (0x810d54f) and its bounce events (docs/spec/net.md section 11).
+            putI(es, 136, g.impactSurface);
+            if (auto r = grenadeRings_.find(e->number); r != grenadeRings_.end() && !kc.frame) {
+                const EventRing& ring = r->second.second;
+                putI(es, 164, ring.sequence);
+                for (int i = 0; i < 4; ++i) {
+                    putI(es, 168 + 4 * i, ring.events[size_t(i)]);
+                    putI(es, 184 + 4 * i, ring.parms[size_t(i)]);
+                }
+            }
         } else if (e->rocket) {
             const game::RocketState& r = *e->rocket;
             Trajectory tr;
@@ -1855,6 +1866,17 @@ void WorldGame::forwardToClients() {
         for (int i = std::max(seen, count - 4); i < count; ++i) ring.push(kEvFireWeaponMg42, user);
         seen = count;
     }
+    // Grenade bounces (0x810d5ba: G_AddEvent on the missile, EV_GRENADE_BOUNCE with the surface type of the hit).
+    std::set<int> grenades;
+    for (const auto& e : w_->entities()) {
+        if (!e->grenade || e->obj->removed) continue;
+        grenades.insert(e->number);
+        auto& [seen, ring] = grenadeRings_[e->number];
+        const std::vector<int>& bounces = e->grenade->bounceEvents;
+        for (size_t i = std::max(seen, bounces.size() > 4 ? bounces.size() - 4 : 0); i < bounces.size(); ++i) ring.push(kEvGrenadeBounce, bounces[i]);
+        seen = bounces.size();
+    }
+    std::erase_if(grenadeRings_, [&](const auto& r) { return !grenades.count(r.first); }); // a freed grenade's ring goes with it
     // A map_restart rebuilds the world's state in place: its logs start again.
     if (st.prints.size() < printsSent_) printsSent_ = 0;
     if (st.chat.size() < chatSent_) chatSent_ = 0;

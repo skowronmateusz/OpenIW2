@@ -1450,6 +1450,31 @@ flips it on a new map and on a map_restart.
   that snapshot has it until the drawn pair reached it, and then went back to its start; tests/test_mpnetgrenade.cpp,
   the lob's reversals). A grenade held in a hand (cooking) is sent
   stationary at its origin, not on its throw parabola.
+- Grenade bounces (VAs in the 1.3 Linux dedicated server and the patch 1.3 MP executable): the server's missile impact
+  (ded 0x810d512) stores the surface type of every hit (trace surface flags >> 20 & 0x1f) in the missile's entity
+  state `surfaceType` (ded 0x810d54f); a bounce that the bounce code reports (the velocity changed by more than 100,
+  not off a character; ded 0x810d1a8) and that did not start in solid adds EV_GRENADE_BOUNCE (0xbb) with the surface
+  type as parameter to the missile's own event ring (G_AddEvent ded 0x811f232 at 0x810d5ba: events[sequence & 3],
+  eventParms[sequence & 3], sequence + 1). There is no separate potato event in multiplayer. The cgame's handler
+  (MP 0x4e1524) plays the bounce sound of the entity state's surfaceType (the `grenade_bounce` family by surface,
+  registered at MP 0x4bf9c9 by the same per-surface builder as the explosion sounds) at the entity's drawn position and
+  the impact table's grenade bounce effect for that surface; its direction comes from the event parameter through the
+  direction-byte decoder (MP 0x4268c0; `TODO(spec)`: the table is not reproduced, openiw2 points the effect up).
+  Event check (MP 0x4e1a90): an entity's ring is played from the last sequence played, at most the last four; the
+  check runs for the entities of a snapshot when it becomes the next one of the drawn pair (called from MP 0x4dfc4e
+  in the function that sets the next snapshot, which CG_ProcessSnapshots, MP 0x4dfda0, calls once the clock has
+  passed the previous one), and a new entity starts with its ring's sequence as played (MP 0x4df29e). openiw2: the
+  server keeps the bounce events per grenade (`GrenadeState::bounceEvents`) and sends them in the grenade's ring with
+  `surfaceType`; the network client checks the missiles' rings of the snapshot after the one the missiles are drawn
+  from (`RemoteView::missileEvents`, after `placeTrajectories`), so the sound starts where the drawn grenade is. Before,
+  the bounce sound and effect played only on the listen host (the server's own world): a network client heard no
+  bounce at all (in 0.2.5 as well). Test: tests/test_mpnetgrenade.cpp (one sound per server bounce event, at the drawn
+  grenade, with one snapshot per frame and with the snapshots between the frames).
+- A grenade's spin after a wall bounce: the bounce adds (rand & 0x7f) − 63 to the pitch spin and wraps the sum as an
+  angle into [0, 360) (ded 0x810d179..0x810d19d through the AngleMod of ded 0x80a8432, the same as SP 0x525ed0..0x525f27,
+  docs/spec/grenades.md), so a grenade thrown with 675..765 degrees a second turns at 0..109 or 252..360 after it,
+  while the roll keeps its rate; the client draws the angular trajectory it is sent (MP 0x4cda50 evaluates apos at
+  the drawn time). The slow tumble after a wall is the original's.
 - Missile explosions: an event entity of type 10 + 0xbc (grenade) or 10 + 0xbd (rocket) at the explosion point
   (pos.trBase), the weapon number in `weapon`, the surface type in `surfaceType`, the direction in origin2, kept 1 s
   and numbered as the other event entities. The client plays each (number, `time`) pair once: the surface sound and

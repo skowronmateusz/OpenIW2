@@ -9506,7 +9506,9 @@ int main(int argc, char** argv) {
                     // ... a part of a game frame behind the players when the snapshots come more often than the frames.
                     if (snapA && snapB) {
                         const int trajTime = netClient->renderTime(nowNet) - netgame::RemoteView::trajectoryDelayMs(netClient->snapshotIntervalMs());
-                        netgame::RemoteView::placeTrajectories(*world, netClient->snapshotsFrom(trajTime), trajTime);
+                        const auto trajSnaps = netClient->snapshotsFrom(trajTime);
+                        netgame::RemoteView::placeTrajectories(*world, trajSnaps, trajTime);
+                        remoteView.missileEvents(*world, trajSnaps); // bounce sounds where the drawn grenade is
                     }
                     // Other players' shots, reloads and throws: sounds, impacts, animations (docs/spec/net.md section 13).
                     remoteView.playerEvents(*world, *last, netClient->configstrings, netClient->clientNum);

@@ -223,6 +223,11 @@ struct GrenadeState {
     // Angular trajectory (type 2, linear: base + delta·t; set at 0x5275f0, re-based on a bounce 0x525cb0).
     Vec3 aBase{}, aDelta{};
     int64_t aTime = 0;
+    // Multiplayer (VAs in the 1.3 Linux dedicated server): the surface type of the last impact (entity state
+    // surfaceType, 0x810d54f) and the bounce events in order, one surface type each (EV_GRENADE_BOUNCE 0xbb, 0x810d5ba);
+    // the network server sends them in the grenade's event ring (docs/spec/net.md section 11).
+    int impactSurface = 0;
+    std::vector<int> bounceEvents;
 };
 
 // A rocket missile entity (G_FireRocket 0x527810; src/game/rockets.cpp).
@@ -631,6 +636,9 @@ public:
     // A network client plays an explosion event of the server (docs/spec/net.md section 13): the sounds and effects of
     // the grenade or rocket explosion at the point, without damage.
     void mpRemoteExplosion(bool rocket, const std::string& weapon, const Vec3& at, const Vec3& dir, int surface);
+    // A network client's grenade bounce event (MP cgame 0x4e1524): grenade_bounce_<surface> at the drawn missile of
+    // that wire number and the impact table's grenade bounce effect.
+    void mpRemoteGrenadeBounce(int wire, int surface);
     void mpSetRemoteModels(const std::vector<RemoteModel>& models);
     void mpSetMenuNames(std::vector<std::string> names) { menus_ = std::move(names); }
     bool mpRemote() const { return mpRemote_; }
