@@ -147,7 +147,8 @@ turret` lines stay ordinary output.
   - the console command `dumptrace` (`command`; client: a key bound to `dumptrace` or a menu `exec`; server: the
     console or rcon, which answers with the file name);
   - the end of the program (`exit`, also `quit` and `std::exit`), when the ring holds any line.
-  An automatic dump comes at most once per 10 s and 20 times per session; `dumptrace` always writes.
+  An automatic dump comes at most once per 10 s and 20 times per session, and only with the log file on (without
+  it the lines went to standard output already); `dumptrace` always writes.
 - A fatal signal writes the whole ring to `<session name>-trace-crash.log` (no locks, no allocation).
 
 ### Switching traces on from Finder

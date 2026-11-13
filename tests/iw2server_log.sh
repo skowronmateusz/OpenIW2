@@ -93,4 +93,20 @@ T2=$(ls "$TMP"/logs2/iw2server-*-trace-*.log 2>/dev/null | head -n 1)
 head -n 1 "$T2" | grep -q "^trace dump (exit) of iw2server-" || fail "trace file header"
 grep -q "^\[[0-9]*:[0-9][0-9]\.[0-9][0-9][0-9]\] NETTRACE frame t=" "$T2" || fail "trace lines in the trace file"
 grep -q "\] trace dump (exit): " "$L2" || fail "the dump's line in the log"
+# the default of a 0.x version: on when the binary runs from an app bundle (also when started by a relative path)
+VER=$(head -n 1 "$LOG" | sed -n 's/^OpenIW2 log, iw2server \([^ ]*\).*/\1/p')
+mkdir -p "$TMP/T.app/Contents/MacOS"
+cp "$SERVER" "$TMP/T.app/Contents/MacOS/iw2server"
+env -u IW2_LOG IW2_LOG_DIR="$TMP/logs3" "$TMP/T.app/Contents/MacOS/iw2server" "$MAIN" mp_toujane dm --port 0 --seconds 1 >"$TMP/b1.out" 2>&1 </dev/null
+(cd "$TMP/T.app/Contents/MacOS" && env -u IW2_LOG IW2_LOG_DIR="$TMP/logs4" ./iw2server "$MAIN" mp_toujane dm --port 0 --seconds 1 >"$TMP/b2.out" 2>&1 </dev/null)
+case "$VER" in
+  v0.*|0.*)
+    for d in logs3 logs4; do
+      B=$(ls "$TMP/$d"/iw2server-*.log 2>/dev/null | head -n 1)
+      [ -n "$B" ] || fail "no log from the app bundle ($d)"
+      grep -q "^binary: app bundle, .*/T.app/Contents/MacOS/iw2server$" "$B" || fail "binary line of the app bundle start ($d)"
+    done ;;
+  *)
+    [ -z "$(ls "$TMP/logs3" "$TMP/logs4" 2>/dev/null)" ] || fail "a log from the app bundle of version $VER" ;;
+esac
 echo "iw2server log: ok ($EV event lines, $(wc -c <"$LOG" | tr -d ' ') bytes)"

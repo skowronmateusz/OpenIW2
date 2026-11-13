@@ -129,8 +129,9 @@ private:
     std::FILE* out_;
     std::ostringstream text_;
 };
-// Writes the ring's last 60 s to <session>-trace-HHMMSS.log. reason: "command" (never rate limited), "disconnect",
-// "script error", "exit". Returns the file written, "" when nothing was (empty ring, rate limit).
+// Writes the ring's last 60 s to <session>-trace-HHMMSS.log. reason: "command" (never rate limited, also without a log
+// file), "disconnect", "script error", "exit" (only with the log file on). Returns the file written, "" when nothing was
+// (empty ring, rate limit, no log file).
 std::string dumpTrace(std::string_view reason);
 // Parses trace switches ("IW2_NET_TRACE=2 IW2_PRED_TRACE"), sets the known ones with setenv (an existing value wins)
 // and returns notes for the header ("set IW2_NET_TRACE=2", "ignored IW2_FOO"). `applied` counts the set ones.

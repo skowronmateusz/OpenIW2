@@ -555,6 +555,10 @@ std::string executablePath() {
     std::string p(size, '\0');
     if (_NSGetExecutablePath(p.data(), &size) != 0) return {};
     p.resize(std::strlen(p.c_str()));
+    if (char* real = ::realpath(p.c_str(), nullptr)) { // a relative start ("./iw2server") as an absolute path
+        p = real;
+        std::free(real);
+    }
     return p;
 #else
     char buf[4096];
@@ -1096,6 +1100,9 @@ Trace::~Trace() { trace(category_, text_.str(), out_); }
 
 std::string dumpTrace(std::string_view reason) {
     const bool always = reason == "command";
+    // Without a log file the trace lines went to stdout already: only dumptrace writes a file then (a development run
+    // never fills the real log folder by itself).
+    if (!always && !captureActive()) return {};
     const int64_t now = monoMs();
     std::lock_guard<std::mutex> dl(gDumpMu);
     if (!always && (now - gLastDumpMs < 10000 || gDumps >= 20)) return {};
@@ -1114,8 +1121,8 @@ std::string dumpTrace(std::string_view reason) {
             text.erase(0, nl == std::string::npos ? text.size() : nl + 1); // a cut first line
         }
     }
-    Capture* c = gCapture.load();
-    const int64_t elapsedNow = now - (c ? c->startMs : gProcessStartMs);
+    Capture* c = captureActive() ? gCapture.load() : nullptr; // a stopped capture's folder is not used
+    const int64_t elapsedNow = now - (gCapture.load() ? gCapture.load()->startMs : gProcessStartMs);
     // Only the last 60 s: lines start with [m:ss.mmm].
     const auto stampOf = [](std::string_view l) -> int64_t {
         if (l.size() < 10 || l[0] != '[') return -1;

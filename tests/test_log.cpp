@@ -295,6 +295,15 @@ static void capture(const stdfs::path& root) {
         ::close(keep);
         ::close(keepErr);
         CHECK(readFile(f) == "frametrace us=1\n" && contains(ringContents(), "] frametrace us=1\n"));
+        // Without a log file an automatic dump writes nothing (the lines went to stdout); dumptrace still does.
+        const stdfs::path devDir = root / "devlogs";
+        ::setenv("IW2_LOG_DIR", devDir.c_str(), 1);
+        resetRingForTest(4096);
+        trace("frame", "frametrace us=2");
+        CHECK(dumpTrace("script error").empty() && dumpTrace("disconnect").empty() && !stdfs::exists(devDir));
+        const std::string manual = dumpTrace("command");
+        CHECK(!manual.empty() && stdfs::path(manual).parent_path() == devDir);
+        ::unsetenv("IW2_LOG_DIR");
         CHECK(readFile(fe) == "damagetrace t=3\n");
     }
 
