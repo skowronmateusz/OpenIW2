@@ -570,6 +570,13 @@ void RemoteView::placeTrajectories(game::World& w, const std::vector<const net::
     }
 }
 
+bool RemoteView::newerSnapshot(int messageNum, int& last, std::map<int, int>& seqs) {
+    if (last >= 0 && messageNum <= last && last - messageNum < 1000) return false;
+    if (last >= 0 && messageNum < last) seqs.clear();
+    last = messageNum;
+    return true;
+}
+
 void RemoteView::predictTurret(game::World& w, PredictedTurret& pt, int commandTime, bool attack) {
     game::Entity* t = w.playerTurretEntity();
     if (!t) {
@@ -592,8 +599,9 @@ void RemoteView::predictTurret(game::World& w, PredictedTurret& pt, int commandT
 
 void RemoteView::turretEvents(game::World& w, const net::ClientSnapshot& s, const std::map<int, std::string>& cs,
                               PredictedTurret* own) {
-    if (!s.valid || s.messageNum == turretEventsSnapshot_) return;
-    turretEventsSnapshot_ = s.messageNum;
+    // Only a snapshot newer than the last one checked: the drawn pair steps back when the clock does, and an older
+    // ring would play its last events again. A much older number is a new connection: its rings start afresh.
+    if (!s.valid || !newerSnapshot(s.messageNum, turretEventsSnapshot_, turretSeq_)) return;
     const auto sound = [&](int index) {
         const std::string* n = index > 0 ? cfg(cs, kSoundConfigstrings + index - 1) : nullptr;
         return n ? *n : std::string();
@@ -631,8 +639,7 @@ void RemoteView::turretEvents(game::World& w, const net::ClientSnapshot& s, cons
 void RemoteView::missileEvents(game::World& w, const std::vector<const net::ClientSnapshot*>& snaps) {
     if (snaps.empty() || !snaps.front()->valid) return;
     const net::ClientSnapshot& s = *snaps[snaps.size() > 1 ? 1 : 0];
-    if (s.messageNum == missileEventsSnapshot_) return;
-    missileEventsSnapshot_ = s.messageNum;
+    if (!newerSnapshot(s.messageNum, missileEventsSnapshot_, missileSeq_)) return; // as for the turrets
     std::set<int> present;
     for (const auto& [number, es] : s.entities) {
         if ((getI(es, 4) & 0xff) != kEtGeneral) continue;

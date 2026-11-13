@@ -199,11 +199,24 @@ void run(fs::Vfs& vfs, bool listen) {
         if (const auto it = wd->find("stopfiresound"); it != wd->end()) stopSnd = it->second;
     }
     Client& cw = g.clients[2];
+    int wflashes = 0;
+    std::vector<net::ClientSnapshot> wsnaps, gsnaps; // the last few snapshots of the watcher and the gunner
+    auto wframe = [&]() {
+        wview.frame();
+        for (const auto& f : wview.takeFxEvents())
+            if (f.path == flashFx && f.tag == "tag_flash") ++wflashes;
+    };
     auto showWatcher = [&]() {
         if (const net::ClientSnapshot* snap = cw.net->latest()) {
             wrv.apply(wview, *snap, cw.net->configstrings, watcher, wview.timeMs());
             wrv.turretEvents(wview, *snap, cw.net->configstrings);
-            wview.frame();
+            wframe();
+            wsnaps.push_back(*snap);
+            if (wsnaps.size() > 4) wsnaps.erase(wsnaps.begin());
+        }
+        if (const net::ClientSnapshot* snap = cg.net->latest()) {
+            gsnaps.push_back(*snap);
+            if (gsnaps.size() > 4) gsnaps.erase(gsnaps.begin());
         }
     };
     auto show = [&]() {
@@ -296,12 +309,32 @@ void run(fs::Vfs& vfs, bool listen) {
     CHECK(pt.pending() <= 1);
     // A stretch without snapshots while attack is held (a bursty path): the front end's world runs on, the fire loop
     // goes on and no stop sound plays; the loop is the own turret's player variant.
+    // The drawn pair stepping back (a clock reset) and forward again replays no event: no flash, no stop sound, and
+    // the gunner's predicted shots keep their matches.
+    {
+        CHECK(wsnaps.size() == 4 && gsnaps.size() == 4);
+        const int wf0 = wflashes, f0 = flashes, pending0 = pt.pending(), wstops0 = wcount(stopSnd), stops0 = count(stopPlr);
+        if (wsnaps.size() == 4 && gsnaps.size() == 4) {
+            wrv.turretEvents(wview, wsnaps[0], cw.net->configstrings);
+            wrv.turretEvents(wview, wsnaps[3], cw.net->configstrings);
+            wframe();
+            rv.turretEvents(view, gsnaps[0], cg.net->configstrings, &pt);
+            rv.turretEvents(view, gsnaps[3], cg.net->configstrings, &pt);
+            view.frame();
+            for (const auto& f : view.takeFxEvents())
+                if (f.path == flashFx && f.tag == "tag_flash") ++flashes;
+        }
+        std::cout << label << ": a step back and forward: watcher flashes " << wflashes - wf0 << ", gunner flashes " << flashes - f0
+                  << ", predicted shots unmatched " << pending0 << " -> " << pt.pending() << "\n";
+        CHECK(wflashes == wf0 && flashes == f0 && pt.pending() == pending0);
+        CHECK(wcount(stopSnd) == wstops0 && count(stopPlr) == stops0);
+    }
     const int stopsHeld = count(stopPlr), wstopsHeld = wcount(stopSnd);
     const bool wloopFiring = wlooping(loopSnd);
     for (int i = 0; i < 6; ++i) {
         g.frame();
         view.frame();
-        wview.frame();
+        wframe();
     }
     for (int i = 0; i < 4; ++i) {
         g.frame();

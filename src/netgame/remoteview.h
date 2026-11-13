@@ -120,7 +120,9 @@ private:
     std::map<int, int> turretSeq_; // turret wire number -> last event sequence played
     std::map<int, int> missileSeq_; // missile wire number -> last event sequence played
     int missileEventsSnapshot_ = -1;
-    int turretEventsSnapshot_ = -1;  // messageNum of the snapshot whose turret events were checked last // messageNum of the snapshot whose missile events were checked last
+    int turretEventsSnapshot_ = -1;
+    // messageNum is newer than `last` (then it becomes `last`); a much older one (a new connection) clears `seqs`.
+    static bool newerSnapshot(int messageNum, int& last, std::map<int, int>& seqs);  // messageNum of the snapshot whose turret events were checked last // messageNum of the snapshot whose missile events were checked last
     int lastFollowSnapshot_ = -1;
     int followSeq_ = -1;            // the followed player state's last event sequence played (-1: not following)
     int followFires_ = 0;           // shots played since the killcam started

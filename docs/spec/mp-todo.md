@@ -50,8 +50,10 @@ at the source. The convention itself (docs/spec/net.md section 1) is not an entr
   players (`docs/spec/net.md:753`).
 - The MP cgame's handling of a re-based trajectory at a bounce (the closest-point hold is openiw2's own rule)
   (`docs/spec/net.md:763`).
+- That the MP cgame's per-type branch at 0x4df29e (the ring's sequence taken as played) is the one that runs for an
+  entity's first snapshot, so a new entity's events are not replayed (`docs/spec/net.md:1489`).
 - The direction of a network client's grenade bounce effect: the cgame decodes the event parameter (the surface type)
-  with the direction-byte table of 0x4268c0, openiw2 points it up (`docs/spec/net.md:1462`, `src/game/mpremote.cpp:219`).
+  with the direction-byte table of 0x4268c0, openiw2 points it up (`docs/spec/net.md:1485`, `src/game/mpremote.cpp:219`).
 - A grenade's new spin at a bounce before its snapshot time (`src/netgame/remoteview.cpp:482`).
 - The 1.3 server turns the missile entity itself into the explosion event and sends the direction as a byte in
   eventParm (`docs/spec/net.md:770`, `src/netgame/worldgame.cpp:914`).
