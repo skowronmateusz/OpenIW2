@@ -11,6 +11,8 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <span>
+#include <set>
 #include <vector>
 
 #include "fs/vfs.h"
@@ -462,6 +464,22 @@ void dm(fs::Vfs& vfs) {
             back.messageNum = after.messageNum + 1;
             brv.apply(bview, back, g.clients[1]->configstrings, b, 0, nullptr);
         }
+        // A message number far below the last one is a new connection: its first player state is no damage, the next one is.
+        if (const net::ClientSnapshot* s = g.clients[1]->latest()) {
+            netgame::RemoteView rc;
+            World cview(vfs, "mp_toujane", true);
+            cview.mpStartRemote();
+            net::ClientSnapshot first = *s, again = *s, hit = *s;
+            first.messageNum = 5000, again.messageNum = 12, hit.messageNum = 13;
+            again.ps[284] = uint8_t(s->ps[284] + 3), again.ps[296] = 20;
+            hit.ps[284] = uint8_t(s->ps[284] + 4), hit.ps[296] = 25;
+            rc.damageFeedback(cview, {&first});
+            const int before = cview.playerDamageFeedback().event;
+            rc.damageFeedback(cview, {&again});
+            CHECK(cview.playerDamageFeedback().event == before);
+            rc.damageFeedback(cview, {&hit});
+            CHECK(cview.playerDamageFeedback().event == before + 1 && cview.playerDamageFeedback().count == 25);
+        }
         // The shell shock of the player state (docs/spec/mp.md "Per-client player state"): its start moves onto the client's
         // clock once; later snapshots of the same shock keep it whatever the measured clock offset is, a new shock takes the
         // offset of its first snapshot.
@@ -522,7 +540,14 @@ void dm(fs::Vfs& vfs) {
         if (pb) pb->obj->set("health", Value(100));
     }
 
-    // bot2 kills bravo.
+    // bot2 kills bravo. bot2 is shell shocked meanwhile: the killcam's copy of its player state carries the shock (below).
+    {
+        std::vector<Value> args{Value(std::string("default")), Value(40.0f)};
+        script::Thread th;
+        script::CallContext cc{g.host.vm(), th, Value(g.host.mpClientEntity(bot2)->obj), std::span<Value>(args)};
+        g.host.vm().builtin("shellshock")(cc);
+        CHECK(g.host.mpState().clients[size_t(bot2)].shockIndex > 0);
+    }
     g.host.mpBotSetCombat(bot2, true);
     bool botKill = false;
     for (int i = 0; i < 1200 && !botKill; ++i) {
@@ -585,6 +610,7 @@ void dm(fs::Vfs& vfs) {
         int bodyWithPuppet = 0, bodyAfter = 0, bodyNew = 0, otherBodyNew = 0, otherBodies = 0;
         bool puppetGone = false;
         net::ClientSnapshot lastFollow;
+        std::set<int> kcShockStarts; // the followed client's shock start in the replay's player states
         for (int i = 0; i < 260; ++i) {
             g.frame();
             const net::ClientSnapshot* s = g.clients[1]->latest();
@@ -606,6 +632,12 @@ void dm(fs::Vfs& vfs) {
                 continue;
             }
             lastFollow = *s;
+            {
+                int32_t type = 0, start = 0;
+                std::memcpy(&type, s->ps.data() + 1496, 4);
+                std::memcpy(&start, s->ps.data() + 1500, 4);
+                if (type != 0) kcShockStarts.insert(start);
+            }
             // The copied player state is the followed client's: its number and its spawn count (stats[5]).
             CHECK(s->ps[204] == bot2 && s->ps[320] != 0);
             if (++followSnaps == 1)
@@ -716,6 +748,10 @@ void dm(fs::Vfs& vfs) {
         CHECK(ownModel.rfind("xmodel/playerbody", 0) == 0);
         CHECK(!ownWeapon.empty());
         CHECK(followSnaps >= 60);  // about 7 s of 20 snapshots a second (the client's snapshot rate)
+        // The shocked killer's shock rides in the copied player state with one start for the whole replay (a moving start
+        // would be a new shock for the viewer with every snapshot, docs/spec/mp.md "Per-client player state").
+        std::cout << "killcam: " << kcShockStarts.size() << " shock start(s) of the followed client\n";
+        CHECK(kcShockStarts.size() == 1);
         CHECK(killSeen >= 1);
         // After the killcam bravo is no longer following.
         const net::ClientSnapshot* s = g.clients[1]->latest();

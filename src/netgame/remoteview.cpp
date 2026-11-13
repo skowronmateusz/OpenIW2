@@ -282,7 +282,13 @@ int RemoteView::stance(const net::ClientSnapshot& snap) {
 
 void RemoteView::damageFeedback(game::World& w, const std::vector<const net::ClientSnapshot*>& snaps) {
     for (const net::ClientSnapshot* s : snaps) {
-        if (!s || !s->valid || s->messageNum <= feedbackSnapshot_ || s->ps.size() < 324) continue;
+        if (!s || !s->valid || s->ps.size() < 324) continue;
+        // Not newer than the last one seen: skipped; a much older number is a new connection (as for the event rings),
+        // whose first player state counts as another identity.
+        if (feedbackSnapshot_ >= 0 && s->messageNum <= feedbackSnapshot_) {
+            if (feedbackSnapshot_ - s->messageNum < 1000) continue;
+            psIdentity_ = -1;
+        }
         feedbackSnapshot_ = s->messageNum;
         const std::vector<uint8_t>& ps = s->ps;
         const int identity = (getI(ps, 204) & 0xff) | ((getI(ps, 320) & 0xff) << 8);
