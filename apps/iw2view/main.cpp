@@ -4749,6 +4749,7 @@ int main(int argc, char** argv) {
         int netDeltaApplied[3] = {0, 0, 0}; // the server's delta_angles the view has turned by (ps+84)
         netgame::Predictor netPredictor; // network game: own-player prediction (docs/spec/net.md section 10)
         netgame::PredictedWeapon netPredictedWeapon; // network game: own weapon, counters and shots (docs/spec/net.md section 10)
+        netgame::PredictedTurret netPredictedTurret; // network game: own map-turret fire (docs/spec/net.md section 10)
         int netWeaponSnapshot = -1; // the snapshot message the predicted weapon was last compared with
         std::pair<const net::GameClient*, int> netPredictorFor{nullptr, -1}; // the connection and gamestate it belongs to
         int64_t netDrawNowMs = 0; // the client time of the last prediction (correction decay)
@@ -9298,6 +9299,7 @@ int main(int argc, char** argv) {
             netAmbient.reset(); // a level's track starts again from the configstring of the next level
             netPredictor.reset();
             netPredictedWeapon.clear();
+            netPredictedTurret.clear();
             netWeaponSnapshot = -1;
             netPredictorFor = {nullptr, -1};
             netClockOffset.reset();
@@ -9511,7 +9513,7 @@ int main(int argc, char** argv) {
                         remoteView.missileEvents(*world, trajSnaps); // bounce sounds where the drawn grenade is
                     }
                     // Map turrets: shots, stop sounds and the fire loop at the drawn pair's newer snapshot (docs/spec/turrets.md).
-                    if (snapB) remoteView.turretEvents(*world, *snapB, netClient->configstrings);
+                    if (snapB) remoteView.turretEvents(*world, *snapB, netClient->configstrings, &netPredictedTurret);
                     // Other players' shots, reloads and throws: sounds, impacts, animations (docs/spec/net.md section 13).
                     remoteView.playerEvents(*world, *last, netClient->configstrings, netClient->clientNum);
                     // The followed client's shots in a killcam (the player state's event ring).
@@ -9896,6 +9898,7 @@ int main(int argc, char** argv) {
                         netPredictorFor = {netClient.get(), netClient->gamestates};
                         netPredictor.reset();
                         netPredictedWeapon.clear();
+                        netPredictedTurret.clear();
                         netWeaponSnapshot = -1;
                         lastEventSeq = 0;
                     }
@@ -10344,6 +10347,8 @@ int main(int argc, char** argv) {
                 // game has no commands: one step per frame, at most 100 ms.
                 int shots = 0;
                 const net::UserCmd* weaponCmd = netClient && world->player() ? netClient->lastCommand() : nullptr;
+                // The own turret's fire, predicted on this command (cleared off a turret).
+                if (weaponCmd) netgame::RemoteView::predictTurret(*world, netPredictedTurret, weaponCmd->serverTime, (weaponCmd->buttons & 1) != 0);
                 if (onTurret) {
                     if (weaponCmd) shots = netPredictedWeapon.idle(weaponCmd->serverTime);
                 } else if (weaponCmd) {

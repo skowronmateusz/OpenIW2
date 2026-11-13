@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "netgame/predictedturret.h"
 #include "game/world.h"
 #include "net/gameclient.h"
 #include "netgame/netmove.h"
@@ -61,7 +62,13 @@ public:
     // pair, as the cgame checks a snapshot's events when it becomes the next one; each shot (EV_FIRE_WEAPON_MG42) and
     // stop sound once, the loop sound as the entity state has it. Paced by the client clock, not by the arrival of
     // the snapshots: a burst of late snapshots neither stops the loop nor fires its shots at once.
-    void turretEvents(game::World& w, const net::ClientSnapshot& next, const std::map<int, std::string>& cs);
+    // own: the predicted fire of the own turret (its shot events stand for predicted shots first; its sounds are the
+    // prediction's).
+    void turretEvents(game::World& w, const net::ClientSnapshot& next, const std::map<int, std::string>& cs,
+                      PredictedTurret* own = nullptr);
+    // One command of the client on its own turret (docs/spec/net.md section 10 "Predicted turret fire"): the predicted
+    // shots (flash, shake, impact) and the fire loop and its end, at once. Off a turret the prediction is cleared.
+    static void predictTurret(game::World& w, PredictedTurret& pt, int commandTime, bool attack);
     // How far behind the players' drawn time the models with a trajectory are drawn (docs/spec/net.md section 11
     // "Trajectories"): with snapshots between the game frames, the part of a game frame the snapshot interval does not
     // cover, so that the frame that re-bases a path has been received when the drawn time reaches the hit.

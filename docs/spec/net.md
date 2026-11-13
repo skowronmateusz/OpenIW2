@@ -1217,6 +1217,28 @@ time; the server's fields are put over it and the newer commands are run, the fi
   command as well). On a map turret neither side runs the weapon; the command's time is passed, so the first
   step after it is that command's own.
 
+### Predicted turret fire
+
+The 1.3 client does not predict a map turret: the server fires it in its game frame (the fire timer drops by 50
+every frame and, with attack held, a timer below 1 restarts at fireTime and shoots; docs/spec/turrets.md
+"Multiplayer"), and the client shows the shot when the turret's event arrives (MP 0x4d7143: the flash of the own
+turret). So the own turret's first shot comes a round trip, up to a game frame and the client's event delay after
+the press; with openiw2's command hold on a bursty path (section 10 "Commands on a bursty path") up to 100 ms more.
+Measured with tests/test_mplag.cpp's turret mode (attack press to the first snapshot with the shot, 2 s bursts):
+wifi 25..109 ms, wifiburst 33..140 ms, spike (85 ms dark every 500 ms) 91..114 ms, wan 81..138 ms, radio (220 ms dark)
+133..316 ms. openiw2 rule (`PredictedTurret`, src/netgame/predictedturret.h; `RemoteView::predictTurret`): while
+the player state says the client is on a turret (the 0x300 eFlags bits and viewLockEntity), every command runs the
+server's rule on the command's own time: the first command with attack after the timer ran out shoots at once, and
+while attack is held the shots follow every 50 · ceil(fireTime / 50) ms (the server's interval), a long command
+getting the shots of the frames it spans (at most four, the ring's size); a release keeps the timer, so a new press
+before it ran out waits. Each predicted shot is played at once as the turret's shot (flash, view shake, impact trace)
+and the fire loop (the weapon's loopFireSoundPlayer) runs until fireTime · 3 after the last predicted shot, then
+stopFireSoundPlayer plays. The server's shot events of that turret (section 11, drawn pair) stand for the predicted
+shots first and are not played again; one more than predicted is played; a predicted shot the server has not
+matched within 1000 ms of command time is given up. The bullets, their damage and the turret's aim for the other
+players stay the server's. Tests: tests/test_predictedturret.cpp (the rule), tests/test_mpturretview.cpp (a press
+before its snapshot flashes and starts the loop in that frame; every server shot is drawn once).
+
 ### Weapon selection
 
 The weapon a client asks for (the weapon byte of its commands) is the cgame's selected weapon (MP client 0x1519ed0,

@@ -167,10 +167,20 @@ void run(fs::Vfs& vfs, bool listen) {
         if (const auto it = wd->find("loopfiresoundplayer"); it != wd->end()) loopPlr = it->second;
         if (const auto it = wd->find("stopfiresoundplayer"); it != wd->end()) stopPlr = it->second;
     }
+    // The own turret's fire is predicted on the client's commands (docs/spec/net.md section 10 "Predicted turret
+    // fire"); predict() alone is a frame whose snapshots have not come yet.
+    netgame::PredictedTurret pt;
+    auto predict = [&]() {
+        if (const net::UserCmd* lc = cg.net->lastCommand()) netgame::RemoteView::predictTurret(view, pt, lc->serverTime, (lc->buttons & 1) != 0);
+        view.frame();
+        for (const auto& f : view.takeFxEvents())
+            if (f.path == flashFx && f.tag == "tag_flash") ++flashes;
+    };
     auto show = [&]() {
         if (const net::ClientSnapshot* snap = cg.net->latest()) {
             rv.apply(view, *snap, cg.net->configstrings, gunner, view.timeMs());
-            rv.turretEvents(view, *snap, cg.net->configstrings);
+            if (const net::UserCmd* lc = cg.net->lastCommand()) netgame::RemoteView::predictTurret(view, pt, lc->serverTime, (lc->buttons & 1) != 0);
+            rv.turretEvents(view, *snap, cg.net->configstrings, &pt);
             psf = netgame::readPs(snap->ps);
             predicted = netgame::predictPlayer(view.collision(), psf, cg.net->commandsAfter(psf.commandTime), &predicted);
             view.frame();
@@ -227,6 +237,7 @@ void run(fs::Vfs& vfs, bool listen) {
     CHECK(vt && std::fabs(vt->turret->yaw - t->turret->yaw) < 0.5f);
     cg.yaw = ta[1];
     // Attack: the turret fires and kills the victim in front of it; the obituary names the turret weapon.
+    const int flashes0 = flashes, shots0 = t->turret->fireCount;
     cg.buttons = game::Button::Attack;
     const size_t obits = g.host.mpState().obituaryLog.size();
     bool killed = false;
@@ -247,6 +258,11 @@ void run(fs::Vfs& vfs, bool listen) {
     }
     CHECK(killed);
     CHECK(lockFired);
+    // Every shot of the server is drawn once: predicted and matched by its event, not played a second time.
+    std::cout << label << ": flashes " << flashes - flashes0 << " for " << t->turret->fireCount - shots0 << " server shots, "
+              << pt.pending() << " predicted shots unmatched\n";
+    CHECK(flashes - flashes0 == t->turret->fireCount - shots0);
+    CHECK(pt.pending() <= 1);
     // A stretch without snapshots while attack is held (a bursty path): the front end's world runs on, the fire loop
     // goes on and no stop sound plays; the loop is the own turret's player variant.
     const int stopsHeld = count(stopPlr);
@@ -271,6 +287,29 @@ void run(fs::Vfs& vfs, bool listen) {
     std::cout << label << ": after the release: stop sounds " << count(stopPlr) - stopsHeld << ", loop playing " << looping(loopPlr) << "\n";
     CHECK(count(stopPlr) == stopsHeld + 1);
     CHECK(!looping(loopPlr));
+    // A press whose snapshots have not come yet: the predicted shot's flash and the fire loop start in that frame; the
+    // server's shots that follow are matched, not drawn twice.
+    {
+        const int f0 = flashes, s0 = t->turret->fireCount;
+        cg.buttons = game::Button::Attack;
+        g.frame();
+        predict();
+        std::cout << label << ": press before its snapshot: " << flashes - f0 << " flash, loop " << looping(loopPlr) << "\n";
+        CHECK(flashes - f0 == 1);
+        CHECK(looping(loopPlr));
+        for (int i = 0; i < 5; ++i) {
+            g.frame();
+            show();
+        }
+        cg.buttons = 0;
+        for (int i = 0; i < 6; ++i) {
+            g.frame();
+            show();
+        }
+        std::cout << label << ": that burst: " << flashes - f0 << " flashes for " << t->turret->fireCount - s0 << " server shots\n";
+        CHECK(flashes - f0 == t->turret->fireCount - s0);
+        CHECK(!looping(loopPlr));
+    }
     // The front end plays the turret's shots (EV_FIRE_WEAPON_MG42 on the turret): the muzzle flash at tag_flash.
     std::cout << label << ": flashes " << flashes << " shots " << t->turret->fireCount << "\n";
     CHECK(!flashFx.empty());

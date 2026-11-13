@@ -984,6 +984,7 @@ public:
         horiz = weaponFloat(playerTurret_->turret->weapon, "horizviewjitter");
         return true;
     }
+    Entity* playerTurretEntity() const { return playerOnTurret() && playerTurret_ && playerTurret_->turret && !playerTurret_->obj->removed ? playerTurret_ : nullptr; }
     std::string playerTurretWeapon() const { return playerOnTurret() && playerTurret_ && playerTurret_->turret ? playerTurret_->turret->weapon : std::string(); }
     // The view clamp on a turret (PM_UpdateViewAngles 0x50b120 with eFlags & 0x300): pitch and yaw within
     // base ± range (ps+0xe8 / +0xec, +0xf0 / +0xf4).

@@ -570,7 +570,28 @@ void RemoteView::placeTrajectories(game::World& w, const std::vector<const net::
     }
 }
 
-void RemoteView::turretEvents(game::World& w, const net::ClientSnapshot& s, const std::map<int, std::string>& cs) {
+void RemoteView::predictTurret(game::World& w, PredictedTurret& pt, int commandTime, bool attack) {
+    game::Entity* t = w.playerTurretEntity();
+    if (!t) {
+        pt.clear();
+        return;
+    }
+    const auto* def = w.weapon(t->turret->weapon);
+    const auto key = [&](const char* k) -> std::string {
+        if (!def) return {};
+        const auto it = def->find(k);
+        return it == def->end() ? std::string() : it->second;
+    };
+    const int fireTimeMs = int(std::atof(key("firetime").c_str()) * 1000.0f);
+    const bool wasLooping = pt.turret() == t->number && pt.looping();
+    const int shots = pt.command(t->number, commandTime, attack, fireTimeMs);
+    for (int i = 0; i < shots; ++i) w.mpRemoteTurretFire(*t);
+    const bool looping = pt.looping();
+    w.mpSetRemoteTurretSound(*t, looping ? key("loopfiresound") : std::string(), wasLooping && !looping ? key("stopfiresound") : std::string());
+}
+
+void RemoteView::turretEvents(game::World& w, const net::ClientSnapshot& s, const std::map<int, std::string>& cs,
+                              PredictedTurret* own) {
     if (!s.valid || s.messageNum == turretEventsSnapshot_) return;
     turretEventsSnapshot_ = s.messageNum;
     const auto sound = [&](int index) {
@@ -585,6 +606,7 @@ void RemoteView::turretEvents(game::World& w, const net::ClientSnapshot& s, cons
             if (p->mapIndex > 0 && kFirstMapEntity + p->mapIndex - 1 == number) e = p.get();
         if (!e || !e->turret) continue;
         present.insert(number);
+        const bool predicted = own && own->turret() == e->number && w.playerTurretEntity() == e;
         // Its shots and stop sounds: each new event of the ring (first sight: none replayed).
         std::string stop;
         const int seq = getI(es, 164) & 0xff;
@@ -595,13 +617,13 @@ void RemoteView::turretEvents(game::World& w, const net::ClientSnapshot& s, cons
             if (((seq - from) & 0xff) > 4) from = (seq - 4) & 0xff;
             for (int q = from; q != seq; q = (q + 1) & 0xff) {
                 const int ev = getI(es, 168 + 4 * (q & 3)) & 0xff;
-                if (ev == kEvFireWeaponMg42) w.mpRemoteTurretFire(*e);
+                if (ev == kEvFireWeaponMg42 && !(predicted && own->serverShot(e->number))) w.mpRemoteTurretFire(*e);
                 else if (ev == kEvSoundAlias) stop = sound(getI(es, 184 + 4 * (q & 3)) & 0xff);
             }
             ts->second = seq;
         }
-        // The fire loop of its entity state.
-        w.mpSetRemoteTurretSound(*e, sound(getI(es, 132) & 0xff), stop);
+        // The fire loop of its entity state (the own turret's: the prediction's).
+        if (!predicted) w.mpSetRemoteTurretSound(*e, sound(getI(es, 132) & 0xff), stop);
     }
     std::erase_if(turretSeq_, [&](const auto& t) { return !present.count(t.first); });
 }
