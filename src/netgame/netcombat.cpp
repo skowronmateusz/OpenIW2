@@ -342,9 +342,13 @@ void NetCombat::think(World& w, int client, const net::UserCmd& cmd, game::Playe
         using K = game::PlayerWeapon::Event;
         switch (ev.kind) {
         case K::ReloadBegin:
-            ring_.push(weapon_.clip() == 0 ? kEvReloadFromEmpty : kEvReload, windex);
-            w.mpPushClientEvent(client, weapon_.clip() == 0 ? kEvReloadFromEmpty : kEvReload, weapon_.name());
-            if (anim) anim->reloaded = true;
+            if (anim && !ev.weapon.empty()) anim->reloaded = true; // a reload begins (the empty-named ones only clear the aim)
+            break;
+        case K::StateEvent:
+            // Reload, reload start / end, rechamber, raise, put away: the event of the state change (docs/spec/net.md
+            // section 13 "Entity events"), for the other clients and the killcam.
+            ring_.push(ev.code, weaponIndex ? weaponIndex(ev.weapon) : windex);
+            w.mpPushClientEvent(client, ev.code, ev.weapon);
             break;
         case K::MeleeSwing:
             ring_.push(kEvMeleeSwipe, windex);

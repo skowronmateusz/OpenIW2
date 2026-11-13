@@ -97,14 +97,20 @@ void PlayerWeapon::enter(State s, const char* animKey, float duration) {
         const bool fromEmpty = clip_ == 0 && fieldValue("weaponType") == "bullet";
         if (fromEmpty) playFirst({"reloadEmptySoundPlayer", "reloadSoundPlayer", "reloadEmptySound", "reloadSound"});
         else playFirst({"reloadSoundPlayer", "reloadEmptySoundPlayer", "reloadSound", "reloadEmptySound"});
+        stateEvent(fromEmpty ? 0x97 : 0x96);
     } else if (s == State::ReloadStart) {
         playFirst({"reloadStartSoundPlayer", "reloadStartSound"}); // event 0x98
+        stateEvent(0x98);
     } else if (s == State::ReloadEnd) {
         playFirst({"reloadEndSoundPlayer", "reloadEndSound"}); // event 0x99
+        stateEvent(0x99);
     } else if (s == State::Rechamber) {
         playFirst({"rechamberSoundPlayer", "rechamberSound"}); // event 0xa1
+        stateEvent(0xa1);
     }
 }
+
+void PlayerWeapon::stateEvent(int code) { events_.push_back({Event::StateEvent, name_, false, code}); }
 
 // The first non-empty sound of the current weapon among the keys (the cgame chains of 0x4ba8d0).
 void PlayerWeapon::playFirst(std::initializer_list<const char*> keys) {
@@ -165,6 +171,7 @@ void PlayerWeapon::equip(const std::string& name, const Def& def) {
     triggerReleased_ = true;
     enter(State::Raising, "raiseAnim", time("raiseTime", 0.5f));
     playFirst({"raiseSound"}); // event 0x9a (0x4dde44), once per raise (the alt raise re-enters with its own anim)
+    stateEvent(0x9a);
 }
 
 // Begin a weapon change (0x4ddb40): the drop takes altDropTime when the new weapon is this one's altWeapon, else
@@ -184,8 +191,13 @@ void PlayerWeapon::startDrop(const std::string& next) {
     enter(State::Dropping, alt ? "altDropAnim" : "dropAnim", time(alt ? "altDropTime" : "dropTime", 0));
     // 0x4ddb40: event 0x9c (altSwitchSound) when the new weapon is the altWeapon, else 0x9b (putawaySound).
     // The putaway event 0x9b is sent only when clipOnly (+0x340, field table 0x5a86fc) is 0 or the clip is not empty (0x4ddbd9).
-    if (alt) playFirst({"altSwitchSound"});
-    else if (std::atoi(fieldValue("clipOnly").c_str()) == 0 || clip_ != 0) playFirst({"putawaySound"});
+    if (alt) {
+        playFirst({"altSwitchSound"});
+        stateEvent(0x9c);
+    } else if (std::atoi(fieldValue("clipOnly").c_str()) == 0 || clip_ != 0) {
+        playFirst({"putawaySound"});
+        stateEvent(0x9b);
+    }
 }
 
 // The drop finished (PM_Weapon state 2): the command's weapon becomes the player's; the raise takes altRaiseTime

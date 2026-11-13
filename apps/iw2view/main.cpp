@@ -10445,8 +10445,7 @@ int main(int argc, char** argv) {
                 for (const auto& e : pweapon.takeEvents()) {
                     const game::Vec3 eye{cam.pos.x, cam.pos.y, cam.pos.z}, angles{cam.pitch, cam.yaw, 0};
                     if (world->multiplayer() && !netClient) { // the host's entity events (its puppet and its killcam replay)
-                        if (e.kind == game::PlayerWeapon::Event::ReloadBegin && !e.weapon.empty())
-                            world->mpPushLocalClientEvent(pweapon.clip() == 0 ? game::mpev::kReloadFromEmpty : game::mpev::kReload, e.weapon);
+                        if (e.kind == game::PlayerWeapon::Event::StateEvent) world->mpPushLocalClientEvent(e.code, e.weapon); // reload, rechamber, raise, put away
                         else if (e.kind == game::PlayerWeapon::Event::MeleeSwing) world->mpPushLocalClientEvent(game::mpev::kMeleeSwipe, e.weapon);
                         else if (e.kind == game::PlayerWeapon::Event::MeleeHit) world->mpPushLocalClientEvent(game::mpev::kFireMelee, e.weapon);
                         else if (e.kind == game::PlayerWeapon::Event::OffhandThrow) world->mpPushLocalClientEvent(game::mpev::kUseOffhand, e.weapon);

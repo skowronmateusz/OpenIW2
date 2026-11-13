@@ -58,9 +58,15 @@ public:
             BinocularRelease,// 0xab: "binocular_release" (0x4e7723)
             BinocularDrop,   // 0xac: "binocular_drop" (0x4e7740)
             EjectBrass,      // 0xa2: the cgame ejects the brass (0x4bb113 -> CG_EjectWeaponBrass 0x4b7730, shellEjectEffect)
+            // The entity event a state change adds (`code`): 0x96 / 0x97 reload (from empty), 0x98 reload start, 0x99 reload
+            // end, 0xa1 rechamber, 0x9a raise, 0x9b put away, 0x9c alt switch. The own view plays their sounds from the
+            // sound queue; the event goes into the player's event ring for the others and the killcam (docs/spec/net.md
+            // section 13 "Entity events").
+            StateEvent,
         } kind;
         std::string weapon;
         bool alt = false; // WeaponRaised: the new weapon is the old one's altWeapon (aim spread kept at >= 128, 0x4dde9f)
+        int code = 0;     // StateEvent: the event number
     };
 
     // Weapon definitions for weapon changes and offhands (World::weapon).
@@ -261,6 +267,7 @@ private:
     Def offDef_;
     float fuse_ = 0;               // ps+0x3c, seconds
     std::vector<std::string> sounds_;
+    void stateEvent(int code); // queues Event::StateEvent with the current weapon
     std::vector<Event> events_;
     bool binocActive_ = false;     // pm_flags 0x20000
     Def binocDef_;

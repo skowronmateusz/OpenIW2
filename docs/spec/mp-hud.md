@@ -497,7 +497,7 @@ state's weapon and the weapon whose definition the view model uses (the offhand 
 state number, the view animation as its weapon-file key (`idleAnim`, `fireAnim`, `reloadEmptyAnim`, `holdFireAnim`,
 ...) with its elapsed time, the aim fraction and its direction, the bob cycle, the velocity, the lean and the two
 view heights, plus the client's event ring (sequence and the newest four events with their weapon parameters: fire,
-last shot, reload, melee swipe, offhand prepare and throw), and the client's view angles and eye of every client
+last shot, reload and its start / end, rechamber, raise, put away, melee swipe, offhand prepare and throw), and the client's view angles and eye of every client
 kind (a network client's from its newest command).
 
 Where it goes on the wire (the followed player state of a killcam snapshot): the followed client's number in

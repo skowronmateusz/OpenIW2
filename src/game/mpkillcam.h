@@ -96,7 +96,8 @@ const char* viewAnimKeyName(int index);       // "idleAnim" for an index out of 
 // Entity event numbers a player's event ring carries (the event-name table of the 1.3 Linux dedicated server at
 // 0x8183da0, docs/spec/net.md section 13).
 namespace mpev {
-constexpr int kReload = 0x96, kReloadFromEmpty = 0x97, kRaiseWeapon = 0x9a, kPutawayWeapon = 0x9b, kFireWeapon = 0x9e,
+constexpr int kReload = 0x96, kReloadFromEmpty = 0x97, kReloadStart = 0x98, kReloadEnd = 0x99, kRaiseWeapon = 0x9a,
+              kPutawayWeapon = 0x9b, kAltSwitch = 0x9c, kFireWeapon = 0x9e,
               kFireWeaponLastShot = 0xa0, kRechamber = 0xa1, kMeleeSwipe = 0xa3, kFireMelee = 0xa4, kPrepOffhand = 0xa5,
               kUseOffhand = 0xa6;
 }

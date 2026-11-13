@@ -6,6 +6,7 @@
 #include "game/world.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <set>
 #include <stdexcept>
 
@@ -121,6 +122,7 @@ void World::mpRemotePlayerEvent(int client, int event, const std::string& weapon
             }
         }
     };
+    auto segmentedReload = [&](const std::string& n) { return std::atoi(weaponField(n, "segmentedReload").c_str()) != 0; };
     switch (event) {
     case 0x9e:    // EV_FIRE_WEAPON
     case 0xa0: {  // EV_FIRE_WEAPON_LASTSHOT
@@ -135,8 +137,16 @@ void World::mpRemotePlayerEvent(int client, int event, const std::string& weapon
         if (pi) pi->fired = true;
         break;
     }
-    case 0x96: play({"reloadSound", "reloadEmptySound"}); if (pi) pi->reloaded = true; break;  // EV_RELOAD
-    case 0x97: play({"reloadEmptySound", "reloadSound"}); if (pi) pi->reloaded = true; break;  // EV_RELOAD_FROM_EMPTY
+    // The third-person reload animation starts once per reload: at the reload start of a segmented weapon (every shipped
+    // one has a reloadStartTime, so 0x98 begins it), at the reload event of the others (not at every round's 0x96).
+    case 0x96: play({"reloadSound", "reloadEmptySound"}); if (pi && !segmentedReload(wn)) pi->reloaded = true; break; // EV_RELOAD
+    case 0x97: play({"reloadEmptySound", "reloadSound"}); if (pi && !segmentedReload(wn)) pi->reloaded = true; break; // EV_RELOAD_FROM_EMPTY
+    case 0x98: play({"reloadStartSound"}); if (pi) pi->reloaded = true; break;                 // reload start (segmented)
+    case 0x99: play({"reloadEndSound"}); break;                                                 // reload end
+    case 0xa1: play({"rechamberSound"}); break;                                                 // EV_RECHAMBER_WEAPON (the bolt)
+    case 0x9a: play({"raiseSound"}); break;                                                     // EV_RAISE_WEAPON
+    case 0x9b: play({"putawaySound"}); break;                                                   // EV_PUTAWAY_WEAPON
+    case 0x9c: play({"altSwitchSound"}); break;                                                 // the switch to the altWeapon
     case 0xa3: play({"meleeSwipeSound"}); break;                                                // EV_MELEE_SWIPE
     case 0xa6: play({"fireSound"}); break;                                                      // EV_USE_OFFHAND (the throw)
     default:  // footsteps, jumps, landings (1..0x8b): another player's movement sounds
@@ -169,9 +179,18 @@ void World::mpFollowEventSound(int event, const std::string& weapon) {
             }
         }
     };
+    // The followed client is the player state's clientNum, so the cgame's own-view test (MP 0x4e09c9..0x4e09e7: snapshot
+    // flags 0xc00000 and the event's entity = ps clientNum) holds and the reload, reload start / end and rechamber cases
+    // take the player variant first (0x4e0f82, 0x4e0ffc, 0x4e106f, 0x4e10bc, 0x4e1338), as the own view does.
     switch (event) {
-    case mpev::kReload: play({"reloadSound", "reloadEmptySound"}); break;
-    case mpev::kReloadFromEmpty: play({"reloadEmptySound", "reloadSound"}); break;
+    case mpev::kReload: play({"reloadSoundPlayer", "reloadEmptySoundPlayer", "reloadSound", "reloadEmptySound"}); break;
+    case mpev::kReloadFromEmpty: play({"reloadEmptySoundPlayer", "reloadSoundPlayer", "reloadEmptySound", "reloadSound"}); break;
+    case mpev::kReloadStart: play({"reloadStartSoundPlayer", "reloadStartSound"}); break;
+    case mpev::kReloadEnd: play({"reloadEndSoundPlayer", "reloadEndSound"}); break;
+    case mpev::kRechamber: play({"rechamberSoundPlayer", "rechamberSound"}); break;
+    case mpev::kRaiseWeapon: play({"raiseSound"}); break;
+    case mpev::kPutawayWeapon: play({"putawaySound"}); break;
+    case mpev::kAltSwitch: play({"altSwitchSound"}); break;
     case mpev::kMeleeSwipe: play({"meleeSwipeSound"}); break;
     case mpev::kPrepOffhand: play({"pullbackSound"}); break;
     case mpev::kUseOffhand: play({"fireSound"}); break;

@@ -1149,6 +1149,15 @@ if(IW2_TEST_MAIN)
     "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache;IW2_LAG_SERVER=$<TARGET_FILE:iw2server>;IW2_LAG_PROFILE=wan;IW2_LAG_ASWITCH=150;IW2_LAG_SECONDS=12;IW2_NET_WAN=1")
 endif()
 
+# The entity events of a player's weapon state changes: reload, rechamber, raise, put away reach other players and the
+# killcam (tests/test_mpweaponevents.cpp).
+add_executable(test_mpweaponevents tests/test_mpweaponevents.cpp)
+target_link_libraries(test_mpweaponevents PRIVATE iw2_netgame)
+add_test(NAME mpweaponevents COMMAND test_mpweaponevents)
+if(IW2_TEST_MAIN)
+  set_tests_properties(mpweaponevents PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
 add_executable(test_mplanding tests/test_mplanding.cpp)
 target_link_libraries(test_mplanding PRIVATE iw2_dedicated iw2_netgame)
 add_test(NAME mplanding COMMAND test_mplanding)

@@ -419,7 +419,9 @@ void segmentedReload() {
         w.update(0.01f, {false, true});
         {
             const auto ev = w.takeEvents();
-            CHECK(ev.size() == 1 && ev[0].kind == PlayerWeapon::Event::ReloadBegin);
+            // 0x95, then the reload start's event 0x98 (docs/spec/net.md section 13 "Entity events").
+            CHECK(ev.size() == 2 && ev[0].kind == PlayerWeapon::Event::ReloadBegin && ev[1].kind == PlayerWeapon::Event::StateEvent &&
+                  ev[1].code == 0x98);
         }
         CHECK(w.takeSounds() == std::vector<std::string>{"start"});
         held(w, 1.3f, false); // t = 1.32: the intro adds its round only at 1.4
@@ -807,6 +809,8 @@ void deadPlayer() {
     for (int i = 0; i < 100; ++i) w.update(0.01f, in);
     CHECK(w.equipped());
     const int clip = w.clip();
+    (void)w.takeEvents(); // the raise's event 0x9a
+    (void)w.takeSounds();
     in.dead = true;
     in.fire = in.reload = in.melee = in.frag = in.smoke = true;
     int shots = 0;

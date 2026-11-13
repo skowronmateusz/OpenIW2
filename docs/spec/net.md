@@ -1611,8 +1611,23 @@ Lag compensation: a network client's bullets are fired with the antilag rewind (
 throw), 0xad / 0xae melee hit / miss, 0xb5..0xba bullet hits, 0xbb grenade bounce, 0xbc grenade explosion, 0xc5
 grenade suicide, 0xc6 obituary (as used in section 11). A player's events travel in its entity's event ring
 (`eventSequence` +164, `events[4]` +168, `eventParms[4]` +184, as in the Quake III entity state): openiw2 sends fire
-(0x9e / 0xa0) for every player that shoots (host, bots, network players) and for network players also reload, melee
-swipe and fire, throw and suicide; the parameter is the weapon byte above (`TODO(spec)`: the original's parameters).
+(0x9e / 0xa0) for every player that shoots (host, bots, network players) and for network players also melee swipe and
+fire, throw and suicide; the parameter is the weapon byte above (`TODO(spec)`: the original's parameters).
+The weapon's state changes add their events too, for every player (host, bots, network players): reload 0x96 / 0x97 on
+entering the reload state (0x97 for a bullet weapon with an empty clip), 0x98 / 0x99 on entering the reload start / end
+states of a segmented reload, 0xa1 on entering the rechamber state (the bolt of the bolt-action rifles after each shot),
+0x9a at a raise, 0x9b at a put-away (only when clipOnly is 0 or the clip is not empty) and 0x9c at the switch to the
+altWeapon (docs/spec/weapons.md; the same points where the own view plays the sounds of these events). They are player
+state events, and the player state to entity state copy below passes every event outside its exclusion list, so the
+other clients get them; the killcam's followed player state carries them as well (its archived ring). The listener plays
+the plain fields of the event's weapon: reloadSound / reloadEmptySound, reloadStartSound, reloadEndSound, rechamberSound,
+raiseSound, putawaySound, altSwitchSound, at the player for another player. For the followed client of a killcam the
+event's entity is the player state's clientNum, so the cgame's own-view test (VAs in the patch 1.3 MP executable
+0x4e09c9..0x4e09e7: snapshot flags 0xc00000 and entity = ps clientNum, the test the fire sound uses) holds: its reload
+(0x4e0f82: reloadSoundPlayer, reloadEmptySoundPlayer, then the plain pair), reload from empty (0x4e0ffc, the same with
+the empty one first), reload start / end (0x4e106f / 0x4e10bc) and rechamber (0x4e1338) take the player variant first
+and fall back to the plain field, without a position; raise, put away and the alt switch have no player variant. Before, openiw2 sent only one reload event at the reload's
+start and none of the others, so a followed kar98k's bolt and another player's bolt were silent.
 The client plays each new event once: the shooter's weapon, the fire sound (positional), the compass ping and the
 third-person fire animation, and it traces the shot from the shooter's eye along its view (pitch in `apos.trBase[0]`)
 for the impact effect, without damage (the client's world never applies damage). `TODO(spec)`: the original sends

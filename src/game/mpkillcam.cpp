@@ -393,8 +393,8 @@ void World::mpKillcamReplayEvents() {
     const int follow = mpClientOfNumber(sc.isNumber() ? sc.asInt() : -1);
     for (int64_t n = from; n <= to; ++n)
         if (const ArchivedFrame* f = ar.frame(n)) {
-            // The followed client's other events of the frame (its ring against the frame before: reload, melee swipe,
-            // pull-back, throw) as the own view's sounds; the shots are the archived sound events below.
+            // The followed client's other events of the frame (its ring against the frame before: reload, rechamber, raise and
+            // put away, melee swipe, pull-back, throw) as the own view's sounds; the shots are the archived sound events below.
             if (const ArchivedFrame* p = ar.frame(n - 1); p && size_t(follow) < f->clients.size() && size_t(follow) < p->clients.size()) {
                 const MpEventRing& r = f->clients[size_t(follow)].ring;
                 const int prev = p->clients[size_t(follow)].ring.sequence;

@@ -828,8 +828,9 @@ void World::mpBotFrame(MpBot& b) {
     b.weaponStatePrev = b.weapon.stateNumber();
     for (const auto& ev : b.weapon.takeEvents()) {
         if (ev.kind == PlayerWeapon::Event::ReloadBegin) {
-            cl.animInput.reloaded = true;
-            mpPushClientEvent(b.client, b.weapon.clip() == 0 ? mpev::kReloadFromEmpty : mpev::kReload, b.weapon.name());
+            if (!ev.weapon.empty()) cl.animInput.reloaded = true;
+        } else if (ev.kind == PlayerWeapon::Event::StateEvent) {
+            mpPushClientEvent(b.client, ev.code, ev.weapon); // reload, rechamber, raise, put away (docs/spec/net.md section 13)
         } else if (ev.kind == PlayerWeapon::Event::OffhandThrow) {
             mpPushClientEvent(b.client, mpev::kUseOffhand, ev.weapon);
             mpBotThrowPending(b, *e, eye, b.weapon.takeFuseMs());
