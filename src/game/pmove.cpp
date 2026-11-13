@@ -105,7 +105,15 @@ MoveParams multiplayerMoveParams() {
     mp.fallDamageMaxHeight = 480.0f;
     mp.inertiaAngle = 0.0f;
     mp.proneBodyCheck = true;
+    mp.footstepGate = true;
     return mp;
+}
+
+bool footstepAllowed(const PlayerState& ps, float xySpeed, const MoveParams& mp) {
+    if (!mp.footstepGate) return true;
+    if (ps.viewHeightTarget == 40 || ps.viewHeightTarget == 11) return false;
+    if (ps.adsSlow) return false;
+    return !(xySpeed < mp.footstepsThreshold);
 }
 
 namespace {
@@ -549,7 +557,7 @@ void stepSlideMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, bool grav
     // Stairs (0x54f846): a height change of more than half a unit against the plain slide gives the step event 0x8f
     // (parameter: the rounded height clamped to -16..24, + 0x80) and slows the player down. Not on a ladder.
     // Steps over 3 units also advance the bob cycle by min(|step| / 2, 4) · 1.25 + 7 (a footstep when bit 7 changes,
-    // 0x50a830 always allows it). The SP prone gate 0x4fc000 (called from 0x54e990) returns 1 on every path and only
+    // 0x50a830 always allows it in SP; in MP the footstep gate decides, footstepAllowed). The SP prone gate 0x4fc000 (called from 0x54e990) returns 1 on every path and only
     // fills the prone body angles ps+0x584..0x58c, so in SP no step is undone; the MP gate above (proneBodyCheck) can.
     // The MP prone gate (MP exe 0x53104e -> 0x530130): a move that leaves no room for the body is undone, without the step event.
     if (onGroundPlane && !ps.onLadder && !pml.dead && mp.proneBodyCheck && ps.stance == Stance::Prone &&
@@ -567,7 +575,9 @@ void stepSlideMove(const CollisionWorld& w, PlayerState& ps, Pml& pml, bool grav
                 addPlayerEvent(ps, 0x8f, (std::clamp(step, -16, 24) + 0x80) & 0xffff);
                 const float f = (1.0f - std::fabs(ps.origin[2] - startO[2]) / stepSize) * 0.8f + 0.2f;
                 ps.velocity = scale(ps.velocity, f);
-                if (std::abs(step) > 3 && ps.onGround) {
+                // MP: the gate (0x53112f) skips the whole bob step, not only its event.
+                if (std::abs(step) > 3 && ps.onGround &&
+                    footstepAllowed(ps, std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1]), mp)) {
                     const int oldCycle = ps.bobCycle;
                     ps.bobCycle = int(float(std::min(std::abs(step) / 2, 4)) * 1.25f + 7.0f + float(oldCycle)) & 0xff;
                     if (((oldCycle + 0x40) ^ (ps.bobCycle + 0x40)) & 0x80) {
@@ -1235,7 +1245,8 @@ void updateBobCycle(const CollisionWorld& w, PlayerState& ps, const Pml& pml, fl
     const float bobmove = xy / s * k;
     const int oldCycle = ps.bobCycle;
     ps.bobCycle = int(bobmove * float(ms) + float(ps.bobCycle)) & 0xff;
-    if ((pml.walking || pml.groundPlane) && (((oldCycle + 0x40) ^ (ps.bobCycle + 0x40)) & 0x80)) {
+    // MP: the gate (0x518b43 -> 0x5184e0, passed to the event at 0x518c0f) stops the event; the cycle still advances.
+    if ((pml.walking || pml.groundPlane) && (((oldCycle + 0x40) ^ (ps.bobCycle + 0x40)) & 0x80) && footstepAllowed(ps, xy, mp)) {
         const int surf = surfaceTypeOf(pml.groundTrace.surfaceFlags);
         if (surf != 0) addPlayerEvent(ps, ps.stance == Stance::Prone ? 0x2f + surf : (ps.adsSlow || ps.lean != 0) ? 0x18 + surf : 1 + surf);
     }

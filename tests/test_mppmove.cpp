@@ -169,6 +169,51 @@ int main() {
         playerMove(floorCw, ps, in, 0.05f, mp);
         return seq;
     };
+    // Footsteps (docs/spec/mp-pmove.md "Footsteps"): the MP gate (0x5184e0) gives no step event while crouched or prone,
+    // SP (0x50a830) gives them in every stance. The player walks back and forth on the spawn's flat ground towards the wall.
+    if (!spots.empty()) {
+        const WallSpot& w = spots.front();
+        auto steps = [&](const MoveParams& mp, Stance stance, bool leanRight) {
+            PlayerState ps = at(w, w.dist);
+            PlayerInput in;
+            in.stance = stance;
+            for (int i = 0; i < 30; ++i) playerMove(floorCw, ps, in, 0.02f, mp); // settle into the stance
+            int n = 0, seen = ps.eventSeq;
+            in.forward = 1;
+            in.leanRight = leanRight;
+            for (int leg = 0; leg < 8; ++leg) {
+                in.yaw = leg % 2 ? w.yaw + 180.0f : w.yaw;
+                for (int i = 0; i < 25; ++i) {
+                    playerMove(floorCw, ps, in, 0.02f, mp);
+                    for (; seen != ps.eventSeq; ++seen)
+                        if (const int ev = ps.events[seen & 3]; ev >= 1 && ev < 0x46) ++n; // run, walk, prone steps
+                }
+            }
+            return n;
+        };
+        const MoveParams sp, mp = multiplayerMoveParams();
+        CHECK(mp.footstepGate && !sp.footstepGate && mp.footstepsThreshold == 0.0f);
+        const int mpStand = steps(mp, Stance::Stand, false), mpCrouch = steps(mp, Stance::Crouch, false);
+        const int mpProne = steps(mp, Stance::Prone, false), spCrouch = steps(sp, Stance::Crouch, false);
+        std::cout << "footsteps in 4 s: MP stand " << mpStand << ", MP crouch " << mpCrouch << ", MP prone " << mpProne
+                  << ", SP crouch " << spCrouch << "\n";
+        CHECK(mpStand >= 4 && mpCrouch == 0 && mpProne == 0 && spCrouch >= 2);
+        // The gate itself: the stance by its view height target, the slow aim walk (pm_flags 0x100), the speed threshold.
+        PlayerState g;
+        g.viewHeightTarget = 60;
+        CHECK(footstepAllowed(g, 100.0f, mp));
+        g.adsSlow = true;
+        CHECK(!footstepAllowed(g, 100.0f, mp) && footstepAllowed(g, 100.0f, sp));
+        g.adsSlow = false;
+        g.viewHeightTarget = 40;
+        CHECK(!footstepAllowed(g, 100.0f, mp) && footstepAllowed(g, 100.0f, sp));
+        g.viewHeightTarget = 11;
+        CHECK(!footstepAllowed(g, 100.0f, mp));
+        g.viewHeightTarget = 60;
+        MoveParams slow = mp;
+        slow.footstepsThreshold = 120.0f;
+        CHECK(!footstepAllowed(g, 100.0f, slow) && footstepAllowed(g, 120.0f, slow));
+    }
     if (!spots.empty()) {
         const WallSpot& w = spots.front();
         const MoveParams mp = multiplayerMoveParams();

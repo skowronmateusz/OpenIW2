@@ -264,6 +264,11 @@ struct MoveParams {
     // The MP prone body check (docs/spec/mp-pmove.md "Prone body"): going prone, moving and turning prone need room for
     // the body behind the player. SP accepts every position (0x4fc000).
     bool proneBodyCheck = false;
+    // The MP footstep gate (MP 0x5184e0; docs/spec/mp-pmove.md "Footsteps"): no footstep while crouched or prone (view height
+    // target 40 / 11), with pm_flags 0x100 (the slow aim walk) or slower than player_footstepsThreshhold. SP allows every
+    // footstep (0x50a830 returns 1).
+    bool footstepGate = false;
+    float footstepsThreshold = 0.0f;  // player_footstepsThreshhold (MP default 0)
     float proneYawCap = 85.0f;        // bg_prone_yawcap
     float spectateSpeed = 400.0f;
     float spectateSpeedScale = 2.0f;
@@ -271,6 +276,9 @@ struct MoveParams {
 
 // The movement settings of a multiplayer game: the MP dvar defaults (docs/spec/mp-pmove.md), everything else as SP.
 MoveParams multiplayerMoveParams();
+
+// Whether a footstep event may be added (SP 0x50a830 / MP 0x5184e0) at horizontal speed `xySpeed`.
+bool footstepAllowed(const PlayerState& ps, float xySpeed, const MoveParams& mp);
 
 // A shot while holding the breath on a scoped weapon (0x4dd2b0, after the fire event at 0x4dee18): the timer gains
 // player_breath_fire_delay (capped at the hold time) and the hold ends. Only with the aim fraction 1 and a reticle weapon.

@@ -160,6 +160,30 @@ TODO(spec): the pellet impact effects of the cgame are those of a single bullet.
 TODO(spec): the sessionteam string of value 0 is taken as "none" from the order of the setter (0x80f7db6) and the error
 text listing allies, axis, none and spectator.
 
+## Footsteps (MP exe 0x5184e0)
+
+The step sounds come from the footstep events the movement adds to the player state (docs/spec/pmove.md: the bob cycle's
+bit 7 changing, the event chosen by stance and surface). Single player lets every such event through: its gate 0x50a830
+returns 1 for every stance. The multiplayer movement has a real gate (VAs in the patch 1.3 MP executable 0x5184e0); it says
+no when
+
+- the view height target (ps+0xf4) is 40 (crouched) or 11 (prone);
+- pm_flags has 0x100 (the slow aim walk);
+- the horizontal speed (pm+0xdc) is below the dvar `player_footstepsThreshhold` (registered at 0x5139ce: default 0, range
+  0..50000, so with the default no speed is too slow).
+
+Its users: the bob step after the move (0x518b43; the result goes to the event function 0x518380, whose ground branch
+0x5184bc adds no event without it, while the cycle has already advanced), and the stair step's bob (0x53112f: without it
+the whole bob step of the stair is skipped, the cycle does not move either). The third caller (0x518772, the ladder branch by its shape, like the single-player one at 0x50a944) passes 1. The
+event function's choice is the single-player one (0x516960: prone flag 0x2f + surface, pm_flags 0x100 or a lean 0x18 +
+surface, else 1 + surface), so in multiplayer a standing player who leans walks with the walk step and nothing else
+reaches the walk or prone steps. The gate runs inside the movement, so it applies to the own prediction, to the server's
+move of every client and bot, and therefore to the steps other players hear from the entity events.
+
+openiw2: `MoveParams::footstepGate` / `footstepsThreshold` (on in `multiplayerMoveParams`), `footstepAllowed` in
+src/game/pmove.cpp; tests/test_mppmove.cpp walks on mp_toujane standing, crouched and prone. Before, the multiplayer
+movement used the single-player rule and a crouched or prone player made steps.
+
 ## Prone body (MP exe 0x514700, 0x530130, 0x517a..0x518137, 0x519ce0, 0x519340)
 
 The prone box is the 30-unit-high player box, but the MP game also checks the body that lies behind it. The SP check
