@@ -113,6 +113,7 @@ void run(fs::Vfs& vfs, bool listen) {
     }
     const int gunner = g.connect("gunner");
     const int victim = g.connect("victim");
+    const int watcher = g.connect("watcher"); // stays out of the game (no team): another front end that sees the turret
     std::cout << label << ": gunner " << gunner << " victim " << victim << "\n";
     CHECK(gunner >= 0 && victim >= 0);
     if (gunner < 0 || victim < 0) return;
@@ -176,7 +177,37 @@ void run(fs::Vfs& vfs, bool listen) {
         for (const auto& f : view.takeFxEvents())
             if (f.path == flashFx && f.tag == "tag_flash") ++flashes;
     };
+    // The watcher's front end: the turret's loop and its stop come from the server's entity state and event ring.
+    World wview(vfs, kMap, true);
+    wview.mpStartRemote();
+    netgame::RemoteView wrv;
+    std::vector<Played> wplayed;
+    wview.playSound = [&](const std::string& alias, const game::Vec3*, float*, int) {
+        wplayed.push_back({alias, int(wplayed.size()) + 1});
+        return int(wplayed.size());
+    };
+    wview.stopSound = [&](int h) {
+        if (h > 0 && size_t(h) <= wplayed.size()) wplayed[size_t(h - 1)].stopped = true;
+    };
+    auto wcount = [&](const std::string& alias) { return int(std::count_if(wplayed.begin(), wplayed.end(), [&](const Played& p) { return p.alias == alias; })); };
+    auto wlooping = [&](const std::string& alias) {
+        return std::any_of(wplayed.begin(), wplayed.end(), [&](const Played& p) { return p.alias == alias && !p.stopped; });
+    };
+    std::string loopSnd, stopSnd;
+    if (const auto* wd = view.weapon("30cal_stand_mp")) {
+        if (const auto it = wd->find("loopfiresound"); it != wd->end()) loopSnd = it->second;
+        if (const auto it = wd->find("stopfiresound"); it != wd->end()) stopSnd = it->second;
+    }
+    Client& cw = g.clients[2];
+    auto showWatcher = [&]() {
+        if (const net::ClientSnapshot* snap = cw.net->latest()) {
+            wrv.apply(wview, *snap, cw.net->configstrings, watcher, wview.timeMs());
+            wrv.turretEvents(wview, *snap, cw.net->configstrings);
+            wview.frame();
+        }
+    };
     auto show = [&]() {
+        showWatcher();
         if (const net::ClientSnapshot* snap = cg.net->latest()) {
             rv.apply(view, *snap, cg.net->configstrings, gunner, view.timeMs());
             if (const net::UserCmd* lc = cg.net->lastCommand()) netgame::RemoteView::predictTurret(view, pt, lc->serverTime, (lc->buttons & 1) != 0);
@@ -265,10 +296,12 @@ void run(fs::Vfs& vfs, bool listen) {
     CHECK(pt.pending() <= 1);
     // A stretch without snapshots while attack is held (a bursty path): the front end's world runs on, the fire loop
     // goes on and no stop sound plays; the loop is the own turret's player variant.
-    const int stopsHeld = count(stopPlr);
+    const int stopsHeld = count(stopPlr), wstopsHeld = wcount(stopSnd);
+    const bool wloopFiring = wlooping(loopSnd);
     for (int i = 0; i < 6; ++i) {
         g.frame();
         view.frame();
+        wview.frame();
     }
     for (int i = 0; i < 4; ++i) {
         g.frame();
@@ -278,6 +311,12 @@ void run(fs::Vfs& vfs, bool listen) {
     CHECK(!loopPlr.empty() && !stopPlr.empty());
     CHECK(looping(loopPlr));
     CHECK(count(stopPlr) == stopsHeld);
+    std::cout << label << ": watcher: loop " << loopSnd << " while firing " << wloopFiring << ", after the gap " << wlooping(loopSnd)
+              << ", stop sounds while held " << wcount(stopSnd) - wstopsHeld << "\n";
+    CHECK(!loopSnd.empty() && !stopSnd.empty() && loopSnd != loopPlr);
+    CHECK(wloopFiring && wlooping(loopSnd));
+    CHECK(wcount(stopSnd) == wstopsHeld);
+    CHECK(wcount(loopPlr) == 0);
     // Attack released: the server's stop sound event plays once and the loop ends.
     cg.buttons = 0;
     for (int i = 0; i < 8; ++i) {
@@ -287,6 +326,9 @@ void run(fs::Vfs& vfs, bool listen) {
     std::cout << label << ": after the release: stop sounds " << count(stopPlr) - stopsHeld << ", loop playing " << looping(loopPlr) << "\n";
     CHECK(count(stopPlr) == stopsHeld + 1);
     CHECK(!looping(loopPlr));
+    std::cout << label << ": watcher after the release: stop sounds " << wcount(stopSnd) - wstopsHeld << ", loop playing " << wlooping(loopSnd) << "\n";
+    CHECK(wcount(stopSnd) == wstopsHeld + 1);
+    CHECK(!wlooping(loopSnd));
     // A press whose snapshots have not come yet: the predicted shot's flash and the fire loop start in that frame; the
     // server's shots that follow are matched, not drawn twice.
     {

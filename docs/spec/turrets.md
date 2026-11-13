@@ -386,8 +386,9 @@ What the client learns (VAs in the 1.3 Linux dedicated server; player-state offs
   snapshot of its drawn pair (`RemoteView::turretEvents`, `World::mpSetRemoteTurretSound`); its world runs no fire
   countdown sound of its own. The own turret plays loopFireSoundPlayer / stopFireSoundPlayer instead of the sent
   loopFireSound / stopFireSound (TODO(spec): where the 1.3 cgame makes that choice). Test:
-  tests/test_mpturretview.cpp (a stretch without snapshots while attack is held keeps the loop and plays no stop
-  sound; the release plays the stop sound once and ends the loop).
+  tests/test_mpturretview.cpp (for the gunner's and a watcher's front end: a stretch without snapshots while attack
+  is held keeps the loop and plays no stop sound; the release plays the stop sound once and ends the loop; the watcher
+  hears loopFireSound, the gunner loopFireSoundPlayer).
   The ammo counter keeps the hand weapon: the server does not change ps.weapon on a turret (no write in 0x810a708..
   0x810c5f0); TODO(spec): whether the client ammo ownerdraw hides itself on a turret.
 - The player state to entity state copy (0x80dfe64) copies eFlags, and with any 0x300 bit set puts viewLockEntity in

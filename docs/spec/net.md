@@ -1491,7 +1491,7 @@ flips it on a new map and on a map_restart.
   from (`RemoteView::missileEvents`, after `placeTrajectories`), so the sound starts where the drawn grenade is. Before,
   the bounce sound and effect played only on the listen host (the server's own world): a network client heard no
   bounce at all (in 0.2.5 as well). Test: tests/test_mpnetgrenade.cpp (one sound per server bounce event, at the drawn
-  grenade, with one snapshot per frame and with the snapshots between the frames).
+  grenade, with 20 snapshots a second, one per game frame, and with 60, between the frames).
 - A grenade's spin after a wall bounce: the bounce adds (rand & 0x7f) − 63 to the pitch spin and wraps the sum as an
   angle into [0, 360) (ded 0x810d179..0x810d19d through the AngleMod of ded 0x80a8432, the same as SP 0x525ed0..0x525f27,
   docs/spec/grenades.md), so a grenade thrown with 675..765 degrees a second turns at 0..109 or 252..360 after it,

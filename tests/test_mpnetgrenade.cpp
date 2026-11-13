@@ -36,7 +36,8 @@ constexpr const char* kMap = "mp_carentan";
 game::Vec3 origin(Entity* e) { return e ? e->obj->get("origin").asVector() : game::Vec3{0, 0, 0}; }
 
 // A listen server (host player 0 and its World) with one network client, driven by an injected clock. steps: the
-// server is polled at every client step too, so it sends the snapshots between its 50 ms game frames (sv_snaps 60).
+// client asks for 60 snapshots a second and the server is polled at every client step too, so it sends the snapshots
+// between its 50 ms game frames (sv_snaps 60); otherwise the client asks for 20, one per game frame.
 struct Game {
     bool steps = false;
     World host;
@@ -78,6 +79,7 @@ struct Game {
     int connect(const std::string& name) {
         client = std::make_unique<net::GameClient>();
         client->name = name;
+        client->snaps = steps ? 60 : 20; // the snapshots a second it asks for (20: one per game frame, as a 1.3 client)
         net::NetAddress a;
         net::NetAddress::parse("127.0.0.1:" + std::to_string(server.port()), a, 28960);
         client->connect(a, now);
@@ -282,6 +284,9 @@ void run(fs::Vfs& vfs, bool steps) {
     CHECK(rebases >= 1);
     CHECK(reversals == 0);
     CHECK(longestHold <= 4);  // at most one server frame (50 ms) at a bounce
+    // The stepped run gets the snapshots between the game frames (shorter intervals than a frame).
+    std::cout << "lob: snapshot interval " << g.client->snapshotIntervalMs() << " ms\n";
+    CHECK(steps ? g.client->snapshotIntervalMs() < 50 : g.client->snapshotIntervalMs() >= 45);
     std::cout << "lob: " << serverBounces << " bounce events on the server, " << heard.size() << " bounce sounds on the client;";
     for (const Heard& h : heard) std::cout << " " << h.alias;
     std::cout << "; angles checked in " << spinChecks << " frames, " << spinOff << " off the server's, the roll turning in " << spinMoves << "\n";
