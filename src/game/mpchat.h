@@ -15,9 +15,12 @@ std::string mpCleanName(const std::string& name);
 // A received chat server command's text (0x4d1c9f / 0x4d1d0b) after localization: cut to 149 bytes, 0x19 bytes removed.
 std::string mpChatReceived(const std::string& localized);
 
-// Baseline of the message field (caller 0x4caf70 passes cg_hudSayPosition.y + 24 rounded, 0x406d00 adds the font height times
-// the text scale). The history ends at cg_hudChatPosition.y, so with the defaults (126, 150) the field sits below it.
-inline float mpChatFieldBaseline(float sayY, float scaledFontHeight) { return float(int(sayY + 0.5f)) + 24.0f + scaledFontHeight; }
+// Height in virtual units of text drawn at `textScale`: the font's pixel height times the font-normalized scale
+// (textScale * 48 / pixel height), so 48 * textScale for every font.
+inline float mpTextHeight(float textScale) { return 48.0f * textScale; }
+// Baseline of the message field (caller 0x4caf70 passes cg_hudSayPosition.y + 24 rounded, 0x406d00 adds the text height at
+// `textScale`, 0.2083). The history ends at cg_hudChatPosition.y, so with the defaults (126, 150) the field sits below it.
+inline float mpChatFieldBaseline(float sayY, float textScale) { return float(int(sayY + 0.5f)) + 24.0f + mpTextHeight(textScale); }
 // First row (top) of the history line `i` (newest 0): cg_hudChatPosition.y - 10 * (i + 1) (0x4c7760).
 inline float mpChatLineTop(float chatY, int i) { return chatY - 10.0f * float(i + 1); }
 

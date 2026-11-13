@@ -108,8 +108,13 @@ int main() {
         using iw2::game::mpChatFieldBaseline;
         using iw2::game::mpChatLineTop;
         CHECK(mpChatLineTop(150.0f, 0) == 140.0f && mpChatLineTop(150.0f, 1) == 130.0f && mpChatLineTop(150.0f, 7) == 70.0f);
-        const float field = mpChatFieldBaseline(126.0f, 10.0f);
-        CHECK(field == 160.0f);
+        // The field adds the font-normalized text height (48 * 0.2083 = 10 for every font), not a font's pixel height times the
+        // scale (normalFont 16 * 0.2083 = 3.3 put the field over the newest history line).
+        const float field = mpChatFieldBaseline(126.0f, 0.2083333f);
+        CHECK(field > 159.99f && field < 160.01f);
+        CHECK(iw2::game::mpTextHeight(0.2083333f) > 9.99f && iw2::game::mpTextHeight(0.2083333f) < 10.01f);
+        // The field's glyphs (one text height above its baseline) stay below the newest history line (bottom at 150).
+        CHECK(field - iw2::game::mpTextHeight(0.2083333f) >= mpChatLineTop(150.0f, 0) + 10.0f - 0.01f);
         for (int i = 0; i < 8; ++i) CHECK(field > mpChatLineTop(150.0f, i) + 10.0f); // no history line reaches the field
     }
 

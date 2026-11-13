@@ -7165,7 +7165,7 @@ int main(int argc, char** argv) {
                         const std::string* lab = loc.find(chatField.team ? "EXE_SAYTEAM" : "EXE_SAY");
                         const std::string label = (lab ? *lab : std::string(chatField.team ? "EXE_SAYTEAM" : "EXE_SAY")) + ": ";
                         const uint8_t white[4] = {255, 255, 255, 255};
-                        const float fieldY = game::mpChatFieldBaseline(sp[1], ts * float(f->pixelHeight));
+                        const float fieldY = game::mpChatFieldBaseline(sp[1], ts); // 160 with the defaults, below the newest history line
                         hudText(out, label + chatField.text + "_", left43 + sp[0] * sc, fieldY * sc, gs, *f, white, 0.0f, 1.0f, 3);
                     }
                 }

@@ -34,11 +34,25 @@ Evidence: VAs in the patch 1.3 MP executable (it contains both the client and th
 - Field position (verified): the dvar registered at 0x4be4d4 (`cg_hudChatPosition`) is the one the chat lines read
   (0x4c7760 reads the pointer stored at 0x14c362c) and `cg_hudSayPosition` (0x4be4fc) the one the field reads (pointer
   0x14b593c). The field caller (0x4caf70) passes the rounded say y + 24 to 0x406d00, which adds the font height times
-  the text scale (about 10 at 0.2083) to get the baseline: 126 + 24 + 10 = 160 with the defaults, below the history, whose
-  newest line ends at 150. The history is therefore never drawn over the field. The field is not an item of the history.
+  the text scale to get the baseline. The scale there is the font-normalized one (0x406da5, the renderer's text-scale
+  call with the font and 0.2083), and the font's pixel height times it is 48 · 0.2083 = 10 virtual units for every font
+  (smallFont 12, normalFont 16, bigFont 24 pixels); it is not the font's pixel height times 0.2083 (2.5 .. 5). So the
+  baseline is 126 + 24 + 10 = 160 with the defaults, below the history, whose newest line ends at 150. The history is
+  therefore never drawn over the field. The field is not an item of the history. (openiw2 0.3.0 added the raw pixel height
+  times the scale, which put the field about 6 units higher, over the newest history line, so the latest message could
+  not be read while typing.)
 - While the field is open the history is drawn exactly as before: 0x4c7760 does not look at the field state, so
   `cg_chatTime` expiry and the fade go on and `cg_chatHeight` still limits the lines (callers 0x4cbd3b / 0x4cbd70,
   in the HUD draw for the playing states). TODO(spec): the exact gating of those two calls per client state.
+- There is no further chat history on screen: at most `cg_chatHeight` (8) lines, each for `cg_chatTime` (12 s) after it
+  arrived; opening the field (t / y) shows no older lines and no chat window. The only chat display dvars of the MP
+  program are `cg_chatHeight`, `cg_chatTime`, `cg_hudChatPosition` and `cg_teamChatsOnly`. Every received line is also
+  printed to the console (see "Client: chat lines"); openiw2 has no console and prints them to its log (`[chat]` lines).
+  TODO(spec): the console's scrollback was not analysed.
+- The lines are lost at every map load: the cgame init (0x4c0dd0, called by 0x402bd0, which loads `maps/mp/<mapname>`)
+  zeroes 0xaa55 dwords from 0x14c3700, the area that holds the chat ring (positions at 0x14eb294 / 0x14eb298, touched only
+  by the add 0x4d0e10 and the draw 0x4c7760). openiw2 empties the chat lines with the client state at each level change.
+  TODO(spec): whether a map_restart (server command 0x451f30) reaches the cgame init in the original.
 
 ## Server: say / say_team (game module)
 - ClientCommand (0x503ad0) handles `say` and `say_team` with at least one argument: the arguments from 1 on are joined
