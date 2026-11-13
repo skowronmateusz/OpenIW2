@@ -1557,7 +1557,21 @@ int run(fs::Vfs& vfs, const std::string& mainDir) {
     soak.addClient("soakA", uint16_t(soak.server.port));
     soak.addClient("soakB", uint16_t(soak.server.port));
 
-    const int64_t deadline = gStart + int64_t(mapsWanted) * int64_t(std::atof(minutes.c_str()) * 60000.0 + 45000.0) + 60000;
+    // The time the run may take: a time limit and a change per map. An sd map is not ended by the time limit: it plays its
+    // two rounds (scr_sd_roundlimit above), each up to the round length when nobody is eliminated, so every pass of the
+    // rotation over an sd map gets a second round's time (a run with two full rounds otherwise ran out of time one map short).
+    int sdMaps = 0;
+    {
+        std::istringstream rot(rotation);
+        std::string tok, gt;
+        while (rot >> tok) {
+            if (tok == "gametype") rot >> gt;
+            else if (tok == "map" && rot >> tok && gt == "sd") ++sdMaps;
+        }
+        sdMaps *= (mapsWanted + std::max(1, countRotation(rotation)) - 1) / std::max(1, countRotation(rotation));
+    }
+    const int64_t mapMs = int64_t(std::atof(minutes.c_str()) * 60000.0);
+    const int64_t deadline = gStart + int64_t(mapsWanted) * (mapMs + 45000) + int64_t(sdMaps) * (mapMs + 30000) + 60000;
     int64_t lastRss = 0, lastFrame = nowMs();
     int64_t lastProgress = 0, lastRejoin = nowMs();
     while (nowMs() < deadline && soak.mapsPlayed < mapsWanted) {
