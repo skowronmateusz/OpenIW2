@@ -4010,15 +4010,16 @@ int main(int argc, char** argv) {
         SDL_GPUDevice* dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_MSL, false, nullptr);
         if (!dev) sdlFail("SDL_CreateGPUDevice");
 
-        // Key bindings: the game's default.cfg (exec'd at startup; default_localize.cfg only changes the console key), then the
-        // profile's config.cfg; the multiplayer table is default_mp.cfg + config_mp.cfg (src/game/profilekeys.h, loaded below).
+        // Key bindings, one table for single player and multiplayer (openiw2 deviation, docs/spec/controls.md "Profile key tables"):
+        // the game's default.cfg (default_localize.cfg only changes the console key) plus the multiplayer-only binds of
+        // default_mp.cfg, then the profile's config.cfg (src/game/profilekeys.h, loaded below).
         game::ClientInput input;
         if (!vfs.exists("default.cfg")) std::cerr << "warning: default.cfg not found, no key bindings\n";
         game::ProfileKeys profileKeys;
-        const game::ProfileKeys::ReadGameFile readGameFile = [&vfs](const std::string& n) -> std::optional<std::string> {
+        profileKeys.loadDefaults([&vfs](const std::string& n) -> std::optional<std::string> {
             const auto f = vfs.read(n);
             return f ? std::optional<std::string>(std::string(f->begin(), f->end())) : std::nullopt;
-        };
+        });
         // A level's game world. game[] survives only a persistent level change (changelevel / missionsuccess with persistent set:
         // G_ShutdownGame 0x4d9d3c -> 0x46e1c0 -> 0x4689e0 frees the game object 0x9bef30 otherwise, and G_InitGame 0x4da481 creates
         // a new one); then its fields are copied into the new world before its script starts (maps/_loadout.gsc "gaveweapons").
@@ -4054,15 +4055,20 @@ int main(int argc, char** argv) {
             const std::string cfgText(std::istreambuf_iterator<char>(cf), {});
             uiCvars = ui::parseConfig(cfgText);
         }
-        profileKeys.load(input, readGameFile, playersDir / profileName, false); // saved key bindings replace the defaults
+        profileKeys.load(input, playersDir / profileName); // saved key bindings replace the defaults
         logProfileCvars("profile loaded", uiCvars, input.bindings().size());
         // Key defaults of OpenIW2 that the shipped default.cfg lacks, and the return of the screenshot key to F12 for profiles saved by
         // 0.2.1 (which moved it to F11): once per profile, marked by the archived cvar iw2_keysver, so that a key the user unbinds or moves
-        // later stays as it is. The marker is set by the call after the profile was read (below).
+        // later stays as it is. Version 3: the one table for both modes takes the multiplayer keys of a profile written with two
+        // tables (config_mp.cfg) and the multiplayer-only defaults, only for actions without a key and on free keys.
+        // The marker is set by the call after the profile was read (below).
         auto upgradeKeyBindings = [&] {
-            if (const auto it = uiCvars.find("iw2_keysver"); it != uiCvars.end() && it->second == "2") return;
-            profileKeys.editSp(input, [](game::ClientInput& sp) { sp.moveScreenshotBackToF12(), sp.addCheatKeyDefaults(); }); // SP table only
-            uiCvars["iw2_keysver"] = "2";
+            const auto it = uiCvars.find("iw2_keysver");
+            const int ver = it == uiCvars.end() ? 0 : std::atoi(it->second.c_str());
+            if (ver >= 3) return;
+            if (ver < 2) input.moveScreenshotBackToF12(), input.addCheatKeyDefaults();
+            profileKeys.mergeProfile(input, playersDir / profileName);
+            uiCvars["iw2_keysver"] = "3";
         };
         upgradeKeyBindings();
         // renderer dvars live in the menu store; r_texturemode / r_anisotropy are not passed on: the filter is forced (applyTextureFilter)
@@ -4128,10 +4134,8 @@ int main(int argc, char** argv) {
                 for (const auto& [k, v] : carriedGame->fields) w->vm().game()->set(k, v);
             if (carriedPlayer) w->setCarriedPlayer(std::move(*carriedPlayer));
             w->clientInput = &input; // buttonpressed / getcommandfromkey read its key table
-            // The key table of the mode (docs/spec/controls.md "Profile key tables"): entering MP again (a level change, a new
-            // gamestate) keeps the running table, so keys changed in the menus stay.
-            profileKeys.setMultiplayer(input, mp);
-            // The bindings from default.cfg, reported to scripts through getkeybinding.
+            // The one key table: a level load, a join or a restart never changes it (docs/spec/controls.md "Profile key tables").
+            // Its bindings are reported to scripts through getkeybinding.
             for (const auto& [key, command] : input.bindings()) w->keyBindings[command].push_back(key);
             if (save) { // savegame load: map entities, then the saved state instead of the level script (docs/spec/savegame.md 5)
                 w->prepareStart();
@@ -5513,6 +5517,11 @@ int main(int argc, char** argv) {
                         ++cfgExecDepth;
                         execText(t);
                         --cfgExecDepth;
+                        // The controls reset (ui/options_control_defaults.menu runs default.cfg or default_mp.cfg by ui_multiplayer):
+                        // the keys become the one table's defaults, single-player keys plus the multiplayer-only ones (openiw2).
+                        std::string f = a1;
+                        for (auto& ch : f) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                        if (f == game::ProfileKeys::kSpDefaults || f == game::ProfileKeys::kMpDefaults) profileKeys.setDefaults(input), profileDirty = true;
                     }
                     log::Event("cfg") << "exec " << a1 << (cfg ? "" : " (not found)") << ": binds " << bindsBefore << " -> " << input.bindings().size(); // docs/logging.md
                 }
@@ -5609,7 +5618,7 @@ int main(int argc, char** argv) {
             profileDirty = false;
             std::error_code ec;
             std::filesystem::create_directories(profileCfg.parent_path(), ec);
-            profileKeys.save(input, profileCfg.parent_path(), ui::formatConfig(uiCvars)); // config.cfg + config_mp.cfg (src/game/profilekeys.h)
+            game::ProfileKeys::save(input, profileCfg.parent_path(), ui::formatConfig(uiCvars)); // config.cfg: cvars + the key table
             log::Event("cfg") << "profile config written, " << input.bindings().size() << " binds";
         };
         auto profileCountChanged = [&] { uiCvars["ui_playerProfileCount"] = std::to_string(profiles.count()); };
@@ -5855,8 +5864,8 @@ int main(int argc, char** argv) {
                     const std::string cfgText(std::istreambuf_iterator<char>(cf), {});
                     fresh = ui::parseConfig(cfgText);
                 }
-                // Both key tables from the shipped defaults, then the new profile's files (SP 0x42e170, MP 0x4343a0).
-                profileKeys.load(input, readGameFile, playersDir / profileName, profileKeys.multiplayer());
+                // The key table from the shipped defaults, then the new profile's config.cfg (SP 0x42e170, MP 0x4343a0).
+                profileKeys.load(input, playersDir / profileName);
                 for (const char* keep : {"ui_playerProfileCount", "ui_playerProfileSelected", "ui_playerProfileNameNew", "ui_playerProfileAlreadyChosen"})
                     fresh[keep] = uiCvars[keep];
                 fresh["com_playerProfile"] = profileName;
@@ -6010,18 +6019,6 @@ int main(int argc, char** argv) {
         ui::MenuStack frontStack(scriptMenus, menuEnv); // installs open/close/focus/show hooks into menuEnv
         frontStack.setTextCodePage(logCodePage); // typed characters become bytes of the language's code page
         frontPtr = &frontStack;
-        // The key table follows the mode (docs/spec/controls.md "Profile key tables"): the MP one while the multiplayer menus are
-        // up, a network server is joined or a multiplayer level runs; getkeybinding of a running level follows a switch.
-        auto syncKeyMode = [&] {
-            const bool mp = mpFrontEnd || bool(netClient) || (world && world->multiplayer());
-            if (mp == profileKeys.multiplayer()) return;
-            profileKeys.setMultiplayer(input, mp);
-            menuEnv.setCvar("ui_multiplayer", mp ? "1" : "0"); // the reset popup picks default.cfg / default_mp.cfg by it
-            if (world) {
-                world->keyBindings.clear();
-                for (const auto& [k, c] : input.bindings()) world->keyBindings[c].push_back(k);
-            }
-        };
         // Multiplayer / single player menu set (openiw2 extension, docs/spec/mp-ui.md), applied outside of any running menu script.
         auto applyFrontEnd = [&] {
             if (!pendingFrontEnd) return;
@@ -6041,7 +6038,6 @@ int main(int argc, char** argv) {
             for (const auto& e : scriptMenus.errors()) std::cerr << "menu: " << e << "\n";
             for (const auto& e : scriptMenus.warnings()) if (e.rfind("menu file not found: ", 0) == 0) std::cerr << "WARNING: " << e << "\n";
             menuEnv.setCvar("ui_multiplayer", mpFrontEnd ? "1" : "0");
-            syncKeyMode(); // the controls pages of this menu set show and edit its table
             frontStack.open("main");
         };
         // The error dialog of a network disconnect (docs/spec/net.md section 14, 0x4320d0): com_errorTitle /
@@ -11051,7 +11047,6 @@ int main(int argc, char** argv) {
                 frontStack.open("main");
             }
             applyFrontEnd();
-            syncKeyMode(); // command-line MP starts and disconnects do not pass a menu set change
             pumpConnect();
             showNetError();
             // The extension menus belong to createserver: they close with it, and the panel gives way to the original settings column.

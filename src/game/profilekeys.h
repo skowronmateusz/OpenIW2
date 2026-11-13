@@ -1,13 +1,15 @@
-// The two key tables of a player profile (docs/spec/controls.md "Profile key tables"): single player (default.cfg, then
-// players/<profile>/config.cfg) and multiplayer (default_mp.cfg, then players/<profile>/config_mp.cfg). The original keeps them
-// in two programs; here one of them runs in the client's ClientInput and the other is kept as config text until the client
-// switches mode.
+// The key table of a player profile (docs/spec/controls.md "Profile key tables"). The original keeps two tables in two programs
+// (default.cfg + config.cfg for single player, default_mp.cfg + config_mp.cfg for multiplayer); openiw2 keeps one table for both
+// modes (a deviation): the unified defaults are default.cfg plus the multiplayer-only bindings of default_mp.cfg, the profile's
+// config.cfg holds the user's table, and nothing but the menus and console text changes it (no level load, join or restart).
 #pragma once
 
 #include <filesystem>
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "game/clientinput.h"
 
@@ -19,27 +21,34 @@ public:
     using ReadGameFile = std::function<std::optional<std::string>(const std::string& name)>;
     static constexpr const char* kSpDefaults = "default.cfg";
     static constexpr const char* kMpDefaults = "default_mp.cfg";
-    static constexpr const char* kSpConfig = "config.cfg";
-    static constexpr const char* kMpConfig = "config_mp.cfg";
+    static constexpr const char* kConfig = "config.cfg";
+    static constexpr const char* kMpConfig = "config_mp.cfg"; // written by openiw2 builds with two tables; read once to merge
 
-    // Builds both tables for the profile folder `dir` (start, profile load): each is the shipped defaults, then the lines of the
-    // profile's file when it exists. The table of `multiplayer` goes into `in`.
-    void load(ClientInput& in, const ReadGameFile& gameFile, const std::filesystem::path& dir, bool multiplayer);
-    // The running table becomes that of `multiplayer`; the one left is kept as it is. Nothing happens when it already runs.
-    void setMultiplayer(ClientInput& in, bool multiplayer);
-    bool multiplayer() const { return mp_; }
-    // Runs `edit` on the single-player table, whether it runs in `in` or is kept.
-    void editSp(ClientInput& in, const std::function<void(ClientInput&)>& edit);
-    // `unbindall` + `bind` lines of a table.
-    std::string bindings(const ClientInput& in, bool multiplayer) const;
-    // Writes the profile into `dir`: config.cfg = `cvarText` + the SP table; config_mp.cfg = the MP table, once the MP table ran
-    // since the load (a profile never taken into multiplayer keeps its config_mp.cfg as it is). False when a file cannot be written.
-    bool save(const ClientInput& in, const std::filesystem::path& dir, const std::string& cvarText) const;
+    // Reads the shipped defaults. The multiplayer-only bindings are the binds of default_mp.cfg that default.cfg does not have
+    // (chat, quick messages, voice, votes, the weapon menu, F4 scoreboard, ...), in file order.
+    void loadDefaults(const ReadGameFile& gameFile);
+    // The unified defaults alone (the controls reset: either shipped default file gives this table).
+    void setDefaults(ClientInput& in) const;
+    // The table of a profile folder (start, profile load): the unified defaults, then the lines of its config.cfg.
+    void load(ClientInput& in, const std::filesystem::path& dir) const;
+    // Adds each multiplayer-only default whose key is free, when its command has no key (or, for a command default.cfg binds too,
+    // has a free second slot); a user's binding is never replaced. Part of the defaults, and run once per profile (iw2_keysver 3).
+    void addMpOnlyDefaults(ClientInput& in) const;
+    // One-time merge of a profile written with two tables: config.cfg (already in `in`) wins; from config_mp.cfg only a binding
+    // whose command has no key in `in` and whose key is free is taken. Then the multiplayer-only defaults the same way.
+    void mergeProfile(ClientInput& in, const std::filesystem::path& dir) const;
+    // Writes config.cfg = `cvarText` + the table. False when it cannot be written.
+    static bool save(const ClientInput& in, const std::filesystem::path& dir, const std::string& cvarText);
+
+    struct MpDefault {
+        std::string key, command;
+        bool secondKey = false; // default.cfg binds the command to another key
+    };
+    const std::vector<MpDefault>& mpOnly() const { return mpOnly_; }
 
 private:
-    bool mp_ = false;
-    bool mpEntered_ = false;
-    std::string other_; // the table that is not running, as config text
+    std::string spDefaults_;
+    std::vector<MpDefault> mpOnly_;
 };
 
 } // namespace iw2::game

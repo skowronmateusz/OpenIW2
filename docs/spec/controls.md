@@ -52,25 +52,29 @@ Each keeps its own key table and its own file in the same profile folder `player
   `exec configure_mp.cfg`). TODO(spec): whether a map_restart sends a new gamestate in the original (the keys stay
   either way).
 
-openiw2 (one program for both, src/game/profilekeys.{h,cpp}, used by iw2view):
-- Two tables per profile: SP = `default.cfg` + `players/<profile>/config.cfg`, MP = `default_mp.cfg` +
-  `players/<profile>/config_mp.cfg` (a missing file leaves the defaults). The MP default file is `default_mp.cfg` also in
-  a localized install, as SP uses `default.cfg` (the localized files differ only in the console key).
-- The MP table is the running one while the multiplayer menu set is active, while connected to a network server and
-  while a multiplayer level runs; the SP table otherwise. Switching keeps the other table as it is, and every further level
-  load in multiplayer (map rotation, a server's new gamestate after a map change, map_restart or a round restart) keeps the
-  running table.
-- A profile write puts the archived cvars and the SP table into `config.cfg` and the MP table, once multiplayer was
-  entered, into `config_mp.cfg` (bind lines only). Deviation: the original keeps separate archived dvars per program;
-  openiw2 has one dvar store, saved in `config.cfg` (docs/spec/mp-ui.md), so `config_mp.cfg` holds no `seta` lines.
-- A binding change from the menus or from console text (`bind`, `unbind`, `unbindall`, the reset popup's `exec`) marks
-  the profile for writing.
-- A profile load builds both tables again from the shipped defaults and the new profile's files.
-- The openiw2 key upgrades (developer cheat keys, the F11 -> F12 screenshot move, marker `iw2_keysver`) apply to the SP
-  table only; the cheat keys are never available in multiplayer.
+openiw2 (one program for both, src/game/profilekeys.{h,cpp}, used by iw2view). Deviation by design: one key table for
+single player and multiplayer, so a key changed in either menu set applies in both modes.
+- Defaults: the binds of `default.cfg`, then the multiplayer-only binds of `default_mp.cfg`, those `default.cfg` does
+  not have (with the shipped files: t `chatmodepublic`, y `chatmodeteam`, v `mp_QuickMessage`, z `+talk`,
+  x `openscriptmenu ingame changeweapon`, F1 `vote yes`, F2 `vote no`, F4 `+scores`; `default_mp.cfg:53-63`). Each is
+  added only when its key is free and its command has no key, or, for a command `default.cfg` binds as well (F4
+  `+scores` besides TAB), while the command has a free second slot. The localized default files are not used (they differ only in the console key).
+- The profile's `players/<profile>/config.cfg` holds the table (`unbindall` + `bind` lines after the `seta` lines) and is
+  read over the defaults at start and at a profile load. Nothing else changes the table: entering the multiplayer menus,
+  starting or joining a game, and every level load (map rotation, a server's new gamestate after a map change,
+  map_restart or a round restart) keep it as it is.
+- A binding change from the menus or from console text (`bind`, `unbind`, `unbindall`) marks the profile for writing.
+- Controls reset: the popup still runs `default.cfg` or `default_mp.cfg` by `ui_multiplayer` (and so the dvar lines of
+  the file); afterwards the keys are the defaults above, the same table from either menu set.
+- Profile upgrade, once per profile (archived cvar `iw2_keysver`, now 3): version 2 added the developer cheat keys
+  (L, F10, N) and moved a 0.2.1 screenshot binding back to F12. Version 3 merges a profile written by builds with two
+  tables or by older builds: `config.cfg` (a single-player table, or one that already holds the multiplayer keys from a
+  0.3.0 multiplayer session) stays as it is; from `config_mp.cfg`, when present, a binding is taken only when its command
+  has no key yet and its key is free; then each multiplayer-only default by the rule of the defaults. So no key the user set is replaced,
+  and an action that has no key gets the user's multiplayer key or its default. `config_mp.cfg` is not read again nor
+  written (left in the folder). A multiplayer-only row the user clears later stays cleared.
+- One dvar store for both modes as well, saved in `config.cfg` (docs/spec/mp-ui.md).
 - `fs_game` mods are not supported, so the restart exec of `config_mp.cfg` has no counterpart.
-- `ui_multiplayer` (1 in the MP program) follows the running table, so the reset popup runs `default_mp.cfg` for the MP
-  table also in a multiplayer game started from the command line, where the single-player menu set is loaded.
 Test: tests/test_profilekeys.cpp (ctest `profilekeys`, and `profilekeys_world` with the game files).
 
 ## Client commands (registration 0x409fe4…0x40a3e4, handlers 0x408b10…0x4093e0)
