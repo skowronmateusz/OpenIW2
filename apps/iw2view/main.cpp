@@ -6957,6 +6957,19 @@ int main(int argc, char** argv) {
             // centre (0x4b0490); alpha 2 − 2 · elapsed / duration, at most 1. Not under a scope overlay
             // (cg_hudDamageIconInScope 0). The corner-to-UV order of the gfx quad draw (0x617b68, render command 0x12, handler
             // 0x1002f280) is (0,0) (1,0) (1,1) (0,1) for the corners in the order given.
+            // The red damage flash (0x4bdbe0, MP 0x4c99f0; docs/spec/ui.md "Damage feedback"), right before the direction icons:
+            // the whole screen (from −10, 10 past the size) in (0.2, 0, 0) with the flash alpha.
+            if (world) {
+                if (const float fa = viewImp.damageFlashAlpha(cgNowMs()); fa > 0) {
+                    if (static const bool tr = std::getenv("IW2_DAMAGE_TRACE") != nullptr; tr)
+                        std::printf("damagetrace t=%lld flash=%.3f\n", (long long)cgNowMs(), double(fa));
+                    Quad2D q{-10.0f, -10.0f, float(w) + 10.0f, float(h) + 10.0f};
+                    q.rgba[0] = uint8_t(game::ViewImpulses::kDamageFlashRgb[0] * 255.0f);
+                    q.rgba[1] = q.rgba[2] = 0;
+                    q.rgba[3] = uint8_t(std::clamp(fa, 0.0f, 1.0f) * 255.0f);
+                    out.push_back(q);
+                }
+            }
             if (world && !(scopeAlpha() > 0)) {
                 const int64_t nowMs = cgNowMs();
                 const float W = 128.0f, H = 64.0f, O = 128.0f;
@@ -9501,6 +9514,7 @@ int main(int argc, char** argv) {
                 if (const net::ClientSnapshot* last = netClient->latest()) {
                     // The server times of the snapshot move to the client clock: clock at the snapshot's time.
                     const int64_t clockOffset = game::heldClockOffset(netClockOffset, cgNowMs() - netClient->renderTime(nowNet));
+                    remoteView.damageFeedback(*world, netClient->snapshotsFrom(-1e18)); // every snapshot since the last frame, in order
                     remoteView.apply(*world, *last, netClient->configstrings, netClient->clientNum, last->serverTime + clockOffset,
                                      &netPredictedWeapon.ammo);
                     // Grenades, rockets and falling weapons move along their trajectory in the drawn time (docs/spec/net.md
@@ -10476,7 +10490,12 @@ int main(int argc, char** argv) {
                         clientSnd.shockSeenStart = rec ? int(ss.startMs) : -1;
                     }
                     switch (shockEnd.update(rec && rec->sound, int(cgNowMs()), int(ss.startMs), rec ? game::shockEndSoundMs(*rec, ss.durationMs) : 0)) {
-                    case game::ShockEndSound::Action::PlayEnd: mixer.play("shellshock_end", std::nullopt, nullptr, audio::PlayOptions{0x7ff}); break; // TODO(spec): [mixer has no start offset] the start offset (shockEnd.offsetMs())
+                    case game::ShockEndSound::Action::PlayEnd: { // started late by the overshoot; past the sample's length nothing plays
+                        audio::PlayOptions po{0x7ff};
+                        po.startOffsetMs = shockEnd.offsetMs();
+                        mixer.play("shellshock_end", std::nullopt, nullptr, po);
+                        break;
+                    }
                     case game::ShockEndSound::Action::PlayAbort: mixer.play("shellshock_end_abort", std::nullopt, nullptr, audio::PlayOptions{0x7ff}); break; // null.wav, replaces the end sound (same owner + channel)
                     case game::ShockEndSound::Action::None: break;
                     }
@@ -10642,25 +10661,37 @@ int main(int argc, char** argv) {
                     cam.pos = {prevPlayerO[0] + (po[0] - prevPlayerO[0]) * lerpFrac, prevPlayerO[1] + (po[1] - prevPlayerO[1]) * lerpFrac,
                                prevPlayerO[2] + (po[2] - prevPlayerO[2]) * lerpFrac + camLinkHeight};
                 }
-                // Damage feedback (cgame 0x4ba2a0 on a new damageEvent): the aim spread scale grows by the count; unless
-                // the damage came from the world (pitch and yaw 255), the oldest of 8 icon slots gets the time,
-                // cg_hudDamageIconTime and yaw = yaw byte / 255 · 360 + (rand / 32768 − 0.5) · 20, through a short
-                // angle. The view kick (0xf7979c / 0xf797a0) is viewImp.damage. TODO(spec): [flag not read] the "Health" menu flag.
+                // Damage feedback (cgame 0x4ba2a0, MP 0x4dfee0, on a new damageEvent with a damage count; docs/spec/ui.md "Damage
+                // feedback"): the view kick and the red flash (viewImp.damage; the kick scale is 0.6 in single player, 0.2 in
+                // multiplayer), the health bar comes up (the "Health" menu's visible flag behind the stamp 0xf79a3c), and unless the
+                // damage came from the world (pitch and yaw 255) the oldest of 8 icon slots gets the time, cg_hudDamageIconTime
+                // and yaw = yaw byte / 255 · 360 + (rand / 32768 − 0.5) · 20, through a short angle. The aim spread scale
+                // grows by the count.
+                static const bool damageTrace = std::getenv("IW2_DAMAGE_TRACE") != nullptr; // debug (docs/debug-flags.md)
+                if (world->takeDamageFeedbackReset()) { // the multiplayer respawn reset (MP 0x4e0190): kicks and icons cleared
+                    if (damageTrace) std::printf("damagetrace t=%lld reset\n", (long long)cgNowMs());
+                    viewImp.clearDamage();
+                    damageIcons = {};
+                    lastDamageEvent = world->playerDamageFeedback().event;
+                }
                 if (const auto& df = world->playerDamageFeedback(); df.event != lastDamageEvent) {
                     lastDamageEvent = df.event;
-                    if (hudFade.health < cgNowMs()) hudFade.health = cgNowMs(); // 0x4ba537: damage touches the health bar
+                    if (damageTrace)
+                        std::printf("damagetrace t=%lld event=%d count=%d yaw=%d pitch=%d\n", (long long)cgNowMs(), df.event, df.count, df.yaw, df.pitch);
                     ps.aimSpread = std::min(255.0f, ps.aimSpread + float(df.count));
-                    if (df.count != 0) { // 0x4ba1c3: only with a damage count
+                    if (df.count != 0) { // 0x4ba1c3 / 0x4ba653: only with a damage count
+                        if (hudFade.health < cgNowMs()) hudFade.health = cgNowMs(); // 0x4ba537: damage touches the health bar
                         const Vec3 f = cam.forward(), l = cam.right() * -1.0f; // viewaxis rows 0 and 1 (left)
-                        viewImp.damage(df.yaw, df.pitch, df.count, {f.x, f.y, f.z}, {l.x, l.y, l.z}, cgNowMs());
-                    }
-                    if (!(df.pitch == 0xff && df.yaw == 0xff)) {
-                        size_t slot = 0;
-                        for (size_t k = 1; k < damageIcons.size(); ++k)
-                            if (damageIcons[k].start < damageIcons[slot].start) slot = k;
-                        const float y = float(df.yaw) / 255.0f * 360.0f + (float(std::rand() % 32768) / 32768.0f - 0.5f) * 20.0f;
-                        const int sh = int(y * (65536.0f / 360.0f)) & 0xffff;
-                        damageIcons[slot] = {cgNowMs(), 2000, float(sh) * (360.0f / 65536.0f)};
+                        viewImp.damage(df.yaw, df.pitch, df.count, {f.x, f.y, f.z}, {l.x, l.y, l.z}, cgNowMs(),
+                                       world->multiplayer() ? game::ViewImpulses::kMpKickScale : game::ViewImpulses::kSpKickScale);
+                        if (!(df.pitch == 0xff && df.yaw == 0xff)) {
+                            size_t slot = 0;
+                            for (size_t k = 1; k < damageIcons.size(); ++k)
+                                if (damageIcons[k].start < damageIcons[slot].start) slot = k;
+                            const float y = float(df.yaw) / 255.0f * 360.0f + (float(std::rand() % 32768) / 32768.0f - 0.5f) * 20.0f;
+                            const int sh = int(y * (65536.0f / 360.0f)) & 0xffff;
+                            damageIcons[slot] = {cgNowMs(), 2000, float(sh) * (360.0f / 65536.0f)};
+                        }
                     }
                 }
                 if (const auto sp = world->takePlayerSpawn()) { // MP client spawn: the whole player state restarts (stance, view height, lean, aim)

@@ -81,6 +81,8 @@ struct PlayOptions {
                              // new sound prefers to steal its own owner's voice when the pool is full (0x441910). -1 = none (no exclusivity).
     bool dedicated = false;  // music / ambient slots (stream slots 32..34, 0x442df0): outside the shared pools
     bool music = false;      // with `dedicated`: the music slot (stream slot 32, mu_play); a dedicated voice without it is an ambient slot (33 / 34)
+    int startOffsetMs = 0;   // start this far into the sample (the start routine's time shift). A streamed sound whose length the offset
+                             // reaches is not started at all (stream start 0x4b7325..0x4b7350 in the MP client, docs/spec/sound.md).
     bool refresh = false;    // the caller re-plays a looping alias every frame (0x441f80): the same alias+owner refreshes the running voice,
                              // and sweepLoops() removes it once a frame passes without a refresh
 };

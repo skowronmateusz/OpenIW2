@@ -3,6 +3,7 @@
 // exactly as in a local game.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <set>
@@ -81,8 +82,15 @@ public:
     // Other players' weapons and their entity events (docs/spec/net.md section 13): each new event of a player's event ring
     // is played once (World::mpRemotePlayerEvent). Call once per received snapshot.
     void playerEvents(game::World& w, const net::ClientSnapshot& snap, const std::map<int, std::string>& configstrings, int self);
+    // The damage feedback of the player states of `snaps` (oldest first; those already seen are skipped): the server
+    // clears damageCount in every frame without damage, so only the snapshots of the damage's own frame carry it, and
+    // the cgame meets them because it walks through every snapshot in order. A front end that reads the newest snapshot
+    // once per drawn frame passes all it received since (GameClient::snapshotsFrom); apply() does it for its own one.
+    // A player state of another client or another life is no new damage (docs/spec/mp-hud.md "Hit direction and damage
+    // feedback").
+    void damageFeedback(game::World& w, const std::vector<const net::ClientSnapshot*>& snaps);
     // The followed client's view (killcam, docs/spec/mp-hud.md "Killcam"): when the snapshot's player state has the
-    // follow bit (pm_flags 0x100000) the server sent another client's player state; the camera is its eye and view
+    // follow bit (pm_flags 0x400000) the server sent another client's player state; the camera is its eye and view
     // angles as sent (no prediction), interpolated between two such snapshots; when only one has the bit the view stays
     // on that one's state (the first and last drawn frames of a replay). False without the bit in both.
     static bool followView(const net::ClientSnapshot& a, const net::ClientSnapshot& b, float frac, float eye[3],
@@ -114,6 +122,10 @@ public:
 private:
     std::set<std::pair<int, int>> seenEvents_;  // (entity number, server time) of the events already played
     int lastSnapshot_ = -1;
+    std::array<int, 3> shock_{0, 0, 0}; // shockType, shockStartTime (server time), shockDuration of the last applied player state
+    int64_t shockStartMs_ = 0;          // that shock's start on the client clock, taken when the shock was first seen
+    int feedbackSnapshot_ = -1; // message number of the last snapshot damageFeedback saw
+    int psIdentity_ = -1; // clientNum | spawn count << 8 of the last applied snapshot's player state
     int lastEventSnapshot_ = -1;
     bool lastEventsFollowing_ = false; // the follow bit of the last snapshot playerEvents saw
     std::map<int, int> eventSeq_;  // client -> last event sequence played

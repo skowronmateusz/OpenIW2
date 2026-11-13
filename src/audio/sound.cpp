@@ -337,6 +337,11 @@ int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* dura
     if (!wav || wav->frames() == 0) return 0;
     Voice v;
     v.wav = wav;
+    if (opt.startOffsetMs > 0) { // the time shift: past the length nothing starts (TODO(spec): the same for a loaded, non-streamed sample)
+        const double at = double(opt.startOffsetMs) * double(wav->rate) / 1000.0;
+        if (!a->loop && at >= double(wav->frames())) return 0;
+        v.pos = a->loop ? std::fmod(at, double(wav->frames())) : at;
+    }
     std::uniform_real_distribution<float> u(0, 1);
     v.volume = a->volMin + (a->volMax - a->volMin) * u(rng_);
     const float pitch = a->pitchMin + (a->pitchMax - a->pitchMin) * u(rng_);

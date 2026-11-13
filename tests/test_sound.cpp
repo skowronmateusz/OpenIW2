@@ -107,6 +107,30 @@ void testMixer() {
         CHECK(std::fabs(out[2 * 63] - 0.5f) < 1e-3f && std::fabs(out[2 * 63 + 1]) < 1e-3f);
     }
 
+    // The start offset (the start routine's time shift; docs/spec/sound.md "Shell shock end sounds"): a sound starts that far into
+    // its sample, and one whose length the offset reaches is not started. c.wav is one second long.
+    {
+        iw2::audio::Mixer so(vfs, al, 48000);
+        so.masterVolume = 1.0f;
+        so.setListener({0, 0, 0}, {1, 0, 0}, {0, -1, 0});
+        iw2::audio::PlayOptions late;
+        late.startOffsetMs = 1000;
+        CHECK(so.play("stream", iw2::audio::Vec3{50, 0, 0}, nullptr, late) == 0 && so.active() == 0);
+        late.startOffsetMs = 7983;
+        CHECK(so.play("stream", iw2::audio::Vec3{50, 0, 0}, nullptr, late) == 0 && so.active() == 0);
+        late.startOffsetMs = 900;
+        CHECK(so.play("stream", iw2::audio::Vec3{50, 0, 0}, nullptr, late) != 0 && so.active() == 1);
+        std::vector<float> o(2 * 4800);
+        so.mix(o.data(), 2400);
+        CHECK(so.active() == 1 && o[2 * 2399] != 0.0f); // 50 ms on: still the last tenth of the sample
+        so.mix(o.data(), 4800);
+        CHECK(so.active() == 0);                        // 150 ms on: over, where a sound started at 0 has 850 ms left
+        CHECK(so.play("stream", iw2::audio::Vec3{50, 0, 0}) != 0);
+        so.mix(o.data(), 4800);
+        so.mix(o.data(), 4800);
+        CHECK(so.active() == 1);
+    }
+
     // Ducking: a slave (0.5) is lowered by 1 - duck * 0.5 while a master plays; the duck builds over snd_slaveFadeTime.
     iw2::audio::Mixer m(vfs, al, 48000);
     m.masterVolume = 1.0f;

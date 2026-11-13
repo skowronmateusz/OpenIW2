@@ -175,8 +175,8 @@ std::array<float, 4> viewBob(int bobCycle, float xySpeed, int vht, float adsFrac
     return r;
 }
 
-void ViewImpulses::damage(int yawByte, int pitchByte, int count, const V3& fwd, const V3& left, int64_t timeMs) {
-    float kick = float(count) * 0.6f; // cg_viewKickScale
+void ViewImpulses::damage(int yawByte, int pitchByte, int count, const V3& fwd, const V3& left, int64_t timeMs, float scale) {
+    float kick = float(count) * scale;
     if (kick < 5.0f) kick = 5.0f;
     if (kick > 90.0f) kick = 90.0f; // cg_viewKickMax
     if (yawByte == 0xff && pitchByte == 0xff) {
@@ -191,6 +191,14 @@ void ViewImpulses::damage(int yawByte, int pitchByte, int count, const V3& fwd, 
         damagePitch_ = -(fwd[0] * v[0] + fwd[1] * v[1] + fwd[2] * v[2]) * kick;
     }
     damageTime_ = timeMs;
+    flashEnd_ = timeMs + 500; // 0x4ba528
+}
+
+float ViewImpulses::damageFlashAlpha(int64_t timeMs) const {
+    if (flashEnd_ <= timeMs) return 0;
+    float v = std::fabs(float(flashEnd_ - timeMs) * damagePitch_ * 0.0020000000949949026f);
+    if (v > 5.0f) v = 5.0f;
+    return v * 0.20000000298023224f * 0.699999988079071f;
 }
 
 int ViewImpulses::landDip(float h) {

@@ -104,6 +104,9 @@ void World::registerShellShockBuiltins() {
             m.shockIndex = index;
             m.shockStartMs = timeMs_;
             m.shockDurationMs = ms;
+            // A living client also plays the player animation script's event "shellshock" (event 18 through the event
+            // routine 0x80d96ee, 0x81163c2..0x81163fc): the other players see him hold his head.
+            if (const Value h = e->obj->get("health"); h.isNumber() && h.asFloat() > 0) m.animInput.shocked = true;
             return Value();
         }
         shellShock_ = {index, timeMs_, ms};

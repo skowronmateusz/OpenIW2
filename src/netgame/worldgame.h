@@ -101,11 +101,10 @@ constexpr int kEfDead = 1;
 constexpr int kEfBodyNew = 0x80000;
 constexpr int kEfHidden = 0x20;  // openiw2: a hidden script model (TODO(spec): the 1.3 server does not send those)
 constexpr int kEfFiring = 0x40;
-// The killcam / follow view (docs/spec/mp-hud.md "What the killcam client draws"): pm_flags bit kept from the spectator,
-// eFlags bit the copied player state gets (0x80f6916).
-constexpr int kPmfFollow = 0x100000;
+// The killcam / follow view (docs/spec/mp-hud.md "What the killcam client draws"): the pm_flags bit the copied player
+// state gets (0x80f6c82), which the cgame tests (MP 0x4dfc73, 0x4deb14).
+constexpr int kPmfFollow = 0x400000;
 constexpr int kPmfAds = 0x40; // aiming down the sights (the followed state's aim flag in a killcam)
-constexpr int kEfKillcam = 0x400000;
 
 // A growing name table in one configstring range; new names are announced to the clients.
 class ConfigstringRange {

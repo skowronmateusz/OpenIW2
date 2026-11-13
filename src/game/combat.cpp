@@ -1873,7 +1873,14 @@ void World::mpSetRemoteDamageFeedback(int event, int yaw, int pitch, int count) 
     ++damageFeedback_.event;
 }
 
+void World::mpRemoteIdentityChanged(int event) {
+    if (!mpRemote_) return;
+    remoteDamageEvent_ = event;
+    damageFeedbackReset_ = true;
+}
+
 void World::damageFeedback() {
+    if (mpRemote_) return; // a network client's feedback is its snapshots' (mpSetRemoteDamageFeedback): nothing to clear or count here
     if (!player_ || !isAlive(*player_)) return;
     damageFeedback_.count = 0;
     const Value mh = player_->obj->get("maxhealth");

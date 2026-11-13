@@ -280,6 +280,18 @@ int RemoteView::stance(const net::ClientSnapshot& snap) {
     return (f & kPmfProne) ? 2 : (f & kPmfCrouch) ? 1 : 0;
 }
 
+void RemoteView::damageFeedback(game::World& w, const std::vector<const net::ClientSnapshot*>& snaps) {
+    for (const net::ClientSnapshot* s : snaps) {
+        if (!s || !s->valid || s->messageNum <= feedbackSnapshot_ || s->ps.size() < 324) continue;
+        feedbackSnapshot_ = s->messageNum;
+        const std::vector<uint8_t>& ps = s->ps;
+        const int identity = (getI(ps, 204) & 0xff) | ((getI(ps, 320) & 0xff) << 8);
+        if (identity != psIdentity_) w.mpRemoteIdentityChanged(getI(ps, 284) & 0xff);
+        else w.mpSetRemoteDamageFeedback(getI(ps, 284) & 0xff, getI(ps, 288) & 0xff, getI(ps, 292) & 0xff, getI(ps, 296) & 0x7f);
+        psIdentity_ = identity;
+    }
+}
+
 void RemoteView::apply(game::World& w, const net::ClientSnapshot& snap, const std::map<int, std::string>& cs, int self,
                        int64_t worldTimeMs, PredictedAmmo* predicted) {
     if (!snap.valid || snap.messageNum == lastSnapshot_) return;
@@ -316,10 +328,17 @@ void RemoteView::apply(game::World& w, const net::ClientSnapshot& snap, const st
     // The local player's shell shock (ps+0x5d8 index, +0x5dc start in server time, +0x5e0 duration): the name is the
     // configstring of the index; the start moves to the world's clock like the HUD times.
     {
+        // The start moves onto the client clock once per shock (a new index, start or duration) and then stays: a start
+        // converted again with every snapshot would move with the measured clock offset and replay the shock's end sound
+        // (docs/spec/mp.md "Per-client player state").
         const int index = getI(ps, 1496) & 15;
         const std::string* name = index ? cfg(cs, kShockConfigstrings + index) : nullptr;
-        w.mpSetRemoteShellShock(name ? *name : std::string(), int64_t(getI(ps, 1500)) + (worldTimeMs - snap.serverTime),
-                                getI(ps, 1504) & 0xffff);
+        const std::array<int, 3> shock{index, getI(ps, 1500), getI(ps, 1504) & 0xffff};
+        if (shock != shock_) {
+            shock_ = shock;
+            shockStartMs_ = int64_t(shock[1]) + (worldTimeMs - snap.serverTime);
+        }
+        w.mpSetRemoteShellShock(name ? *name : std::string(), shockStartMs_, shock[2]);
     }
 
     // The local player: health, team, name, inventory.
@@ -330,8 +349,11 @@ void RemoteView::apply(game::World& w, const net::ClientSnapshot& snap, const st
         if (const int vm = getI(ps, 228) & 0xff; vm > 0)
             if (const std::string* n = cfg(cs, kModelConfigstrings + vm - 1)) p->obj->set("$viewmodel", Value(*n));
         p->obj->set("maxhealth", Value(getI(ps, 308)));
-        if (!following(snap)) // the damage feedback of the own player state (hit direction icons, view kick)
-            w.mpSetRemoteDamageFeedback(getI(ps, 284) & 0xff, getI(ps, 288) & 0xff, getI(ps, 292) & 0xff, getI(ps, 296) & 0x7f);
+        // The damage feedback of the snapshot's player state (red flash, view kick, hit direction icons), the followed
+        // client's while following. A player state of another client or another life (clientNum, or the spawn count in
+        // stats[5]) is no new damage: the cgame overwrites the old state with it and runs its respawn reset (docs/spec/mp-hud.md
+        // "Hit direction and damage feedback").
+        damageFeedback(w, {&snap});
         if (const auto c = snap.clients.find(self); c != snap.clients.end()) {
             p->obj->set("name", Value(clientStateName(c->second)));
             p->obj->set("sessionteam", Value(std::string(teamName(getI(c->second, 4) & 3))));

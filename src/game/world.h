@@ -911,6 +911,13 @@ public:
     // A network client: the player state's damage feedback fields (docs/spec/mp-hud.md "Hit direction and damage
     // feedback"); a new damageEvent value is a new damage frame.
     void mpSetRemoteDamageFeedback(int event, int yaw, int pitch, int count);
+    // A network client: the snapshot's player state belongs to another client or another life than the previous one's (clientNum
+    // or the spawn count in stats[5] changed; MP cgame 0x4df9f1..0x4dfafc). The new damageEvent is no new damage, and the front
+    // end's respawn reset is due (takeDamageFeedbackReset).
+    void mpRemoteIdentityChanged(int event);
+    // The multiplayer client's respawn reset of the damage feedback (MP 0x4e0190: kicks, kick time and direction icons cleared): true
+    // once after a spawn of the own client or a change of identity of a network client's player state.
+    bool takeDamageFeedbackReset() { return std::exchange(damageFeedbackReset_, false); }
     // Game time (ms) of the last damage the player dealt to a living enemy actor (hitMarkerTrigger), -1 before the first. The front end
     // draws the hit marker from it when the option iw2_hitMarker is on (src/game/hitmarker.h).
     int64_t playerHitMarkerMs() const { return hitMarkerMs_; }
@@ -1969,6 +1976,7 @@ private:
     bool playerDeadWeaponless_ = false;  // player_die cleared the entity's weapon (ent+2 = 0)
     DamageFeedback damageFeedback_;
     int remoteDamageEvent_ = -1; // the last damageEvent of the network client's snapshots
+    bool damageFeedbackReset_ = false;
     int64_t hitMarkerMs_ = -1, hitMarkerKillMs_ = -1;
     std::vector<Earthquake> earthquakes_;
     std::optional<Vec3> sunlight_;          // setsunlight override (config string 9); empty after resetsunlight

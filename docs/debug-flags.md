@@ -239,6 +239,7 @@ and test_savestate, whose scripts print with `println` and set developer_script 
 | `IW2_MENU_KEYS` token `pitch:<deg>` | Sets the view pitch (positive looks down); live play. |
 | `IW2_MENU_KEYS` token `yaw:<deg>` | Sets the view yaw (absolute degrees); live play, e.g. to face a player put somewhere with `IW2_MP_PLACE`. |
 | `IW2_WEAPON_TRACE=1` | iw2view | Prints a `weapontrace` line whenever the own weapon state changes: weapon, view weapon, PM_Weapon state, view animation, clip, stock, offhand out, cooking, fuse burning, aim held, this frame's buttons and whether the controls are blocked (local or `+connect`). |
+| `IW2_DAMAGE_TRACE=1` | iw2view | Prints `damagetrace t=<client ms>` lines for the damage feedback (local, MP or `+connect`): `event= count= yaw= pitch=` when a new damage frame is taken, `flash=<alpha>` for every drawn frame of the red flash, `reset` for the multiplayer respawn reset. |
 | `IW2_REMOTE_TRACE=1` | iw2view | Prints `remotetrace` lines for the events of other players (`+connect`: event number, weapon, position; the third-person weapon of each other player when it changes) and the third-person animations their events start (`animevent`, body part, animation). |
 | `IW2_HINT_LOG=1` | iw2view | Prints `[hint] t=<ms> ...` whenever the drawn cursor hint (icon weapon and text key) changes, `none` when nothing is drawn. |
 | `IW2_MENU_KEY_MS=N` | Gap between two `IW2_MENU_KEYS` tokens in ms (default 2000). |

@@ -161,7 +161,8 @@ void World::mpPlayersFrame() {
             ctx.firing = true;
             event("fireweapon");
         }
-        cl.animInput.fired = cl.animInput.reloaded = cl.animInput.jumped = false;
+        if (cl.animInput.shocked) event("shellshock");
+        cl.animInput.fired = cl.animInput.reloaded = cl.animInput.jumped = cl.animInput.shocked = false;
         // The torso falls back to the legs' animation when its hold ends.
         if (st.torsoActive && now >= st.torsoHeldUntilMs) {
             e->anim->clear(torso, kDefaultBlend);

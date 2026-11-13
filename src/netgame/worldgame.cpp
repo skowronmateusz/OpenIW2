@@ -1221,16 +1221,16 @@ void WorldGame::writeKillcamPlayerState(std::vector<uint8_t>& ps, const KillcamF
     const game::ArchivedClient& c = kc.frame->clients[size_t(kc.client)];
     const game::MpViewState& vs = c.view;
     // The followed client's player state over the spectator's (0x80f6916): movement type normal, its movement flags
-    // with the spectator's follow bit 0x100000 kept (here the stance and aim bits of the recorded view state), entity
-    // flags 0x400000, and its client number (the copy takes the whole player state; docs/spec/mp-hud.md "The recorded
-    // view state").
+    // without 0x800000 and with the follow bit 0x400000 (here the stance and aim bits of the recorded view state), and its
+    // client number (the copy takes the whole player state; docs/spec/mp-hud.md "The recorded view state"). The entity
+    // flags are the followed client's with the spectator's own bit 0x100000; they are not archived here (0).
     putI(ps, 4, 0);
     int pmf = kPmfFollow;
     if (vs.viewHeightTarget <= 11) pmf |= kPmfProne;
     else if (vs.viewHeightTarget <= 40) pmf |= kPmfCrouch;
     if (vs.adsHeld) pmf |= kPmfAds;
     putI(ps, 12, pmf);
-    putI(ps, 160, kEfKillcam);
+    putI(ps, 160, 0);
     putI(ps, 204, kc.client);
     for (int i = 0; i < 3; ++i) {
         putF(ps, 20 + 4 * i, c.origin[size_t(i)]);
@@ -1272,6 +1272,13 @@ void WorldGame::writeKillcamPlayerState(std::vector<uint8_t>& ps, const KillcamF
     putI(ps, 1496, c.shockIndex);
     putI(ps, 1500, c.shockIndex ? int32_t(c.shockStartMs + (serverTime() - kc.frame->timeMs)) : 0);
     putI(ps, 1504, c.shockIndex ? c.shockDurationMs : 0);
+    // Its damage feedback and spawn count, as the copy of the whole player state has them (docs/spec/mp-hud.md "Hit
+    // direction and damage feedback"): the viewer gets the followed client's flash, kick and icons.
+    putI(ps, 284, c.damageEvent & 0xff);
+    putI(ps, 288, c.damageYaw & 0xff);
+    putI(ps, 292, c.damagePitch & 0xff);
+    putI(ps, 296, c.damageCount & 0x7f);
+    putI(ps, 320, c.spawnCount & 0xff);
     putI(ps, 228, c.hands.empty() ? 0 : models_.index(c.hands) + 1);
     if (wn > 0 && wn < 64) {
         putI(ps, 1348 + 4 * (wn / 32), int32_t(1u << (wn % 32)));
@@ -1377,6 +1384,7 @@ net::SnapshotView WorldGame::snapshot(int slot) {
         putI(v.ps, 288, sc.damageYaw & 0xff);
         putI(v.ps, 292, sc.damagePitch & 0xff);
         putI(v.ps, 296, sc.damageCount & 0x7f);
+        putI(v.ps, 320, sc.spawnCount & 0xff);    // stats[5]: the spawn count (ClientSpawn 0x80f926d..0x80f92d5)
         putI(v.ps, 1496, sc.shockIndex);
         putI(v.ps, 1500, int32_t(sc.shockStartMs));
         putI(v.ps, 1504, sc.shockDurationMs);

@@ -207,7 +207,7 @@ struct ServerProcess {
 // ---------------------------------------------------------------------------------------------------------------
 // A scripted network client (iw2view's client side of the network game)
 
-constexpr uint32_t kFollowBit = 0x100000;  // pm_flags of a followed player state (killcam)
+constexpr uint32_t kFollowBit = 0x400000;  // pm_flags of a followed player state (killcam)
 constexpr int kEntitynumNone = 1023;       // groundEntityNum (ps+0x60) of a player in the air
 
 struct Scenario {

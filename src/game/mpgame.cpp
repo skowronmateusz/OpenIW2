@@ -423,6 +423,7 @@ void World::registerMpBuiltins() {
             playerTeleport_ = o;
             playerViewAngles_ = a;
             playerSpawn_ = o;
+            damageFeedbackReset_ = true; // the client's respawn reset (MP 0x4e0190)
             playerDeadWeaponless_ = false;
             controlsFrozen_ = false;
             // The cleared client holds the accumulated damage too: the fatal hit of the previous life (not reported while

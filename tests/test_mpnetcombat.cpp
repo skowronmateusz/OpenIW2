@@ -16,6 +16,7 @@
 #include "fs/vfs.h"
 #include "game/clientinput.h"
 #include "game/mpkillcam.h"
+#include "game/viewweapon.h"
 #include "game/healthoverlay.h"
 #include "game/world.h"
 #include "net/gameclient.h"
@@ -399,6 +400,97 @@ void dm(fs::Vfs& vfs) {
         CHECK(hp1 < hp0 && hp1 > 0);
         CHECK(ev != ev0 && yaw == 255 && pitch == 255 && count > 0);
         CHECK(bview.playerDamageFeedback().event > viewEvent0 && bview.playerDamageFeedback().count == count);
+        // The cgame's damage feedback for that frame (docs/spec/mp-hud.md): damage from the world kicks the pitch by the whole kick
+        // (count * 0.2, at least 5), so the screen flashes red at alpha 0.7 whatever health is left, and the kick is the MP one.
+        {
+            game::ViewImpulses vi;
+            const auto& df = bview.playerDamageFeedback();
+            vi.damage(df.yaw, df.pitch, df.count, {1, 0, 0}, {0, 1, 0}, 5000, game::ViewImpulses::kMpKickScale);
+            const float kick = std::max(5.0f, float(count) * 0.2f);
+            std::cout << "bravo fall: flash alpha " << vi.damageFlashAlpha(5000) << " kick " << vi.damageKick(5100, 0, false)[0] << "\n";
+            CHECK(std::fabs(vi.damageFlashAlpha(5000) - 0.7f) < 1e-3f && vi.damageFlashAlpha(5499) > 0 && vi.damageFlashAlpha(5500) == 0);
+            CHECK(std::fabs(vi.damageKick(5100, 0, false)[0] + kick) < 1e-3f);
+        }
+        // The spawn count rides in stats[5] (ps+320), and a player state of another client or another life is no new damage:
+        // the same snapshot with another clientNum or spawn count and an advanced damageEvent gives no feedback but the respawn
+        // reset; with the same identity and the follow bit (a spectator's or killcam viewer's snapshot) it is feedback.
+        if (const net::ClientSnapshot* s = g.clients[1]->latest()) {
+            CHECK(s->ps[204] == b && s->ps[320] == (g.host.mpState().clients[size_t(b)].spawnCount & 0xff) && s->ps[320] != 0);
+            bview.takeDamageFeedbackReset(); // (the view's first snapshot was a change of identity)
+            const int before = bview.playerDamageFeedback().event;
+            net::ClientSnapshot other = *s;
+            ++other.messageNum;
+            other.ps[320] = uint8_t(other.ps[320] + 1); // the next life
+            other.ps[284] = uint8_t(other.ps[284] + 1);
+            other.ps[296] = 40;
+            brv.apply(bview, other, g.clients[1]->configstrings, b, 0, nullptr);
+            CHECK(bview.playerDamageFeedback().event == before && bview.takeDamageFeedbackReset());
+            ++other.messageNum;
+            other.ps[204] = uint8_t(a); // another client's player state (a killcam starts)
+            other.ps[12 + 2] |= 0x40;   // pm_flags 0x400000: following
+            other.ps[284] = uint8_t(other.ps[284] + 1);
+            brv.apply(bview, other, g.clients[1]->configstrings, b, 0, nullptr);
+            CHECK(bview.playerDamageFeedback().event == before && bview.takeDamageFeedbackReset());
+            ++other.messageNum;
+            other.ps[284] = uint8_t(other.ps[284] + 1); // the followed client is hit
+            other.ps[288] = 64, other.ps[292] = 0, other.ps[296] = 33;
+            brv.apply(bview, other, g.clients[1]->configstrings, b, 0, nullptr);
+            CHECK(bview.playerDamageFeedback().event == before + 1 && bview.playerDamageFeedback().count == 33 && bview.playerDamageFeedback().yaw == 64);
+            CHECK(!bview.takeDamageFeedbackReset());
+            ++other.messageNum;
+            brv.apply(bview, *s, g.clients[1]->configstrings, b, 0, nullptr); // (stale message number: ignored)
+            net::ClientSnapshot back = *s;
+            back.messageNum = other.messageNum + 1; // back to the own player state: again no feedback
+            brv.apply(bview, back, g.clients[1]->configstrings, b, 0, nullptr);
+            CHECK(bview.playerDamageFeedback().event == before + 1 && bview.takeDamageFeedbackReset());
+        }
+        // The count rides only in the snapshots of the damage's own frame (the server clears it in the next): a front end
+        // that looks after two more snapshots still gets the feedback when it hands over all of them in order.
+        if (const net::ClientSnapshot* s = g.clients[1]->latest()) {
+            const int before = bview.playerDamageFeedback().event;
+            net::ClientSnapshot hit = *s, after = *s;
+            hit.messageNum = s->messageNum + 200, after.messageNum = s->messageNum + 201;
+            hit.ps[284] = after.ps[284] = uint8_t(s->ps[284] + 1);
+            hit.ps[288] = hit.ps[292] = after.ps[288] = after.ps[292] = 255;
+            hit.ps[296] = 39, after.ps[296] = 0;
+            brv.damageFeedback(bview, {&hit, &after});
+            brv.apply(bview, after, g.clients[1]->configstrings, b, 0, nullptr);
+            CHECK(bview.playerDamageFeedback().event == before + 1 && bview.playerDamageFeedback().count == 39);
+            bview.frame(); // the client's own world frame leaves the feedback alone until the front end has read it
+            CHECK(bview.playerDamageFeedback().event == before + 1 && bview.playerDamageFeedback().count == 39);
+            net::ClientSnapshot back = *s;
+            back.messageNum = after.messageNum + 1;
+            brv.apply(bview, back, g.clients[1]->configstrings, b, 0, nullptr);
+        }
+        // The shell shock of the player state (docs/spec/mp.md "Per-client player state"): its start moves onto the client's
+        // clock once; later snapshots of the same shock keep it whatever the measured clock offset is, a new shock takes the
+        // offset of its first snapshot.
+        if (const net::ClientSnapshot* s = g.clients[1]->latest()) {
+            net::ClientSnapshot sh = *s;
+            sh.messageNum += 100;
+            auto put = [&](int off, int32_t v) { std::memcpy(sh.ps.data() + off, &v, 4); };
+            put(1496, 1), put(1500, sh.serverTime - 200), put(1504, 3000);
+            brv.apply(bview, sh, g.clients[1]->configstrings, b, int64_t(sh.serverTime) + 5000, nullptr);
+            const auto s0 = bview.shellShock();
+            CHECK(s0.index > 0 && s0.durationMs == 3000 && s0.startMs == int64_t(sh.serverTime) - 200 + 5000 && bview.shellShockRecord());
+            for (int k = 1; k <= 3; ++k) { // the offset is measured anew: 25, 50, 75 ms off
+                ++sh.messageNum;
+                sh.serverTime += 50;
+                brv.apply(bview, sh, g.clients[1]->configstrings, b, int64_t(sh.serverTime) + 5000 + 25 * k, nullptr);
+                CHECK(bview.shellShock().startMs == s0.startMs);
+            }
+            ++sh.messageNum;
+            put(1500, sh.serverTime), put(1504, 2000); // the next shock
+            brv.apply(bview, sh, g.clients[1]->configstrings, b, int64_t(sh.serverTime) + 5075, nullptr);
+            CHECK(bview.shellShock().startMs == int64_t(sh.serverTime) + 5075 && bview.shellShock().durationMs == 2000);
+            ++sh.messageNum;
+            put(1496, 0), put(1500, 0), put(1504, 0); // the spawn clears it
+            brv.apply(bview, sh, g.clients[1]->configstrings, b, int64_t(sh.serverTime) + 5075, nullptr);
+            CHECK(bview.shellShock().index == 0 && !bview.shellShockRecord());
+            net::ClientSnapshot back = *s;
+            back.messageNum = sh.messageNum + 1;
+            brv.apply(bview, back, g.clients[1]->configstrings, b, 0, nullptr);
+        }
         if (pb) pb->obj->set("health", Value(100)); // full health again for the rest
         // A fall that leaves bravo at or below 35 % health (docs/spec/mp-hud.md "Low-health overlay"): its front end's
         // player gets the health of the player state and the overlay pulses from that fraction (the red screen).
@@ -514,6 +606,8 @@ void dm(fs::Vfs& vfs) {
                 continue;
             }
             lastFollow = *s;
+            // The copied player state is the followed client's: its number and its spawn count (stats[5]).
+            CHECK(s->ps[204] == bot2 && s->ps[320] != 0);
             if (++followSnaps == 1)
                 for (const auto& e : g.host.entities())  // as a reuse of its slot would
                     if (e->classname == "playercorpse" && e->obj->get("$bodyclient").asInt() == b) e->obj->removed = true;

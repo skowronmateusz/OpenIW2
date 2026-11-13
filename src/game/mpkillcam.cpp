@@ -327,6 +327,11 @@ void World::mpKillcamEndFrame() {
         ac.shockIndex = cl.shockIndex;
         ac.shockStartMs = cl.shockStartMs;
         ac.shockDurationMs = cl.shockDurationMs;
+        ac.damageEvent = cl.damageEvent;
+        ac.damageYaw = cl.damageYaw;
+        ac.damagePitch = cl.damagePitch;
+        ac.damageCount = cl.damageCount;
+        ac.spawnCount = cl.spawnCount;
         if (!ac.weapon.empty() && ac.weapon != "none") {
             Inventory& inv = inventory(*cl.ent);
             std::string k = ac.weapon;

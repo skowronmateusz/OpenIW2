@@ -156,6 +156,48 @@ Implemented: `setWayPoint` marks the element; iw2view projects it like the head 
   single-player one is 0x4f7a40; not covered by a test).
   Test: tests/test_mpnetcombat.cpp (a network client falls from a height: its snapshot carries a new damage event
   from the world with a count, and its front end's world takes it).
+- The MP cgame's damage feedback (0x4dfee0) is the single-player routine of docs/spec/ui.md "Damage feedback" with these
+  differences: the kick size is count × 0.2 (the constant at 0x5c40d0; there is no `cg_viewKickScale` / `cg_viewKickMax`
+  in the MP client), at least 5 and at most 90; the rest is the same (world damage: pitch kick −size, no roll, no icon
+  slot 0x4dff3b..0x4dff64; flash end time 0x1519f8c = client time + 500, kick start 0x1519f54 = the snapshot time, the
+  "Health" menu's visible flag behind the stamp 0x151a644, 0x4e013d..0x4e0181).
+- Red flash (0x4c99f0, called at 0x4cbdb6 right before the direction icons 0x4c9ac0): as in single player, |remaining ms ×
+  pitch kick × 0.002| capped at 5, times 0.2 × 0.7 as the alpha of a (0.2, 0, 0) fill of the whole screen through the white
+  material (0x1979108, registered at 0x531f08). A fall is damage from the world: its pitch kick is the whole kick, so every
+  damaging fall flashes the screen dark red for half a second (alpha from 0.7 down), whatever health is left. The 2D pass
+  (0x4cbca0) draws the flash and the icons only with `cg_draw2D`, while the HUD is shown (0x1519e48) and no menu covers it.
+- When it runs. With prediction (the usual case) the predicted player state is compared with the one before the frame's
+  prediction (0x4e03b0, called at 0x4deee7). While the next snapshot's player state follows another client (pm_flags
+  0x400000), in demo playback, with `cg_nopredict` or `cg_synchronousClients`, the next snapshot's player state is
+  compared with the current snapshot's instead (0x4dfc64..0x4dfcca): a spectator or killcam viewer gets the flash, kick
+  and icons of the client he follows. Both need a changed damageEvent and a damageCount other than 0.
+- A hard landing gives nothing more on the screen: the cgame's handler of the landing events with damage (0x74..0x8a,
+  0x4e0c5c..0x4e0d3d) plays the surface's landing sound and `land_damage` and, for the own client, dips the view
+  (docs/spec/mp-pmove.md); it starts no blur and no shell shock, and the gametype scripts start a shell shock (whose
+  screen blend smears the picture) only for explosive means of death (`_shellshock.gsc:8-12`), not for `MOD_FALLING`.
+- The server's routine (0x80f481c) sets damageCount to 0 first, for every client that is not dead (pm_type at most
+  5; 0x80f4835..0x80f4843), and only then, with damage in the frame, counts damageEvent up and stores the new count
+  (0x80f4a6b..0x80f4a88). So only the snapshots of the damage's own frame carry a count; the next frame's have the new
+  damageEvent with a count of 0, which is no feedback. The cgame does not miss the frame because it takes every
+  snapshot it received in order (0x4dfda0). openiw2's front end reads the newest snapshot once per drawn frame, so
+  `RemoteView::damageFeedback` walks all snapshots received since the last frame; before, a drawn frame longer than a
+  game frame lost the feedback. Test: tests/test_mpnetcombat.cpp (the feedback of a snapshot that is no longer the
+  newest when the front end looks).
+- Change of identity (0x4df9f1..0x4dfafc, in the routine that takes the next snapshot): when the next snapshot's player
+  state has another clientNum or another spawn count (stats[5], ps+0x140; the server's client spawn stores the old value
+  + 1, 0x80f926d..0x80f92d5) than the current one's, the current snapshot's player state is overwritten with the next
+  one's before the comparison and the respawn reset runs, so neither the damage feedback nor the player-state events
+  fire for the difference between two players or two lives.
+- Respawn reset (0x4e0190): the predicted player state becomes the snapshot's, both kicks and the kick's start time
+  become 0, the 8 icon slots are cleared (0x4e024c..0x4e0284), and the low-health overlay restarts (below). The flash end
+  time is not cleared, but with a pitch kick of 0 the flash is over.
+- openiw2: `ViewImpulses::damage` takes the scale (0.6 in a single-player game, 0.2 in multiplayer); the flash is
+  `ViewImpulses::damageFlashAlpha`; the server writes the spawn count into stats[5]; `RemoteView::apply` takes the
+  feedback of the followed client too and treats a changed clientNum or spawn count as the change of identity
+  (`World::mpRemoteIdentityChanged`: no feedback, kicks and icons cleared). Before, the MP kick was three times too
+  strong, there was no red flash, a follower saw no feedback and a changed damageEvent with a count of 0 (the first
+  snapshot of a new life) gave a stray direction icon. Tests: tests/test_viewimpulses.cpp (flash and scale),
+  tests/test_mpnetcombat.cpp (a network client's fall flashes; spawn count and identity change).
 - The hit marker for the attacker is script: `_damagefeedback.gsc` shows `damage_feedback` on a client HUD element and
   plays `MP_hit_alert` with `playLocalSound`.
 
@@ -181,13 +223,11 @@ menu is commented out): one full-screen item with the `overlay_low_health` backg
 - A respawn of the predicted player state (0x4e0190) resets it: inactive, no step, level 0, target the end alpha, last
   fraction 1.
 - The dvars are registered at 0x4c35d0..0x4c37bf (ints 0..1000 for the durations, 0..10000 for the pause; floats 0..1).
-So a fall or a hit that leaves the player at or below 35 % health shows the red pulses; one that leaves more does not,
-in the original as well. A fall is damage from the world: its damage feedback (MP 0x4dff3b, yaw and pitch 255) gives
-the view kick and touches the Health menu (0x4e0157..0x4e0181, the menu named "Health" gets flag 4), but skips the
-direction icon slots (0x4e00a0..0x4e0137); the cgame has no other red damage effect (the shipped
-`_healthoverlay.gsc` only regenerates health and plays the breathing sounds below its 0.35 cutoff). Test:
-tests/test_mpnetcombat.cpp (a network client's fall that leaves 23 health: its front end's player has that health and
-the overlay pulses from that fraction).
+So the pulsing overlay shows for a fall or a hit that leaves the player below 35 % health and not for one that leaves
+more, in the original as well; the weaker red of any damage is the red flash of the damage feedback above, not this
+overlay (the shipped `_healthoverlay.gsc` only regenerates health and plays the breathing sounds below its 0.35 cutoff).
+Test: tests/test_mpnetcombat.cpp (a network client's fall that leaves 23 health: its front end's player has that health
+and the overlay pulses from that fraction).
 
 openiw2 had no ownerdraw 109 and its front end drew the single-player HUD menus in multiplayer as well, so the overlay
 was missing for every kind of damage, on a network client and on the listen host. Implemented: src/game/healthoverlay.h
@@ -284,8 +324,9 @@ killer's own player state (a grenade or artillery kill shows the thrower's view)
 
 ### What the killcam client draws
 - The copy (0x80f6916, after the lookup above) takes the followed client's whole archived player state (0x26a8 bytes)
-  over the spectator's; of the movement flags only the spectator's bit 0x100000 is kept, and the entity flags get
-  0x400000 and lose 0x800000. Then 0x8104882 with flag 2 rebuilds only the current HUD-element part of the player state
+  over the spectator's; of the entity flags (ps+0xa0) the spectator's own bit 0x100000 is kept (0x80f6ba0..0x80f6c56),
+  and the movement flags (ps+0xc) lose 0x800000 and get the follow bit 0x400000 (0x80f6c5c..0x80f6c87), the bit the
+  cgame tests. Then 0x8104882 with flag 2 rebuilds only the current HUD-element part of the player state
   (+0x7a8, 31 slots of 0x80 bytes) from the spectator's own elements. 0x8104882 puts an element (0x8628f80, 1024 slots
   of 0x8c bytes) into a client's player state when it is in use, its team (+0x84) is 0 or the client's team (gclient
   +0x274c) and its client (+0x80) is 0x3ff (everyone) or the client; with `archived` (+0x88) set it goes into the
@@ -391,7 +432,8 @@ shown again until a spawn clears it (docs/spec/mp.md "Client spawn"). The archiv
 ### Network clients (src/netgame/worldgame.cpp, src/netgame/remoteview.cpp)
 As in the original the replay is built by the server: while a network client is a spectator following a client with
 a positive `archivetime`, its snapshot's player state is the followed client's archived one at `now - archivetime`
-(movement type 0, pm_flags only the follow bit 0x100000, eFlags 0x400000; origin, view height, view angles, health,
+(movement type 0, pm_flags the follow bit 0x400000 with the recorded stance and aim bits, eFlags 0 — the followed
+client's own entity flags are not archived; origin, view height, view angles, health,
 the current weapon with its clip and stock, the hands model), the other players are sent at their archived origin
 and view angles, the followed client is not sent as an entity, and the archived HUD elements are chosen by the
 followed client's ownership and team. The archived entity list skips only the entity of the sent player state's client

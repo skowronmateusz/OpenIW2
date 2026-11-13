@@ -20,6 +20,7 @@ struct MpPlayerInput {
     bool fired = false;
     bool reloaded = false;
     bool jumped = false;
+    bool shocked = false; // the shellshock method on a living client (the script event "shellshock", 0x81163c2..0x81163fc)
 };
 
 struct MpPlayerAnim {
