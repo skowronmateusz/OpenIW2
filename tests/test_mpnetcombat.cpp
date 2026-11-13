@@ -16,6 +16,7 @@
 #include "fs/vfs.h"
 #include "game/clientinput.h"
 #include "game/mpkillcam.h"
+#include "game/healthoverlay.h"
 #include "game/world.h"
 #include "net/gameclient.h"
 #include "net/server.h"
@@ -399,6 +400,34 @@ void dm(fs::Vfs& vfs) {
         CHECK(ev != ev0 && yaw == 255 && pitch == 255 && count > 0);
         CHECK(bview.playerDamageFeedback().event > viewEvent0 && bview.playerDamageFeedback().count == count);
         if (pb) pb->obj->set("health", Value(100)); // full health again for the rest
+        // A fall that leaves bravo at or below 35 % health (docs/spec/mp-hud.md "Low-health overlay"): its front end's
+        // player gets the health of the player state and the overlay pulses from that fraction (the red screen).
+        for (int i = 0; i < 10; ++i) g.frame();
+        if (pb) {
+            game::Vec3 o = origin(pb);
+            o[2] += 430.0f;
+            pb->obj->set("origin", Value(o));
+        }
+        for (int i = 0; i < 60; ++i) {
+            g.frame();
+            if (const net::ClientSnapshot* s = g.clients[1]->latest()) brv.apply(bview, *s, g.clients[1]->configstrings, b, 0, nullptr);
+        }
+        const int hp2 = pb ? pb->obj->get("health").asInt() : 0;
+        const Value vh = bview.player() ? bview.player()->obj->get("health") : Value(),
+                    vm = bview.player() ? bview.player()->obj->get("maxhealth") : Value();
+        const float frac = game::healthOverlayFraction(vh.isNumber() ? vh.asInt() : 0, vm.isNumber() ? vm.asInt() : 0, 0);
+        game::HealthOverlay overlay;
+        const game::HealthOverlayParams hp;
+        overlay.reset(hp);
+        float alpha = 0;
+        for (int64_t ms = 0; ms <= 200; ms += 16) alpha = std::max(alpha, overlay.frame(1.0f, 10000 + ms, hp));
+        for (int64_t ms = 216; ms <= 600; ms += 16) alpha = std::max(alpha, overlay.frame(frac, 10000 + ms, hp));
+        std::cout << "bravo big fall: health " << hp2 << ", its view's health " << (vh.isNumber() ? vh.asInt() : -1) << " / "
+                  << (vm.isNumber() ? vm.asInt() : -1) << ", overlay alpha up to " << alpha << "\n";
+        CHECK(hp2 > 0 && hp2 <= 35);
+        CHECK(vh.isNumber() && vh.asInt() == hp2);
+        CHECK(alpha > 0.5f);
+        if (pb) pb->obj->set("health", Value(100));
     }
 
     // bot2 kills bravo.

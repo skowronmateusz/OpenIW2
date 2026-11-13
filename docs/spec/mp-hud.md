@@ -182,7 +182,12 @@ menu is commented out): one full-screen item with the `overlay_low_health` backg
   fraction 1.
 - The dvars are registered at 0x4c35d0..0x4c37bf (ints 0..1000 for the durations, 0..10000 for the pause; floats 0..1).
 So a fall or a hit that leaves the player at or below 35 % health shows the red pulses; one that leaves more does not,
-in the original as well.
+in the original as well. A fall is damage from the world: its damage feedback (MP 0x4dff3b, yaw and pitch 255) gives
+the view kick and touches the Health menu (0x4e0157..0x4e0181, the menu named "Health" gets flag 4), but skips the
+direction icon slots (0x4e00a0..0x4e0137); the cgame has no other red damage effect (the shipped
+`_healthoverlay.gsc` only regenerates health and plays the breathing sounds below its 0.35 cutoff). Test:
+tests/test_mpnetcombat.cpp (a network client's fall that leaves 23 health: its front end's player has that health and
+the overlay pulses from that fraction).
 
 openiw2 had no ownerdraw 109 and its front end drew the single-player HUD menus in multiplayer as well, so the overlay
 was missing for every kind of damage, on a network client and on the listen host. Implemented: src/game/healthoverlay.h
