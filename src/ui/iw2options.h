@@ -15,9 +15,12 @@ namespace iw2::ui {
 constexpr const char* kCheatCmdFullbright = "iw2_fullbright";
 constexpr const char* kCheatCmdGod = "iw2_godmode";
 constexpr const char* kCheatCmdNoclip = "iw2_noclip";
+// The command of the page's "Open log folder" button (docs/logging.md): iw2view opens the log folder in Finder.
+constexpr const char* kOpenLogsCommand = "iw2_openlogs";
 
 // Adds the page "iw2_options" and an "OpenIW2" entry in the options menu ("options_menu", below Game Options; the entries under it move
-// down one line). The page holds the Hit marker option (cvar iw2_hitMarker), Show FPS (iw2_showFps), a note, and, unless `multiplayer`, the Cheats option (cvar
+// down one line). The page holds the Hit marker option (cvar iw2_hitMarker), Show FPS (iw2_showFps), a note, the "Open log folder"
+// button (command iw2_openlogs), and, unless `multiplayer`, the Cheats option (cvar
 // iw2_cheats; single player only: the row is not in the multiplayer menu set and is also hidden by ui_multiplayer). Returns false,
 // and changes nothing, when the options menu or its Game Options entry is not found (the options are then still settable with
 // --cvar). Calling it twice adds the page once.

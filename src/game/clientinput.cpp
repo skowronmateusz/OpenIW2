@@ -231,6 +231,7 @@ void ClientInput::command(const std::string& cmdIn, bool down, const std::string
     if (name.rfind("togglemenu", 0) == 0 || name.rfind("openscriptmenu", 0) == 0) { console_.push_back(cmdIn); return; }
     // MP chat and quick messages (default_mp.cfg:54-56; client 0x4039d0 / 0x403a20, cgame 0x4c1680), run by the front end.
     if (name == "chatmodepublic" || name == "chatmodeteam" || name == "mp_quickmessage") { console_.push_back(name); return; }
+    if (name == "dumptrace") { console_.push_back(name); return; } // openiw2: the trace recorder to a file (docs/logging.md)
     if (name == "toggleads") adsToggle_ = !adsToggle_; // 0x409260
     else if (name == "leaveads") adsToggle_ = false; // 0x409270
     else if (stanceLocked()) return;                 // the stance commands below do nothing while +prone / +movedown

@@ -27,13 +27,25 @@ if(IW2_WERROR)
 endif()
 
 find_package(ZLIB REQUIRED)
+find_package(Threads REQUIRED)
+
+# The build's version (git describe of the checkout at configure time): the main menu corner (src/ui/appversion.h) and the
+# first line of every log (src/util/log.cpp, docs/logging.md).
+execute_process(COMMAND git describe --tags --always --dirty WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                OUTPUT_VARIABLE IW2_GIT_DESCRIBE OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+
+# Session logs, event lines and the trace recorder (docs/logging.md): POSIX only, no SDL; iw2view and iw2server.
+add_library(iw2_log src/util/log.cpp)
+target_include_directories(iw2_log PUBLIC src)
+target_link_libraries(iw2_log PUBLIC Threads::Threads)
+target_compile_definitions(iw2_log PRIVATE IW2_VERSION="${IW2_GIT_DESCRIBE}" IW2_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
 add_library(iw2_fs
   src/fs/zip_archive.cpp
   src/fs/vfs.cpp
   src/fs/gamedir.cpp)
 target_include_directories(iw2_fs PUBLIC src)
-target_link_libraries(iw2_fs PUBLIC ZLIB::ZLIB)
+target_link_libraries(iw2_fs PUBLIC ZLIB::ZLIB iw2_log)
 
 add_library(iw2_assets
   src/assets/iwi.cpp
@@ -131,6 +143,9 @@ enable_testing()
 add_executable(test_vfs tests/test_vfs.cpp)
 target_link_libraries(test_vfs PRIVATE iw2_fs)
 add_test(NAME vfs COMMAND test_vfs)
+add_executable(test_log tests/test_log.cpp)
+target_link_libraries(test_log PRIVATE iw2_log)
+add_test(NAME log COMMAND test_log)
 add_executable(test_gamedir tests/test_gamedir.cpp)
 target_link_libraries(test_gamedir PRIVATE iw2_fs)
 add_test(NAME gamedir COMMAND test_gamedir)
@@ -151,9 +166,7 @@ find_package(SDL3 CONFIG)
 if(SDL3_FOUND)
   add_executable(iw2view apps/iw2view/main.cpp apps/iw2view/jpeg.cpp)
   target_link_libraries(iw2view PRIVATE iw2_dedicated iw2_netgame iw2_video SDL3::SDL3)
-  # The main menu shows the build's version (src/ui/appversion.h): git describe of the checkout at configure time.
-  execute_process(COMMAND git describe --tags --always --dirty WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                  OUTPUT_VARIABLE IW2_GIT_DESCRIBE OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  # The main menu shows the build's version (src/ui/appversion.h), IW2_GIT_DESCRIBE above.
   target_compile_definitions(iw2view PRIVATE IW2_VERSION="${IW2_GIT_DESCRIBE}")
   # The screenshotJpeg command encodes with ImageIO (apps/iw2view/jpeg.cpp).
   target_link_libraries(iw2view PRIVATE "-framework ImageIO" "-framework CoreGraphics" "-framework CoreFoundation")
@@ -894,11 +907,11 @@ add_library(iw2_net
   src/net/lanbrowser.cpp
   src/net/resolve.cpp)
 target_include_directories(iw2_net PUBLIC src)
+target_link_libraries(iw2_net PUBLIC iw2_log)
 # Network game layer: shared movement for server and client prediction, snapshot interpolation (docs/spec/net.md 10).
 add_library(iw2_netgame src/netgame/netmove.cpp src/netgame/netcombat.cpp src/netgame/worldgame.cpp src/netgame/remoteview.cpp)
 target_link_libraries(iw2_netgame PUBLIC iw2_game iw2_net)
 # The dedicated server loop (tools/iw2server and the dedicated start of iw2view) and its console window's model.
-find_package(Threads REQUIRED)
 add_library(iw2_dedicated src/netgame/dedicated.cpp src/netgame/consoleview.cpp src/netgame/serverargs.cpp)
 target_link_libraries(iw2_dedicated PUBLIC iw2_netgame iw2_audio Threads::Threads)
 
@@ -964,6 +977,11 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
     $<TARGET_FILE:iw2netclient> $<TARGET_FILE:iw2netinfo> ${IW2_TEST_MAIN})
   set_tests_properties(iw2server_dedicated PROPERTIES ENVIRONMENT "IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache"
     PASS_REGULAR_EXPRESSION "iw2server dedicated: ok" TIMEOUT 240)
+  # The server's session log (docs/logging.md); the log folder is a temp folder, never the real one.
+  add_test(NAME iw2server_log COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2server_log.sh $<TARGET_FILE:iw2server>
+    $<TARGET_FILE:iw2netclient> $<TARGET_FILE:iw2netinfo> ${IW2_TEST_MAIN})
+  set_tests_properties(iw2server_log PROPERTIES ENVIRONMENT "IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache"
+    PASS_REGULAR_EXPRESSION "iw2server log: ok" TIMEOUT 240)
 else()
   add_test(NAME mpbots_world COMMAND test_mpbots)
 endif()

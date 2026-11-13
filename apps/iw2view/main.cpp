@@ -101,6 +101,8 @@
 #include <SDL3/SDL.h>
 #include <unistd.h>
 
+#include "util/log.h"
+
 #include <algorithm>
 #include <iomanip>
 #include <array>
@@ -3556,9 +3558,9 @@ static std::string keyName(SDL_Scancode sc) {
     }
 }
 
-// Start without arguments (from Finder / the .app): stdout and stderr go to ~/Library/Logs/OpenIW2/openiw2.log (the four previous
-// logs are kept as openiw2-1.log .. openiw2-4.log), the `main` folder is the one remembered in <pref>/settings.cfg or chosen in a folder dialog, and it is
-// checked before it is mounted (src/fs/gamedir.h). Returns false when the user quits.
+// Start without arguments (from Finder / the .app): the `main` folder is the one remembered in <pref>/settings.cfg or chosen in a
+// folder dialog, and it is checked before it is mounted (src/fs/gamedir.h). Returns false when the user quits. The session log
+// (docs/logging.md) is started at the top of main, before this.
 struct AppStart { std::string mainDir, language; std::filesystem::path pref; uint32_t width = 0, height = 0; };
 // Where profiles, saves and screenshots live for a start that gave the game folder on the command line: the app's preference
 // folder when the binary runs from inside an application bundle (so a Terminal start of the app sees the same profile as a
@@ -3574,15 +3576,6 @@ static std::filesystem::path commandLineBase(const std::string& mainDir) {
     return std::filesystem::path(mainDir).parent_path();
 }
 static bool appStartup(AppStart& out) {
-    if (const char* home = std::getenv("HOME")) {
-        const std::filesystem::path log = std::filesystem::path(home) / "Library/Logs/OpenIW2/openiw2.log";
-        if (fs::rotateLog(log)) {
-            std::freopen(log.string().c_str(), "w", stdout);
-            std::freopen(log.string().c_str(), "a", stderr);
-            std::setvbuf(stdout, nullptr, _IOLBF, 0);
-            std::setvbuf(stderr, nullptr, _IONBF, 0);
-        }
-    }
     if (!SDL_Init(SDL_INIT_VIDEO)) { std::cerr << "SDL_Init: " << SDL_GetError() << "\n"; return false; }
     char* prefC = SDL_GetPrefPath("OpenIW2", "OpenIW2");
     if (!prefC) { std::cerr << "SDL_GetPrefPath: " << SDL_GetError() << "\n"; return false; }
@@ -3758,8 +3751,41 @@ static int runDedicatedConsole(iw2::fs::Vfs& vfs, iw2::netgame::DedicatedSetting
     return rc;
 }
 
+// The session log (docs/logging.md): openiw2-<time>.log for an app-bundle start of a 0.x version or on request (IW2_LOG=1,
+// --cvar iw2_log=1); a trace= line of <pref>/settings.cfg switches traces on before any flag is read.
+static void startClientLog(int argc, char** argv) {
+    std::string traceText;
+    if (log::programLogWanted(argc, argv))
+        if (char* pref = SDL_GetPrefPath("OpenIW2", "OpenIW2")) {
+            traceText = log::traceLineOf(std::filesystem::path(pref) / "settings.cfg");
+            SDL_free(pref);
+        }
+    log::startProgramLog(argc, argv, "openiw2", "openiw2", {"OpenIW2-", "iw2view-"}, traceText);
+}
+// The display line of the log header, once the window exists.
+static void logDisplay(SDL_Window* window, const std::string& language) {
+    if (!log::captureActive()) return;
+    std::ostringstream d;
+    if (const SDL_DisplayMode* m = SDL_GetDesktopDisplayMode(SDL_GetDisplayForWindow(window)))
+        d << "desktop " << m->w << "x" << m->h << " @" << m->refresh_rate << " Hz, density " << m->pixel_density;
+    int w = 0, h = 0, pw = 0, ph = 0;
+    SDL_GetWindowSize(window, &w, &h);
+    SDL_GetWindowSizeInPixels(window, &pw, &ph);
+    d << ", window " << w << "x" << h << " (" << pw << "x" << ph << " pixels)";
+    log::headerLine("display", d.str());
+    std::string locales;
+    int n = 0;
+    if (SDL_Locale** l = SDL_GetPreferredLocales(&n)) {
+        for (int i = 0; i < n && i < 3; ++i)
+            locales += std::string(i ? ", " : "") + l[i]->language + (l[i]->country ? std::string("_") + l[i]->country : std::string());
+        SDL_free(l);
+    }
+    log::headerLine("language", "game " + (language.empty() ? std::string("(from the game files)") : language) + ", system " + (locales.empty() ? std::string("unknown") : locales));
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0); // line-buffered, so a log written to a file is current while playing
+    startClientLog(argc, argv);
     std::vector<std::string> args;
     std::string shot;
     std::optional<Vec3> pos;
@@ -5487,6 +5513,18 @@ int main(int argc, char** argv) {
                 else if (c == "disconnect") pendingDisconnect = world != nullptr;
                 else if (c == "connect" && !a1.empty()) connectText(a1); // docs/spec/mp-ui.md "Addresses and name lookup"
                 else if (c == "quit") std::exit(0);
+                // openiw2 (docs/logging.md): Options > OpenIW2 > Open log folder, and the trace recorder written to a file.
+                else if (c == ui::kOpenLogsCommand) {
+                    const std::filesystem::path d = log::captureActive() ? log::logPath().parent_path() : log::defaultLogDir();
+                    std::error_code ec;
+                    std::filesystem::create_directories(d, ec);
+                    std::string url = "file://";
+                    for (char ch : d.string()) url += ch == ' ' ? std::string("%20") : std::string(1, ch);
+                    if (d.empty() || !SDL_OpenURL(url.c_str())) std::cerr << "iw2_openlogs: cannot open the log folder: " << SDL_GetError() << "\n";
+                }
+                else if (c == "dumptrace") {
+                    if (log::dumpTrace("command").empty()) std::cout << "dumptrace: the trace recorder is empty\n";
+                }
                 // "closemenu name" (console command registered at 0x4c3a80, string 0x58135c) closes that menu; used by difficulty.menu's ui_selected_map.
                 else if (c == "closemenu") menuEnv.close(a1);
                 // TODO(spec): [handler not read] fast_restart (reloads the current map here).
@@ -6071,6 +6109,7 @@ int main(int argc, char** argv) {
                 std::string c, menu, response;
                 in >> c >> menu >> response;
                 for (auto& ch : c) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                if (c == "dumptrace") { execText(c); continue; } // openiw2, docs/logging.md: in any game
                 if (!world || !world->multiplayer()) continue;
                 if (c == "togglemenu") mpToggleMenu();
                 // chatmodepublic / chatmodeteam (0x4039d0 / 0x403a20): clear the field, set its kind, toggle the message catcher.
@@ -9009,6 +9048,7 @@ int main(int argc, char** argv) {
         SDL_Window* window = SDL_CreateWindow(app ? "OpenIW2" : ("iw2view - " + (menuMode ? std::string("menu") : args[1])).c_str(), int(width), int(height),
                                               SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
         if (!window) sdlFail("SDL_CreateWindow");
+        logDisplay(window, language);
         if (!SDL_ClaimWindowForGPUDevice(dev, window)) sdlFail("SDL_ClaimWindowForGPUDevice");
         renderer.init(dev, SDL_GetGPUSwapchainTextureFormat(dev, window), aaSamples());
         SDL_SetWindowRelativeMouseMode(window, true);

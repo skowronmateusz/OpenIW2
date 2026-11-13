@@ -57,6 +57,11 @@ std::string openIw2MenuSource(bool multiplayer) {
         s += note("iw2_note", 62, "\t\tdvartest \"iw2_cheats\"\n\t\thideDvar { \"1\" }\n");
         s += note("iw2_note_keys", 97, "\t\tdvartest \"iw2_cheats\"\n\t\tshowDvar { \"1\" }\n");
     }
+    // "Open log folder" (docs/logging.md "Menu"): a button below the note in both menu sets; its command iw2_openlogs opens the
+    // log folder in Finder (iw2view).
+    s += "\titemDef\n\t{\n\t\tname iw2_openlogs\n\t\ttype 1\n\t\ttext \"@IW2_OPT_OPENLOGS\"\n\t\trect 0 140 200 13\n\t\torigin 50 120\n"
+         "\t\ttextstyle 3\n\t\ttextalignx 0\n\t\ttextaligny 11\n\t\ttextscale .25\n\t\tstyle 1\n\t\tbackcolor 0 0 0 0\n\t\tforecolor .9 .9 .9 1\n"
+         "\t\tvisible 1\n\t\taction { play \"mouse_click\"; exec \"" + std::string(kOpenLogsCommand) + "\"; }\n\t\tmouseEnter { play \"mouse_over\"; }\n\t}\n";
     s += "}\n}\n";
     return s;
 }
@@ -74,6 +79,7 @@ std::vector<std::pair<std::string, std::string>> openIw2Strings(const std::strin
         {"IW2_OPT_KEY_GOD", "God mode", "Tryb Boga"},
         {"IW2_OPT_KEY_NOCLIP", "Noclip (walk / fly)", "Chodzenie / latanie"},
         {"IW2_OPT_SHOWFPS", "Show FPS", "Poka\xBF FPS"},
+        {"IW2_OPT_OPENLOGS", "Open log folder", "Otw\xF3rz folder log\xF3w"},
         {"IW2_OPT_NOTE", "These settings are OpenIW2 additions and differ from the original game.", "Te ustawienia to dodatki OpenIW2 i r\xF3\xBFni\xB9 si\xEA od oryginalnej gry."},
     };
     const bool polish = strcasecmp(language.c_str(), "polish") == 0;

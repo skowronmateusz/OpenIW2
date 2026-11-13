@@ -198,6 +198,15 @@ Start it with:
   the output back. Wrong passwords get `Invalid password.`; replies are limited to two per second per address.
 - Set the cvars of the options in the file too if you like (`set sv_maxclients 20`), but the command-line options win.
 
+## Log file
+
+`iw2server` inside the app (`/Applications/OpenIW2.app/Contents/MacOS/iw2server`) writes everything it prints to
+`~/Library/Logs/OpenIW2/iw2server-<date>-<time>-<port>.log` as well, each line with the time since the start, and
+prints `iw2server: log <path>` after its start line. Output to the terminal, a file or a pipe is unchanged. The
+last 10 server logs are kept. rcon passwords, `*password*` cvar values and chat text are not written to the file. A
+build from source writes a log only with `IW2_LOG=1` (or `--cvar iw2_log=1`); `IW2_LOG=0` turns it off,
+`IW2_LOG_DIR=<folder>` puts it elsewhere. Details: [logging.md](logging.md).
+
 ## Console commands
 
 The server reads commands from the terminal (unless `--no-console`), from `+command` arguments, from `server.cfg`
@@ -259,8 +268,8 @@ gametype, settings, bots and weapon classes, without a player of its own.
   and the mouse wheel scroll the log.
 - Closing the window (or `quit`) stops the server and the app.
 - rcon works once `rcon_password` is set, for example `set rcon_password <password>` in the window.
-- Started from Terminal, the log also goes to the terminal, which takes console commands too. Started from Finder, the
-  log goes to `~/Library/Logs/OpenIW2/openiw2.log`.
+- The log also goes to the app's log file, `~/Library/Logs/OpenIW2/openiw2-<date>-<time>.log` (the file of that start);
+  started from Terminal, it goes to the terminal too, which takes console commands as well.
 
 ## Wi-Fi and AWDL
 

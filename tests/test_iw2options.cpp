@@ -224,6 +224,10 @@ void checkSet(bool multiplayer) {
         // The note: wrapped decoration text inside the page.
         const Item* note = byName(*page, "iw2_note");
         CHECK(note && note->decoration && note->autoWrapped && note->text == "@IW2_OPT_NOTE" && note->rect.x + note->rect.w <= page->rect.w);
+        // Open log folder: a button below the note in both sets that runs iw2_openlogs (docs/logging.md "Menu").
+        const Item* logs = byName(*page, "iw2_openlogs");
+        CHECK(logs && logs->type == 1 && logs->text == "@IW2_OPT_OPENLOGS" && hasCommand(logs->action, "exec", "iw2_openlogs") &&
+              logs->rect.y > note->rect.y + 26 && !logs->decoration);
         // The page covers the left part only: the navigation column of the options menu (x >= 400) lies outside of it, as for the shipped pages.
         CHECK(page->rect.x == 0 && page->rect.w <= 385 && !page->fullScreen && !page->popup);
         for (const auto& it : page->items) CHECK(it->rect.x + it->rect.w <= page->rect.w);
@@ -257,7 +261,7 @@ int main() {
     CHECK(missionSvCheats(true, false) == "1" && missionSvCheats(false, false).empty() && missionSvCheats(true, true).empty());
     // Texts: English and Polish (Windows-1250) for every key the page uses.
     const auto en = openIw2Strings("english"), pl = openIw2Strings("polish");
-    CHECK(en.size() == pl.size() && en.size() == 9);
+    CHECK(en.size() == pl.size() && en.size() == 10);
     for (size_t i = 0; i < en.size() && i < pl.size(); ++i) CHECK(en[i].first == pl[i].first && !en[i].second.empty() && !pl[i].second.empty());
     CHECK(en[2].second == "Red on kill" && pl[2].second != en[2].second);
     {
@@ -268,6 +272,10 @@ int main() {
         CHECK(noteEn.find("OpenIW2") != std::string::npos && noteEn.find("original game") != std::string::npos);
         CHECK(notePl.find("OpenIW2") != std::string::npos && notePl.find("oryginalnej gry") != std::string::npos && notePl.find('\xBF') != std::string::npos);
         CHECK(fpsPl == "Poka\xBF FPS");
+        std::string logsEn, logsPl;
+        for (const auto& [k, t] : en) if (k == "IW2_OPT_OPENLOGS") logsEn = t;
+        for (const auto& [k, t] : pl) if (k == "IW2_OPT_OPENLOGS") logsPl = t;
+        CHECK(logsEn == "Open log folder" && logsPl == "Otw\xF3rz folder log\xF3w");
     }
     {
         // Polish corrections of two shipped strings; no override for other languages; Localization::set replaces an existing text.

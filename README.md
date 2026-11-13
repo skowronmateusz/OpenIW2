@@ -38,9 +38,9 @@ bottom right corner. Your `main` folder is never changed.
 
 | What | Where |
 |---|---|
-| Profiles, saved games | `~/Library/Application Support/OpenIW2/` |
-| Screenshots (`F12`) | `~/Library/Application Support/OpenIW2/screenshots/` |
-| Logs (last 5 starts: `openiw2.log`, `openiw2-1.log` ... `openiw2-4.log`) | `~/Library/Logs/OpenIW2/` |
+| Profiles, saved games | `~/Library/Application Support/OpenIW2/OpenIW2/` |
+| Screenshots (`F12`) | `~/Library/Application Support/OpenIW2/OpenIW2/screenshots/` |
+| Logs (one file per start, `openiw2-<date>-<time>.log`, the last 10 kept; **Options > OpenIW2 > Open log folder**) | `~/Library/Logs/OpenIW2/` |
 
 The language follows the localized files in your `main` folder.
 
@@ -54,6 +54,7 @@ in your profile.
 | Hit marker | Shows a small X at the crosshair when you hit an enemy. Off by default. "Red on kill" turns it red on a kill. |
 | Show FPS | Frame counter in the top right corner. |
 | Cheats | Single player only. Turns on cheats for the mission and shows three key rows: fullbright (default `L`), god mode (`F10`) and noclip (`N`), all rebindable there. Never works in multiplayer. |
+| Open log folder | Opens the folder with the logs in Finder (for a bug report). |
 
 ### Options that differ
 
@@ -108,7 +109,8 @@ iw2server <main-dir> [<map> [<gametype>]] [options] [+command args ...]
 | `+command args` | | console command at start-up, for example `+exec server.cfg` |
 
 All options, maps, weapon classes, `server.cfg`, rcon and the map rotation:
-[docs/dedicated-server.md](docs/dedicated-server.md).
+[docs/dedicated-server.md](docs/dedicated-server.md). Started from the app, the server also writes a log,
+`~/Library/Logs/OpenIW2/iw2server-<date>-<time>-<port>.log`; it prints the path after its start line.
 
 ### Smooth play over Wi-Fi
 
@@ -122,8 +124,13 @@ Open an [issue](../../issues) with:
 
 - what happened and what you expected, the map and roughly where;
 - steps to reproduce, and a screenshot or video if it is visual;
-- the log `~/Library/Logs/OpenIW2/openiw2.log` (in Finder: `Cmd+Shift+G`, paste the folder path);
-- your OpenIW2 version and Mac model.
+- the log of that start: **Options > OpenIW2 > Open log folder** opens `~/Library/Logs/OpenIW2/`; attach the newest
+  `openiw2-<date>-<time>.log` (for a server, `iw2server-...log`), and a `...-trace-...log` next to it if there is one.
+  After a crash, also attach the newest `OpenIW2-*.ips` from `~/Library/Logs/DiagnosticReports/`
+  (in Finder: `Cmd+Shift+G`, paste the folder path).
+
+The first line of the log names your OpenIW2 version, the next ones your macOS version and Mac model. The log does not
+contain your user name, passwords or chat text. Details: [docs/logging.md](docs/logging.md).
 
 ## What this repository contains
 

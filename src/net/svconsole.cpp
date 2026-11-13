@@ -1,5 +1,6 @@
 // Implemented from the spec (docs/spec/dedicated.md).
 #include "net/svconsole.h"
+#include <filesystem>
 
 #include <algorithm>
 #include <cctype>
@@ -8,6 +9,7 @@
 #include <iostream>
 
 #include "net/oob.h"
+#include "util/log.h"
 
 namespace iw2::net {
 
@@ -390,6 +392,10 @@ void ServerConsole::command(const std::vector<std::string>& a, const std::string
         };
         if (!host_.debugDamage(clientNum(a[1]), a[2] == "-1" ? -1 : clientNum(a[2]), std::atoi(a[3].c_str()))) out("debugdamage: no such client\n");
         else out("debugdamage " + a[1] + " " + a[2] + " " + a[3] + "\n");
+    } else if (cmd == "dumptrace") { // openiw2 (docs/logging.md): the trace recorder's last minute to a file in the log folder
+        const std::string f = iw2::log::dumpTrace("command");
+        out(f.empty() ? std::string("dumptrace: the trace recorder is empty\n")
+                      : "trace written to " + std::filesystem::path(f).filename().string() + "\n");
     } else if (cmd == "addtestclient") {
         if (!running) {
             out("Server is not running.\n");

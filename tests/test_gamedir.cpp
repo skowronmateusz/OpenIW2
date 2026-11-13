@@ -1,4 +1,4 @@
-// Game folder validation and app settings/log helpers (src/fs/gamedir.h), on a temp folder of empty files.
+// Game folder validation and app settings helpers (src/fs/gamedir.h), on a temp folder of empty files.
 #include <unistd.h>
 #include "fs/gamedir.h"
 #include "fs/vfs.h"
@@ -118,35 +118,6 @@ int main() {
         const std::string text((std::istreambuf_iterator<char>(f)), {});
         CHECK(text.find("other=1") != std::string::npos);
     }
-    { // log rotation keeps one previous log
-        const stdfs::path log = root / "logs" / "openiw2.log";
-        CHECK(rotateLog(log));
-        CHECK(!stdfs::exists(log));
-        std::ofstream(log) << "first";
-        CHECK(rotateLog(log));
-        std::ofstream(log) << "second";
-        CHECK(rotateLog(log));
-        const auto text = [&](const char* name) {
-            std::ifstream f(root / "logs" / name);
-            std::string t;
-            std::getline(f, t);
-            return t;
-        };
-        CHECK(text("openiw2-1.log") == "second");
-        CHECK(text("openiw2-2.log") == "first");
-        CHECK(!stdfs::exists(log));
-        // five kept: after more starts the oldest goes, and a legacy "<log>.1" is removed
-        std::ofstream(root / "logs" / "openiw2.log.1") << "legacy";
-        for (const char* s : {"3", "4", "5", "6"}) {
-            std::ofstream(log) << s;
-            CHECK(rotateLog(log));
-        }
-        CHECK(text("openiw2-1.log") == "6");
-        CHECK(text("openiw2-4.log") == "3");
-        CHECK(!stdfs::exists(root / "logs" / "openiw2-5.log"));
-        CHECK(!stdfs::exists(root / "logs" / "openiw2.log.1"));
-    }
-
     stdfs::remove_all(root);
     if (failures) { std::cerr << failures << " failure(s)\n"; return 1; }
     std::cout << "gamedir: ok\n";
