@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "util/log.h"
+#include "util/logwatch.h"
 
 extern char** environ;
 
@@ -149,6 +150,11 @@ static void redaction() {
     CHECK(r.apply("sv_privatePassword=abc next") == "sv_privatePassword=*** next");
     CHECK(r.apply("IW2_X=1 g_password: x1") == "IW2_X=1 g_password: ***");
     CHECK(r.apply("Invalid password.") == "Invalid password.");
+    CHECK(r.apply("password            hunter2") == "password            ***"); // dumpuser
+    CHECK(r.apply("name                bob") == "name                bob");
+    CHECK(r.apply("client 3 command: callvote map mp_dawnville") == "client 3 command: callvote (16 chars)");
+    CHECK(r.apply("client 3 command: score") == "client 3 command: score");
+    CHECK(r.apply("cvars: name=bob password=hunter2 rate=25000") == "cvars: name=bob password=*** rate=25000");
     CHECK(r.apply("The server must set 'rcon_password' for clients to use 'rcon'.") == "The server must set 'rcon_password' for clients to use 'rcon'.");
     CHECK(r.apply("set rcon_password \"\"") == "set rcon_password \"\"");
     // chat: the speaker stays, the text is counted
@@ -212,6 +218,8 @@ static void capture(const stdfs::path& root) {
     resetRingForTest(4096);
     trace("net", "NETTRACE frame t=1 late=0");
     Trace("pred") << "predtrace rt=" << 5;
+    tracef("net", "SRVT slot=%d btn=%x\n", 2, 0x1f);
+    Trace("stance") << "stancetrace buttons=0x" << std::hex << 255 << std::dec << " n=" << 10;
     const std::string dump = dumpTrace("command");
     CHECK(!dump.empty() && stdfs::exists(dump));
     CHECK(dumpTrace("disconnect").empty());   // the automatic dumps: at most one per 10 s (the command one counts)
@@ -259,10 +267,11 @@ static void capture(const stdfs::path& root) {
     CHECK(contains(out, "plain line from printf " + homeDir + "/Documents/main\n") && contains(out, "rcon s3cret status\n"));
     CHECK(contains(out, "partial line joined\n") && contains(out, "after stop\n") && !contains(out, "[ev]") && !contains(out, "script error"));
     CHECK(contains(err, "script error: something\n") && !contains(err, "plain line"));
-    CHECK(!contains(out, "NETTRACE") && !contains(out, "OpenIW2 log,"));
+    CHECK(contains(out, "NETTRACE frame t=1 late=0\npredtrace rt=5\n") && !contains(out, "OpenIW2 log,")); // traces still reach the terminal
     // the dump
     const std::string d = readFile(dump);
     CHECK(d.rfind("trace dump (command) of iw2server-", 0) == 0 && contains(d, "] NETTRACE frame t=1 late=0\n") && contains(d, "] predtrace rt=5\n"));
+    CHECK(contains(d, "] SRVT slot=2 btn=1f\n") && contains(d, "] stancetrace buttons=0xff n=10\n"));
     CHECK(stdfs::path(dump).filename().string().find("-trace-") != std::string::npos && parseLogName(stdfs::path(dump).filename().string()));
     CHECK(countOf(ringContents(), "NETTRACE frame") == 1);
 
@@ -273,11 +282,20 @@ static void capture(const stdfs::path& root) {
         const int fd = ::open(f.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644), keep = dup(1);
         dup2(fd, 1);
         ::close(fd);
+        const stdfs::path fe = root / "plain-err.txt";
+        const int efd = ::open(fe.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644), keepErr = dup(2);
+        dup2(efd, 2);
+        ::close(efd);
         trace("frame", "frametrace us=1");
+        Trace("damage", stderr) << "damagetrace t=" << 3; // a trace that printed to stderr keeps doing so
         std::fflush(stdout);
+        std::fflush(stderr);
         dup2(keep, 1);
+        dup2(keepErr, 2);
         ::close(keep);
+        ::close(keepErr);
         CHECK(readFile(f) == "frametrace us=1\n" && contains(ringContents(), "] frametrace us=1\n"));
+        CHECK(readFile(fe) == "damagetrace t=3\n");
     }
 
     // A second capture with a small cap: one note, then only errors, warnings and lifecycle lines, up to the hard cap.
@@ -389,6 +407,96 @@ static void fatalPath(const char* self, const stdfs::path& root) {
     CHECK(contains(readFile(dir / crashTrace), "kctrace last frame"));
 }
 
+// The watchers behind the event lines: one line per transition, nothing while the state holds, a summary per 10 s.
+static void watchers() {
+    PlayerWatch pw;
+    PlayerSample a;
+    a.alive = true;
+    a.weapon = "kar98k_mp";
+    auto lines = pw.update(a, 0);
+    CHECK(lines.size() == 1 && lines[0] == "alive, stand, weapon kar98k_mp");
+    CHECK(pw.update(a, 16).empty() && pw.update(a, 33).empty());
+    PlayerSample b = a;
+    b.stance = 1;
+    lines = pw.update(b, 50);
+    CHECK(lines.size() == 1 && lines[0] == "stance stand -> crouch");
+    CHECK(pw.update(b, 66).empty());
+    b.turret = true;
+    CHECK(pw.update(b, 80) == std::vector<std::string>{"turret use"});
+    b.turret = false;
+    CHECK(pw.update(b, 90) == std::vector<std::string>{"turret drop (left)"});
+    b.reloading = true;
+    CHECK(pw.update(b, 100) == std::vector<std::string>{"reload start kar98k_mp"});
+    CHECK(pw.update(b, 116).empty()); // still reloading: no second line
+    b.reloading = false;
+    b.weapon = "thompson_mp";
+    b.ladder = true;
+    b.mantle = true;
+    lines = pw.update(b, 130);
+    CHECK(lines.size() == 3 && lines[0] == "ladder on" && lines[1] == "mantle start" && lines[2] == "weapon kar98k_mp -> thompson_mp");
+    b.turret = true;
+    pw.update(b, 140);
+    PlayerSample dead = b;
+    dead.alive = false;
+    dead.turret = false;
+    dead.stance = 2;
+    lines = pw.update(dead, 150);
+    CHECK(lines.size() == 2 && lines[0] == "turret drop (died)" && lines[1] == "died"); // no stance line while dead
+    lines = pw.update(a, 160);
+    CHECK(!lines.empty() && lines[0] == "spawned");
+    for (int i = 0; i < 7; ++i) pw.footstep(0);
+    pw.footstep(1);
+    pw.footstep(5); // not a stance: ignored
+    CHECK(pw.update(a, 9000).empty());
+    lines = pw.update(a, 10000);
+    CHECK(lines.size() == 1 && lines[0] == "footsteps in 10 s: stand 7, crouch 1, prone 0");
+    CHECK(pw.update(a, 20000).empty()); // no steps in that window: no summary
+
+    ConnWatch cw;
+    ConnSample c{100, 0, 10, 1000, -40, false, -1};
+    CHECK(cw.update(c, 1000).empty());
+    bool summary = false;
+    for (int t = 1016, k = 0; t <= 11000; t += 16, ++k) {
+        c.snapshots += (k % 2 == 0) ? 1 : 0;
+        if (k % 2 == 0) {
+            ++c.newestMessage;
+            c.newestReceivedMs = (k == 100) ? t + 80 : t; // one gap of more than 50 ms
+        }
+        c.extrapolating = k < 3;
+        c.timeDelta = k == 200 ? -300 : -40; // one jump of the delta (and one back)
+        lines = cw.update(c, t);
+        if (!lines.empty()) {
+            summary = true;
+            CHECK(t == 11000 && lines.size() == 1);
+            CHECK(contains(lines[0], "late 1,") && contains(lines[0], "dropped 0") && contains(lines[0], "resets 2") && contains(lines[0], "extrapolated frames 3/"));
+            CHECK(lines[0].rfind("client snapshots 313 (31.3/s), late 1", 0) == 0);
+        }
+    }
+    CHECK(summary);
+
+    ServerWatch sw;
+    CHECK(sw.update(0).empty());
+    for (int i = 0; i < 200; ++i) sw.frame(i == 50 ? 25 : 2);
+    sw.client(0, 40, 12);
+    sw.client(0, 70, 13);
+    sw.client(2, 20, 30);
+    CHECK(sw.update(5000).empty());
+    lines = sw.update(10000);
+    CHECK(lines.size() == 1 && lines[0] == "server frames 200, late 1 (over 10 ms), latest 25 ms, slot 0 lag 70 ping 13, slot 2 lag 20 ping 30");
+    CHECK(sw.update(15000).empty());
+
+    EntityWatch ew;
+    lines = ew.update({{1, "player"}, {2, "player"}, {64, "corpse"}});
+    CHECK(lines.size() == 1 && lines[0] == "entities now: 1 corpse 2 player");
+    CHECK(ew.update({{1, "player"}, {2, "player"}, {64, "corpse"}}).empty());
+    lines = ew.update({{1, "player"}, {64, "corpse"}, {120, "item"}});
+    CHECK(lines.size() == 2 && lines[0] == "-ent 2 player" && lines[1] == "+ent 120 item");
+    lines = ew.update({{1, "player"}, {64, "item"}, {120, "item"}});
+    CHECK(lines.size() == 2 && lines[0] == "-ent 64 corpse (now item)" && lines[1] == "+ent 64 item");
+    ew.reset();
+    CHECK(ew.update({}) == std::vector<std::string>{"entities now: none"});
+}
+
 int main(int argc, char** argv) {
     if (argc == 3 && std::strcmp(argv[1], "--crash-child") == 0) return crashChild(argv[2]);
     reportFd = dup(2);
@@ -398,6 +506,7 @@ int main(int argc, char** argv) {
     gating();
     names(root);
     redaction();
+    watchers();
     fatalPath(argv[0], root);
     switches(root);
     capture(root);

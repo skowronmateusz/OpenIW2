@@ -4,6 +4,7 @@
 
 #include "game/mpplayers.h"
 #include "game/world.h"
+#include "util/log.h"
 
 #include <cmath>
 
@@ -147,7 +148,7 @@ void World::mpPlayersFrame() {
                 if (static const bool rt = std::getenv("IW2_REMOTE_TRACE") != nullptr; rt) // debug: the event's animations (docs/debug-flags.md)
                     for (const auto& c : it->commands)
                         for (const auto& p : c.parts)
-                            std::printf("remotetrace t=%lld client=%zu animevent=%s body=%d anim=%s\n", (long long)now, ci, name, int(p.body), p.anim.c_str());
+                            log::tracef("remote", "remotetrace t=%lld client=%zu animevent=%s body=%d anim=%s\n", (long long)now, ci, name, int(p.body), p.anim.c_str());
                 bool legs = false;
                 for (const auto& c : it->commands)
                     for (const auto& p : c.parts) legs |= p.body != PaBody::Torso;

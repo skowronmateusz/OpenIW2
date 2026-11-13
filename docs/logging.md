@@ -1,8 +1,8 @@
-# Session logs
+# Logs, event lines and the trace recorder
 
 An openiw2 addition with no counterpart in the original game: the original keeps its console in memory and writes
 `games_mp.log` / `console_mp.log` only on request. This page is the spec of what OpenIW2 writes for bug reports. The
-code is `src/util/log.{h,cpp}`; tests are `tests/test_log.cpp` and `tests/iw2server_log.sh`.
+code is `src/util/log.{h,cpp}` and the event watchers `src/util/logwatch.h`; tests are `tests/test_log.cpp` and `tests/iw2server_log.sh`.
 
 ## When a log is written
 
@@ -30,8 +30,7 @@ tree; the ctest binaries are never in an app bundle, so without `IW2_LOG=1` they
 - Server: `iw2server-YYYYMMDD-HHMMSS-<port>.log`. The port is known only once the socket is bound (`--port 0`,
   `+set net_port`), so the file is opened as `iw2server-YYYYMMDD-HHMMSS.log` and renamed then; the server prints
   `iw2server: log <path>` after its start line.
-- Trace dumps (console command `dumptrace`, a fatal signal; the recorder itself is not used yet):
-  `<session name>-trace-HHMMSS.log`, after a fatal signal `<session name>-trace-crash.log`.
+- Trace dumps (below): `<session name>-trace-HHMMSS.log`, after a fatal signal `<session name>-trace-crash.log`.
 - Two starts in the same second: the second name gets `-2` (up to `-9`) before `.log`.
 - At each start, before the new file is opened: the newest 10 sessions of the same kind (`openiw2` or `iw2server`)
   are kept with their trace files, older ones are deleted; then, while all such files together exceed 100 MB, the
@@ -39,8 +38,8 @@ tree; the ctest binaries are never in an app bundle, so without `IW2_LOG=1` they
   folder and never the running session. The names of earlier versions (`openiw2.log`, `openiw2-1.log` ...
   `openiw2-9.log`, `openiw2.log.1`) are deleted.
 - One file grows to at most 20 MB. Then one line `log capped at 20 MB: from here only errors, warnings and lifecycle
-  lines` is written and only lines from standard error and lines containing `error`, `warning`, `fatal` or `failed`
-  (any case) are kept, up to 24 MB.
+  lines` is written and only lines from standard error, lines containing `error`, `warning`, `fatal` or `failed`
+  (any case) and the `life` / `net` event lines are kept, up to 24 MB.
 
 ## Capture
 
@@ -109,6 +108,57 @@ async-signal-safe work: give the reader up to 300 ms to empty the pipes, write `
 copy whatever is still in the pipes, write the trace recorder to the crash trace file when it holds anything, restore
 descriptors 1 and 2, and raise the signal again so the system writes its crash report. `std::terminate` (an uncaught
 exception) prints `fatal: uncaught exception: <what>` to standard error and aborts into the same path.
+
+## Event lines
+
+With the log on, the engine writes short state-change lines, `[ev] <category> <text>`, into the log file only (not to
+the terminal; with `IW2_LOG_EVENTS=1` and no log file they go to standard output). `IW2_LOG_EVENTS=0` or
+`--cvar iw2_logEvents=0` turns them off. Each category has a budget of 40 lines per 10 s; lines over it are counted
+and reported once, at the first line of the next window, as `[ev] <category> <N> lines suppressed`. Per frame the
+engine only compares a few values with the previous frame (`src/util/logwatch.h`), and only while the lines are on.
+
+| Category | Lines |
+|---|---|
+| `life` | server (dedicated or listen): `level <map> <gametype>`, `map_restart <n>, <map> <gametype>` (also the next sd round), `exitlevel (the level ends)`, `intermission` (once per level); network client: `gamestate <n>, map <map>`, `map_restart <n> of <map>`; the drawn killcam: `killcam start, following client <n>, weapon <name>`, `killcam end` |
+| `net` | server: `connect slot <n> "<name>", mp client <n>`, `drop slot <n>: <reason>` (time-outs, kicks, disconnects); network client: `connected as client <n>, map <map>`, `connect failed: <error>`, `disconnected: <error> [(by the server)]` |
+| `cfg` | `exec <file>[ (not found)]: binds <before> -> <after>` for every cfg file a menu or command runs; `bind` / `unbind` / `unbindall` outside a cfg file when the count changes or a key is unbound; `profile config written, <n> binds`. At each profile load or switch the header line `cvars:` (see Header). |
+| `player` | the own player: one line of its state at the level start, then `spawned`, `died`, `stance <a> -> <b>`, `ladder on` / `off`, `mantle start` / `end`, `turret use`, `turret drop (left \| died)`, `weapon <a> -> <b>`, `reload start <weapon>`; every 10 s with footsteps: `footsteps in 10 s: stand <n>, crouch <n>, prone <n>` |
+| `ent` | network client, per snapshot: `entities now: <count> <kind> ...` after each gamestate and after a killcam or spectator view (while one is shown the watch pauses: its snapshots carry another player's view), then `+ent <number> <kind>` / `-ent <number> <kind>` for kinds `player`, `corpse`, `item` (dropped weapons) and `general` (script models, script brush models). An entity leaving the snapshot also counts as `-ent` |
+| `killcam` | server: `client <n> follows entity <e>` / `client <n> ends` (the script's killcamentity); client, during the drawn killcam: `weapon <a> -> <b>`, `fire, <n> shot(s), frame <f>, clip <c>` of the followed player |
+| `conn` | every 10 s on a network client: `client snapshots <n> (<rate>/s), late <n>, dropped <n>, ping ?, clock delta <min>..<max>, resets <n>, extrapolated frames <n>/<frames>` (late: more than 50 ms after the previous snapshot; a reset: the time delta jumped by more than 100 ms in one frame); on a server: `server frames <n>, late <n> (over 10 ms), latest <ms> ms, slot <s> lag <largest command lag> ping <ping>, ...` |
+
+## Trace recorder
+
+The high-volume traces of docs/debug-flags.md go through `iw2::log::trace` / `tracef` / `Trace`: `IW2_FRAME_TRACE`
+(`frametrace`), `IW2_PRED_TRACE` (`predtrace`), `IW2_NET_TRACE` (`nettrace` on the client; `NETTRACE` frame, snap,
+shot, stale, hold / release, clamp and step lines on a server), `IW2_SOAK_SHOTTRACE` (`SRVT`), `IW2_KILLCAM_TRACE`
+(`kctrace`), `IW2_SOUND_LOG` (`[snd]`, `[snd-pos]`), `IW2_BOB_TRACE`, `IW2_STANCE_TRACE`, `IW2_DAMAGE_TRACE`,
+`IW2_HINT_LOG`, `IW2_WEAPON_TRACE`, `IW2_VM_TRACE` and `IW2_REMOTE_TRACE`. The rare `NETTRACE reset` and `NETTRACE
+turret` lines stay ordinary output.
+
+- Without a log file a trace line goes to standard output (or standard error) as before, and into the ring.
+- With the log file on it does not go into the file: it goes into the ring (8 MB in memory, each line with the
+  `[mm:ss.mmm]` time), and unchanged to the terminal, file or pipe the program was started with (not `/dev/null`), so
+  a Terminal start of the app or of iw2server with `IW2_NET_TRACE=2 ... > file` still gets its lines. The log file
+  stays small.
+- The ring's last 60 s are written to `<session name>-trace-HHMMSS.log` in the log folder (redacted like the log;
+  the log gets the line `trace dump (<reason>): <path>`) on:
+  - a network client's disconnect with an error (`disconnect`), a script runtime error (`script error`);
+  - the console command `dumptrace` (`command`; client: a key bound to `dumptrace` or a menu `exec`; server: the
+    console or rcon, which answers with the file name);
+  - the end of the program (`exit`, also `quit` and `std::exit`), when the ring holds any line.
+  An automatic dump comes at most once per 10 s and 20 times per session; `dumptrace` always writes.
+- A fatal signal writes the whole ring to `<session name>-trace-crash.log` (no locks, no allocation).
+
+### Switching traces on from Finder
+
+With the log on, the app reads, before any flag is read, a `trace=` line of `settings.cfg` in its preference folder
+(`~/Library/Application Support/OpenIW2/OpenIW2/settings.cfg`), and both iw2view and iw2server read `traces.txt` in the
+log folder. They hold `IW2_<NAME>[=<value>]` entries separated by spaces, commas, semicolons or new lines (`#` starts a
+comment to the end of the line), for example `trace=IW2_NET_TRACE=2 IW2_PRED_TRACE=1`. Only the trace variables
+listed above and `IW2_START_TRACE` / `IW2_RIDE_TRACE` (few lines, they go into the log itself) are accepted
+(`kTraceSwitches`, src/util/log.cpp); others are ignored with a `traces:` note. They are set with `setenv` (a
+value already in the environment wins) and listed in the header as `traces:` lines.
 
 ## Menu
 

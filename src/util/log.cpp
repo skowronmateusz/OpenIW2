@@ -24,6 +24,7 @@
 #include <atomic>
 #include <cctype>
 #include <cerrno>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -779,7 +780,9 @@ void maskPasswords(std::string& s) {
         from = e;
         const std::string_view name(s.data() + b, e - b);
         const bool info = b > 0 && s[b - 1] == '\\' && e < s.size() && s[e] == '\\';
-        if (name.find('_') == std::string_view::npos && !info) continue;
+        const bool assigned = e < s.size() && s[e] == '='; // password=x (a cvar list)
+        const bool column = e + 1 < s.size() && s[e] == ' ' && s[e + 1] == ' ' && b == 0; // dumpuser: "password            x"
+        if (name.find('_') == std::string_view::npos && !info && !assigned && !column) continue;
         size_t p = e;
         if (info) {
             maskToken(s, p + 1);
@@ -806,6 +809,15 @@ std::string Redactor::apply(std::string_view line) const {
         const size_t c = s.find(": ", 7);
         if (c == std::string::npos) return "[chat] (" + std::to_string(s.size() - 7) + " chars)";
         return s.substr(0, c) + ": (" + std::to_string(s.size() - c - 2) + " chars)";
+    }
+    // A client command the server does not know, "client <n> command: <text>": the command word stays.
+    if (s.rfind("client ", 0) == 0) {
+        const size_t p = s.find(" command: ");
+        if (p != std::string::npos && p > 7 && std::all_of(s.begin() + 7, s.begin() + long(p), isDigit)) {
+            const size_t w = p + 10, sp = s.find(' ', w);
+            if (sp != std::string::npos) return s.substr(0, sp) + " (" + std::to_string(s.size() - sp - 1) + " chars)";
+            return s;
+        }
     }
     if (s.size() >= 3 && (s[0] == 'h' || s[0] == 'i') && s[1] == ' ' && s[2] == '"') {
         size_t n = s.size() - 3;
@@ -982,7 +994,7 @@ void drain() {
 void stopCapture() {
     Capture* c = gCapture.load();
     if (!c || gStopped.exchange(true)) return;
-    if (gTracesOn) {
+    if (ring().head.load() > 0) { // traces were on: their last minute goes to a trace file
         gStopped = false; // the exit dump still names the session
         dumpTrace("exit");
         gStopped = true;
@@ -1038,21 +1050,49 @@ void event(std::string_view category, std::string_view text) {
 }
 
 // ---- Trace recorder ----
-void trace(std::string_view category, std::string_view line) {
+void trace(std::string_view category, std::string_view line, std::FILE* outFile) {
     (void)category;
     std::string s = elapsedPrefix(monoMs() - (gCapture.load() ? gCapture.load()->startMs : gProcessStartMs));
     s += ' ';
     s.append(line);
     if (s.empty() || s.back() != '\n') s += '\n';
     ringAppend(s);
+    std::string_view out = line;
     if (!captureActive()) {
-        std::string_view out = line;
-        std::fwrite(out.data(), 1, out.size(), stdout);
-        if (out.empty() || out.back() != '\n') std::fputc('\n', stdout);
+        std::fwrite(out.data(), 1, out.size(), outFile);
+        if (out.empty() || out.back() != '\n') std::fputc('\n', outFile);
+        return;
+    }
+    // With the log file on: not into the file, but still to the terminal, file or pipe the program was started with.
+    Capture* c = gCapture.load();
+    const int i = outFile == stderr ? 1 : 0;
+    if (c && c->tee[i]) {
+        std::string t(out);
+        if (t.empty() || t.back() != '\n') t += '\n';
+        writeAll(c->origFd[i], t.data(), t.size());
     }
 }
 
-Trace::~Trace() { trace(category_, out_.str()); }
+void tracef(const char* category, const char* format, ...) {
+    char buf[2048];
+    va_list ap;
+    va_start(ap, format);
+    const int n = std::vsnprintf(buf, sizeof buf, format, ap);
+    va_end(ap);
+    if (n < 0) return;
+    if (size_t(n) < sizeof buf) {
+        trace(category, std::string_view(buf, size_t(n)));
+        return;
+    }
+    std::string big(size_t(n) + 1, '\0');
+    va_start(ap, format);
+    std::vsnprintf(big.data(), big.size(), format, ap);
+    va_end(ap);
+    big.pop_back();
+    trace(category, big);
+}
+
+Trace::~Trace() { trace(category_, text_.str(), out_); }
 
 std::string dumpTrace(std::string_view reason) {
     const bool always = reason == "command";

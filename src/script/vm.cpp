@@ -1,6 +1,7 @@
 #include "script/vm.h"
 
 #include "script/parser.h"
+#include "util/log.h"
 
 #include <algorithm>
 #include <chrono>
@@ -720,6 +721,7 @@ void VM::fail(Thread& t, const std::string& msg) {
     errors_.push_back(where + msg);
     print("script runtime error: " + where + msg);
     if (std::getenv("IW2_SCRIPT_BACKTRACE")) print("  backtrace:" + backtrace(t)); // debug
+    log::dumpTrace("script error"); // the trace recorder, when it holds anything (docs/logging.md "Trace recorder"; rate limited)
     t.state = ThreadState::Done;
 }
 

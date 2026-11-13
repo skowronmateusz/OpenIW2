@@ -1,6 +1,7 @@
 #include <sstream>
 #include "audio/sound.h"
 #include "audio/decode.h"
+#include "util/log.h"
 
 #include <algorithm>
 #include <cctype>
@@ -308,7 +309,7 @@ int Mixer::allocSlot(Voice& v) {
 int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* duration, PlayOptions opt) {
     lastSubtitle_.clear();
     const SoundAlias* a = aliases_.pick(name, rng_);
-    if (logPlays) std::cout << "[snd] " << name << (a ? "" : " (unknown)") << (origin ? "" : " 2d") << "\n";
+    if (logPlays) log::Trace("sound") << "[snd] " << name << (a ? "" : " (unknown)") << (origin ? "" : " 2d") << "\n";
     if (!a) return 0;
     // The secondary alias starts first (0x442401..0x44243e) and may itself have none.
     const std::string sub = a->subtitle;
@@ -320,7 +321,7 @@ int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* dura
         std::lock_guard lock(mutex_);
         const float dx = (*origin)[0] - listener_[0], dy = (*origin)[1] - listener_[1], dz = (*origin)[2] - listener_[2];
         if (distMax > 0 && dx * dx + dy * dy + dz * dz > distMax * distMax) {
-            if (logPlays) std::cout << "[snd] " << name << " (culled)\n";
+            if (logPlays) log::Trace("sound") << "[snd] " << name << " (culled)\n";
             return 0; // 0x4424e6: culled when farther than dist_max
         }
     }
@@ -371,7 +372,7 @@ int Mixer::play(const std::string& name, std::optional<Vec3> origin, float* dura
             const Vec3& o = *v.origin;
             const float dx = o[0] - listener_[0], dy = o[1] - listener_[1], dz = o[2] - listener_[2];
             const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-            std::printf("[snd-pos] %s at %.0f,%.0f,%.0f listener %.0f,%.0f,%.0f dist %.0f gain %.3f (dist_min %.0f dist_max %.0f)\n", name.c_str(),
+            log::tracef("sound", "[snd-pos] %s at %.0f,%.0f,%.0f listener %.0f,%.0f,%.0f dist %.0f gain %.3f (dist_min %.0f dist_max %.0f)\n", name.c_str(),
                         double(o[0]), double(o[1]), double(o[2]), double(listener_[0]), double(listener_[1]), double(listener_[2]), double(dist),
                         double(falloff(v, dist)), double(v.distMin), double(v.distMax));
         }

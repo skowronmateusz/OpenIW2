@@ -11,6 +11,8 @@
 #include <cstdlib>
 #include <stdexcept>
 
+#include "util/log.h"
+
 namespace iw2::game {
 
 using script::Builtin;
@@ -50,6 +52,9 @@ void World::mpStart(const std::string& gametype) {
     if (!mp_) throw std::runtime_error("mpStart: not a multiplayer world");
     mp_->gametype = lowerStr(gametype);
     mp_->localClient = mpDedicated_ ? -1 : 0; // a dedicated server shows no client
+    // Event lines (docs/logging.md): a level's start, or its fast restart (map_restart, the next sd round).
+    if (mp_->restarts == 0) log::Event("life") << "level " << mapName_ << " " << mp_->gametype;
+    else log::Event("life") << "map_restart " << mp_->restarts << ", " << mapName_ << " " << mp_->gametype;
     if (cvars.find("sv_maxclients") == cvars.end() || cvars["sv_maxclients"].empty())
         cvars["sv_maxclients"] = std::to_string(kMaxClientsDefault);
     const int maxClients = std::clamp(std::atoi(cvars["sv_maxclients"].c_str()), 1, 64);
@@ -374,11 +379,27 @@ void World::mpDebugDamage(int victim, int attacker, int amount, const std::strin
 void World::registerMpBuiltins() {
     // sessionteam / sessionstate are validated client fields (setters 0x80f7db6 / 0x80f7efc; error texts 0x8157ae0 /
     // 0x8157b40). Only on client entities.
-    vm_.fieldStoreHook = [this](const script::ObjectPtr& o, const std::string& field, const Value& v) {
-        if (field != "sessionteam" && field != "sessionstate") return;
+    vm_.fieldStoreHook = [this, intermissionLogged = std::make_shared<bool>(false), killcamOf = std::make_shared<std::map<int, int>>()](
+                             const script::ObjectPtr& o, const std::string& field, const Value& v) {
+        if (field != "sessionteam" && field != "sessionstate" && field != "killcamentity") return;
         const auto it = byObject_.find(o.get());
         if (it == byObject_.end() || !it->second->isPlayer) return;
+        if (field == "killcamentity") { // event lines (docs/logging.md): a client's killcam starts / ends (changes only: spawns store -1)
+            if (log::eventsEnabled() && v.isInt()) {
+                const int client = mpClientOf(*it->second);
+                const auto [k, fresh] = killcamOf->try_emplace(client, -1);
+                if (k->second != v.asInt())
+                    log::Event("killcam") << "client " << client << (v.asInt() >= 0 ? " follows entity " + std::to_string(v.asInt()) : std::string(" ends"));
+                k->second = v.asInt();
+                (void)fresh;
+            }
+            return;
+        }
         const std::string s = v.toString();
+        if (field == "sessionstate" && s == "intermission" && !*intermissionLogged) {
+            *intermissionLogged = true;
+            log::event("life", "intermission");
+        }
         if (field == "sessionteam" && s != "allies" && s != "axis" && s != "none" && s != "spectator")
             throw std::runtime_error("'" + s + "' is an illegal sessionteam string. Must be allies, axis, none, or spectator.");
         if (field == "sessionstate" && s != "playing" && s != "dead" && s != "spectator" && s != "intermission")
@@ -619,6 +640,7 @@ void World::registerMpBuiltins() {
     vm_.registerBuiltin("issplitscreen", [](CallContext&) { return Value(int32_t(0)); });
     // exitLevel (0x8116ab4): one-shot like map_restart (state 2: a later map_restart is "exitlevel already called").
     vm_.registerBuiltin("exitlevel", [this](CallContext&) {
+        if (!mp_->exitRequested) log::event("life", "exitlevel (the level ends)");
         if (mp_->restartState == 0) mp_->restartState = 2;
         mp_->exitRequested = true;
         return Value();

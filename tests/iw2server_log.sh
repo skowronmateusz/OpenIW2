@@ -1,8 +1,8 @@
 #!/bin/sh
 # The dedicated server's session log (docs/logging.md), end to end: iw2server with IW2_LOG=1 and IW2_LOG_DIR in a temp
 # folder, a bot, a protocol client and rcon with a password. Checks the pass-through on stdout (the start line, the
-# log path), the file name with the bound port, the header, the line prefix, the rcon password redaction and that
-# nothing is written without IW2_LOG.
+# log path), the file name with the bound port, the header, the line prefix, the rcon password redaction, the event
+# lines (once per transition, a bounded rate, off with iw2_logEvents=0) and that nothing is written without IW2_LOG.
 #   iw2server_log.sh <iw2server> <iw2netclient> <iw2netinfo> <main-dir>
 set -u
 SERVER=$1 CLIENT=$2 INFO=$3 MAIN=$4
@@ -31,13 +31,13 @@ LOG=$(ls "$LOGS"/iw2server-*-"$PORT".log 2>/dev/null | head -n 1)
 [ -n "$LOG" ] || fail "no iw2server-<time>-$PORT.log in the log folder: $(ls "$LOGS")"
 grep -q "^iw2server: log .*iw2server-[0-9]\{8\}-[0-9]\{6\}-$PORT.log$" "$TMP/server.out" || fail "the log path line"
 
-"$CLIENT" 127.0.0.1:"$PORT" 6 -f >"$TMP/client.out" 2>&1 || fail "client: $(tail -5 "$TMP/client.out")"
+"$CLIENT" 127.0.0.1:"$PORT" 6 -f -c "say zebramarker42 hello" >"$TMP/client.out" 2>&1 || fail "client: $(tail -5 "$TMP/client.out")"
 rcon_status() { "$INFO" rcon 127.0.0.1:"$PORT" s3cretpw status >"$TMP/r1" 2>&1 && grep -q "map: mp_toujane" "$TMP/r1"; }
 retry 30 rcon_status || fail "rcon status"
 wrong_pw() { sleep 0.6; "$INFO" rcon 127.0.0.1:"$PORT" wrongpw2 status >"$TMP/r2" 2>&1 && grep -q "Invalid password." "$TMP/r2"; }
 retry 30 wrong_pw || fail "wrong rcon password"
 echo "map_restart" >&3
-sleep 3
+sleep 6
 echo "quit" >&3
 exec 3>&-
 wait $SPID || fail "server exit code"
@@ -56,9 +56,41 @@ grep -q "s3cretpw\|wrongpw2" "$LOG" && fail "an rcon password in the log"
 grep -q '\] rcon "\*\*\*" status$' "$LOG" || fail "redacted rcon line"
 grep -q '\] Bad rcon from 127.0.0.1:[0-9]*:$' "$LOG" || fail "the bad rcon line"
 [ -n "${HOME:-}" ] && grep -q "$HOME/" "$LOG" && fail "the home folder in the log"
+grep -q "zebramarker42" "$LOG" && fail "chat text in the log"
+# event lines: lifecycle once per transition (the console map_restart loads the map again)
+[ "$(grep -c '\] \[ev\] life level mp_toujane dm$' "$LOG")" = 2 ] || fail "level load lines (start and map_restart)"
+grep -q '\] \[ev\] net connect slot [0-9]* "openiw2probe", mp client [0-9]*$' "$LOG" || fail "connect line"
+[ "$(grep -c '\] \[ev\] net connect slot' "$LOG")" -le 2 ] || fail "more connect lines than connects"
+grep -q '\] \[ev\] net drop slot [0-9]*: EXE_' "$LOG" || fail "drop line with its reason"
+grep -q '\] \[ev\] conn server frames [0-9]*, late [0-9]* (over 10 ms)' "$LOG" || fail "server summary"
+grep '\] \[ev\] conn server' "$LOG" | sed 's/^\[\([0-9]*\):\([0-9]*\)\.\([0-9]*\)\].*/\1 \2 \3/' |
+  awk '{ t = $1 * 60000 + $2 * 1000 + $3; if (NR > 1 && t - p < 9990) bad = 1; p = t } END { exit bad }' ||
+  fail "server summaries closer than 10 s"
+# a bounded rate: the whole run stays far below the budget of 40 lines per category and 10 s
+EV=$(grep -c '\] \[ev\] ' "$LOG")
+[ "$EV" -lt 200 ] || fail "$EV event lines"
+grep -q 'lines suppressed' "$LOG" && fail "an event budget was exceeded"
+
 # without IW2_LOG a development build writes nothing
 N=$(ls "$LOGS" | wc -l)
-IW2_LOG_DIR="$LOGS" "$SERVER" "$MAIN" mp_toujane dm --port 0 --seconds 1 >"$TMP/plain.out" 2>&1 </dev/null
+env -u IW2_LOG IW2_LOG_DIR="$LOGS" "$SERVER" "$MAIN" mp_toujane dm --port 0 --seconds 1 >"$TMP/plain.out" 2>&1 </dev/null
 [ "$(ls "$LOGS" | wc -l)" = "$N" ] || fail "a log without IW2_LOG"
 grep -q "^iw2server: log " "$TMP/plain.out" && fail "a log path line without IW2_LOG"
-echo "iw2server log: ok ($(wc -c <"$LOG" | tr -d ' ') bytes)"
+# iw2_logEvents=0: a log without event lines; traces.txt in the log folder switches a trace on: its lines go to the
+# trace recorder (not the log, not stdout) and are written to a trace file at the exit
+mkdir -p "$TMP/logs2"
+printf 'IW2_NET_TRACE=2, IW2_BOGUS=1 # a comment\n' >"$TMP/logs2/traces.txt"
+IW2_LOG=1 IW2_LOG_DIR="$TMP/logs2" "$SERVER" "$MAIN" mp_toujane dm --port 0 --seconds 2 --cvar iw2_logEvents=0 >"$TMP/plain2.out" 2>&1 </dev/null
+L2=$(ls "$TMP"/logs2/iw2server-*.log 2>/dev/null | grep -v -- -trace- | head -n 1)
+[ -n "$L2" ] || fail "no log with iw2_logEvents=0"
+grep -q "\[ev\]" "$L2" && fail "event lines with iw2_logEvents=0"
+grep -q "^traces: IW2_NET_TRACE=2$" "$L2" || fail "the trace switch in the header"
+grep -q "^traces: ignored IW2_BOGUS=1 (not a trace switch)$" "$L2" || fail "the ignored switch in the header"
+grep -q "NETTRACE frame" "$L2" && fail "trace lines in the log file"
+grep -q "^NETTRACE frame t=" "$TMP/plain2.out" || fail "trace lines no longer on stdout"
+T2=$(ls "$TMP"/logs2/iw2server-*-trace-*.log 2>/dev/null | head -n 1)
+[ -n "$T2" ] || fail "no trace file at the exit"
+head -n 1 "$T2" | grep -q "^trace dump (exit) of iw2server-" || fail "trace file header"
+grep -q "^\[[0-9]*:[0-9][0-9]\.[0-9][0-9][0-9]\] NETTRACE frame t=" "$T2" || fail "trace lines in the trace file"
+grep -q "\] trace dump (exit): " "$L2" || fail "the dump's line in the log"
+echo "iw2server log: ok ($EV event lines, $(wc -c <"$LOG" | tr -d ' ') bytes)"

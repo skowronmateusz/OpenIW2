@@ -20,6 +20,7 @@
 #include "net/oob.h"
 #include "net/playerstate.h"
 #include "netgame/netmove.h"
+#include "util/log.h"
 
 namespace iw2::netgame {
 
@@ -569,6 +570,7 @@ bool WorldGame::clientConnect(int slot, const std::string& userinfo) {
     mp_[slot] = n;
     moves_[slot] = {};
     std::printf("client %d connected as \"%s\" (mp client %d)\n", slot, name.c_str(), n);
+    log::Event("net") << "connect slot " << slot << " \"" << name << "\", mp client " << n; // event lines (docs/logging.md)
     return true;
 }
 
@@ -610,7 +612,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     cmd.serverTime = std::clamp(cmd.serverTime, serverTime() - 1000, serverTime() + 200);
     static const bool netTrace = std::getenv("IW2_NET_TRACE") != nullptr;
     if (netTrace && cmd.serverTime != sent.serverTime)
-        std::printf("NETTRACE clamp slot=%d sent=%d level=%d\n", slot, sent.serverTime, serverTime());
+        log::tracef("net", "NETTRACE clamp slot=%d sent=%d level=%d\n", slot, sent.serverTime, serverTime());
     auto it = mp_.find(slot);
     if (it == mp_.end()) return;
     Move& m = moves_[slot];
@@ -620,12 +622,12 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     if (prevTime != 0 && cmd.serverTime <= prevTime) {
         m.lastTime = cmd.serverTime;
         if (cmd.serverTime < prevTime) m.track.restart(); // his command times start again from an older one
-        if (std::getenv("IW2_SOAK_SHOTTRACE")) std::printf("SRVT slot=%d cmd=%d sent=%d prev=%d skipped\n", slot, cmd.serverTime, sent.serverTime, prevTime);
+        if (std::getenv("IW2_SOAK_SHOTTRACE")) log::tracef("net", "SRVT slot=%d cmd=%d sent=%d prev=%d skipped\n", slot, cmd.serverTime, sent.serverTime, prevTime);
         return;
     }
     m.lastTime = cmd.serverTime;
     if (netTrace && prevTime && (cmd.serverTime - prevTime >= 100 || cmd.serverTime <= prevTime))
-        std::printf("NETTRACE step slot=%d %d ms\n", slot, cmd.serverTime - prevTime);
+        log::tracef("net", "NETTRACE step slot=%d %d ms\n", slot, cmd.serverTime - prevTime);
     const int spawns = w_->mpState().clients[size_t(it->second)].spawnCount;
     // Debug: IW2_MP_PLACE=[name=]x,y,z[;...] puts a network client (every one, or the one of that name) at that point
     // once per spawn (docs/debug-flags.md).
@@ -789,7 +791,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
             m.entityRing.push(r.events[size_t(s & 3)], r.parms[size_t(s & 3)]);
         m.combatEventsDone = r.sequence;
     }
-    if (std::getenv("IW2_SOAK_SHOTTRACE")) std::printf("SRVT slot=%d cmd=%d sent=%d prev=%d btn=%x state=%d clip=%d tm=%.4f\n", slot, cmd.serverTime, sent.serverTime, prevTime, unsigned(cmd.buttons), m.combat->weapon().stateNumber(), m.combat->weapon().clip(), double(m.combat->weapon().timer()));
+    if (std::getenv("IW2_SOAK_SHOTTRACE")) log::tracef("net", "SRVT slot=%d cmd=%d sent=%d prev=%d btn=%x state=%d clip=%d tm=%.4f\n", slot, cmd.serverTime, sent.serverTime, prevTime, unsigned(cmd.buttons), m.combat->weapon().stateNumber(), m.combat->weapon().clip(), double(m.combat->weapon().timer()));
     e = w_->mpClientEntity(it->second);
     if (!e) return;
     m.lastOrigin = {m.ps.origin[0], m.ps.origin[1], m.ps.origin[2]};

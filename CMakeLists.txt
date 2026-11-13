@@ -88,6 +88,7 @@ add_library(iw2_script
   src/script/stateio.cpp
   src/script/builtins_core.cpp)
 target_include_directories(iw2_script PUBLIC src)
+target_link_libraries(iw2_script PUBLIC iw2_log)
 
 add_executable(iw2script tools/iw2script/main.cpp)
 target_link_libraries(iw2script PRIVATE iw2_fs iw2_script iw2_assets)
@@ -915,6 +916,10 @@ target_link_libraries(iw2_netgame PUBLIC iw2_game iw2_net)
 add_library(iw2_dedicated src/netgame/dedicated.cpp src/netgame/consoleview.cpp src/netgame/serverargs.cpp)
 target_link_libraries(iw2_dedicated PUBLIC iw2_netgame iw2_audio Threads::Threads)
 
+# The session log's capture with the dedicated console window's StdoutTee inside it (docs/logging.md "Capture").
+add_executable(test_logtee tests/test_logtee.cpp)
+target_link_libraries(test_logtee PRIVATE iw2_dedicated)
+add_test(NAME logtee COMMAND test_logtee)
 add_executable(iw2netinfo tools/iw2netinfo/main.cpp)
 target_link_libraries(iw2netinfo PRIVATE iw2_net)
 add_executable(iw2netclient tools/iw2netclient/main.cpp)
@@ -1222,3 +1227,10 @@ if(IW2_TEST_MAIN)
   add_test(NAME mpdedicatedghost_e2e COMMAND test_mpdedicatedghost)
   set_tests_properties(mpdedicatedghost_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}" TIMEOUT 300)
 endif()
+
+# No test writes a session log into the real log folder (docs/logging.md): every test runs with IW2_LOG=0 and a log
+# folder in the build tree (tests/iw2server_log.sh turns the log on for its own temp folder).
+get_property(IW2_ALL_TESTS DIRECTORY PROPERTY TESTS)
+foreach(t IN LISTS IW2_ALL_TESTS)
+  set_property(TEST ${t} APPEND PROPERTY ENVIRONMENT "IW2_LOG=0" "IW2_LOG_DIR=${CMAKE_BINARY_DIR}/test-logs")
+endforeach()

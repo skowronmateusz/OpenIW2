@@ -2,6 +2,7 @@
 // Session logs, event lines and the trace recorder (docs/logging.md). An openiw2 addition: POSIX only, no SDL, used by
 // iw2view and iw2server (which stays SDL-free and builds on Linux).
 #include <cstdint>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <optional>
@@ -101,6 +102,7 @@ public:
     explicit Event(const char* category) : category_(category) {}
     ~Event() { event(category_, out_.str()); }
     template <class T> Event& operator<<(const T& v) { out_ << v; return *this; }
+    Event& operator<<(std::ios_base& (*manip)(std::ios_base&)) { out_ << manip; return *this; }
 
 private:
     const char* category_;
@@ -108,17 +110,24 @@ private:
 };
 
 // ---- Trace recorder (docs/logging.md "Trace recorder") ----
-// One trace line (no newline needed): to the ring, and to stdout unless the log file is on.
-void trace(std::string_view category, std::string_view line);
+// One trace line (no newline needed): to the ring and to `out` (stdout or stderr, as the trace printed before). With the
+// log file on it goes to the descriptor the program was started with (not /dev/null) instead, never into the file.
+void trace(std::string_view category, std::string_view line, std::FILE* out = stdout);
+// printf-style trace line.
+void tracef(const char* category, const char* format, ...) __attribute__((format(printf, 2, 3)));
+// Collects a trace line with <<, written at the end of the statement.
 class Trace {
 public:
-    explicit Trace(const char* category) : category_(category) {}
+    explicit Trace(const char* category, std::FILE* out = stdout) : category_(category), out_(out) {}
     ~Trace();
-    template <class T> Trace& operator<<(const T& v) { out_ << v; return *this; }
+    template <class T> Trace& operator<<(const T& v) { text_ << v; return *this; }
+    Trace& operator<<(std::ios_base& (*manip)(std::ios_base&)) { text_ << manip; return *this; } // std::hex, std::dec
+    std::ostringstream& stream() { return text_; }
 
 private:
     const char* category_;
-    std::ostringstream out_;
+    std::FILE* out_;
+    std::ostringstream text_;
 };
 // Writes the ring's last 60 s to <session>-trace-HHMMSS.log. reason: "command" (never rate limited), "disconnect",
 // "script error", "exit". Returns the file written, "" when nothing was (empty ring, rate limit).
@@ -128,7 +137,7 @@ std::string dumpTrace(std::string_view reason);
 std::vector<std::string> applyTraceSwitches(std::string_view text, int* applied = nullptr);
 // The trace= line of a settings.cfg ("" when none).
 std::string traceLineOf(const std::filesystem::path& settingsFile);
-bool tracesSwitchedOn(); // applyTraceSwitches set at least one (the exit dump)
+bool tracesSwitchedOn(); // applyTraceSwitches set at least one
 
 // ---- Test hooks ----
 void resetRingForTest(size_t bytes);

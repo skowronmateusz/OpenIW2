@@ -4,13 +4,16 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <thread>
+#include <unistd.h>
 
 #include "net/netfields.h"
 #include "net/oob.h"
 #include "net/server.h"
 #include "net/svconsole.h"
+#include "util/log.h"
 #include "net/udp.h"
 
 using namespace iw2::net;
@@ -363,7 +366,28 @@ void testDebugDamage() {
     unsetenv("IW2_DEBUG_DAMAGE");
 }
 
+// dumptrace (docs/logging.md "Trace recorder"): the recorder's last minute to a file of the log folder, named in the reply.
+void testDumpTrace() {
+    FakeHost host;
+    ServerConsole con(host);
+    host.console = &con;
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / ("iw2_svconsole_trace_" + std::to_string(getpid()));
+    std::filesystem::remove_all(dir);
+    setenv("IW2_LOG_DIR", dir.c_str(), 1);
+    CHECK(has(con.capture("dumptrace"), "dumptrace: the trace recorder is empty"));
+    iw2::log::trace("net", "NETTRACE frame t=50 late=0 run_us=1");
+    const std::string reply = con.capture("dumptrace");
+    CHECK(has(reply, "trace written to ") && has(reply, "-trace-") && !has(reply, dir.string()));
+    int files = 0;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(dir, ec)) files += e.path().filename().string().find("-trace-") != std::string::npos;
+    CHECK(files == 1);
+    std::filesystem::remove_all(dir);
+    unsetenv("IW2_LOG_DIR");
+}
+
 int main() {
+    testDumpTrace();
     testRotation();
     testDebugDamage();
     testConsole();

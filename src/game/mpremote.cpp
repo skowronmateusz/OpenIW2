@@ -5,6 +5,7 @@
 #include "game/playerevents.h"
 #include "game/playerweapon.h"
 #include "game/world.h"
+#include "util/log.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -112,7 +113,7 @@ void World::mpRemotePlayerEvent(int client, int event, const std::string& weapon
     MpPlayerInput* pi = mpPlayerInput(client);
     const Vec3 o = e->obj->get("origin").asVector();
     if (static const bool rt = std::getenv("IW2_REMOTE_TRACE") != nullptr; rt) // debug: other players' events (docs/debug-flags.md)
-        std::printf("remotetrace t=%lld client=%d event=0x%x weapon=%s at %.0f,%.0f,%.0f\n", (long long)timeMs(), client, unsigned(event), wn.c_str(),
+        log::tracef("remote", "remotetrace t=%lld client=%d event=0x%x weapon=%s at %.0f,%.0f,%.0f\n", (long long)timeMs(), client, unsigned(event), wn.c_str(),
                     double(o[0]), double(o[1]), double(o[2]));
     auto play = [&](std::initializer_list<const char*> keys) {
         for (const char* k : keys) {

@@ -14,6 +14,7 @@
 #include "netgame/netmove.h"
 #include "game/clienttime.h"
 #include "netgame/worldgame.h"
+#include "util/log.h"
 
 namespace iw2::netgame {
 
@@ -122,7 +123,7 @@ void RemoteView::playerEvents(game::World& w, const net::ClientSnapshot& snap, c
         if (static const bool rt = std::getenv("IW2_REMOTE_TRACE") != nullptr; rt) { // debug: the drawn weapon (docs/debug-flags.md)
             static std::map<int, std::string> lastWeapon;
             if (lastWeapon[client] != weapon)
-                std::printf("remotetrace snap=%d client=%d weapon=%s\n", snap.serverTime, client, weapon.c_str());
+                log::tracef("remote", "remotetrace snap=%d client=%d weapon=%s\n", snap.serverTime, client, weapon.c_str());
             lastWeapon[client] = weapon;
         }
         const int seq = getI(es, 164) & 0xff;

@@ -102,6 +102,7 @@
 #include <unistd.h>
 
 #include "util/log.h"
+#include "util/logwatch.h"
 
 #include <algorithm>
 #include <iomanip>
@@ -3783,6 +3784,18 @@ static void logDisplay(SDL_Window* window, const std::string& language) {
     log::headerLine("language", "game " + (language.empty() ? std::string("(from the game files)") : language) + ", system " + (locales.empty() ? std::string("unknown") : locales));
 }
 
+// The "cvars:" line of the log header (docs/logging.md "Header"): the archived cvars of a loaded profile that differ from their
+// registered default (or have none known), and the key bindings' count. The profile's name is not written.
+static void logProfileCvars(const char* what, const std::map<std::string, std::string>& cvars, size_t binds) {
+    if (!log::captureActive()) return;
+    std::string changed;
+    int n = 0;
+    for (const auto& [k, v] : cvars)
+        if (ui::isArchivedCvar(k) && v != ui::registeredDefault(k))
+            changed += (n++ ? " " : "") + k + "=" + (k.find("assword") != std::string::npos ? std::string("***") : v);
+    log::headerLine("cvars", std::string(what) + ", " + std::to_string(binds) + " binds, " + std::to_string(n) + " archived cvars: " + changed);
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0); // line-buffered, so a log written to a file is current while playing
     startClientLog(argc, argv);
@@ -3935,6 +3948,7 @@ int main(int argc, char** argv) {
         netClient->waitForHandshake(netNowMs, 20);
         if (netClient->state() == net::ClientState::Disconnected) {
             std::cerr << "error: " << netClient->error << "\n";
+            log::Event("net") << "connect failed: " << netClient->error; // event lines (docs/logging.md)
             netError = netgame::errorDialog(netClient->dropFromServer, netClient->dropReason);
             netClient.reset();
             menuMode = true;
@@ -3944,6 +3958,7 @@ int main(int argc, char** argv) {
     if (netClient) {
         const std::string map = net::infoValueForKey(netClient->configstrings[0], "mapname");
         std::cout << "connected as client " << netClient->clientNum << ", map " << map << "\n";
+        log::Event("net") << "connected as client " << netClient->clientNum << ", map " << map;
         args.resize(1);
         args.push_back("mp/" + map);
         menuMode = false;
@@ -4040,6 +4055,7 @@ int main(int argc, char** argv) {
             uiCvars = ui::parseConfig(cfgText);
         }
         profileKeys.load(input, readGameFile, playersDir / profileName, false); // saved key bindings replace the defaults
+        logProfileCvars("profile loaded", uiCvars, input.bindings().size());
         // Key defaults of OpenIW2 that the shipped default.cfg lacks, and the return of the screenshot key to F12 for profiles saved by
         // 0.2.1 (which moved it to F11): once per profile, marked by the archived cvar iw2_keysver, so that a key the user unbinds or moves
         // later stays as it is. The marker is set by the call after the profile was read (below).
@@ -4478,7 +4494,7 @@ int main(int argc, char** argv) {
                 // IW2_NET_TRACE: the drawn (post-lerp) origin of every other player per rendered frame (docs/debug-flags.md).
                 if (static const bool netTrace = std::getenv("IW2_NET_TRACE") != nullptr;
                     netTrace && (e->isPlayer || m.asString().rfind("xmodel/projectile_", 0) == 0))
-                    std::printf("nettrace rt=%lld t=%lld client=%d org=%.2f,%.2f,%.2f ang=%.1f,%.1f,%.1f ent=%d us=%llu\n", static_cast<long long>(SDL_GetTicksNS() / 1000000ull),
+                    log::tracef("net", "nettrace rt=%lld t=%lld client=%d org=%.2f,%.2f,%.2f ang=%.1f,%.1f,%.1f ent=%d us=%llu\n", static_cast<long long>(SDL_GetTicksNS() / 1000000ull),
                                 static_cast<long long>(netClient ? netTraceClock : cgNowMs()),
                                 e->obj->get("$client").isInt() ? e->obj->get("$client").asInt() : e->isPlayer ? -1 : -2 - e->number, double(ov[0]), double(ov[1]), double(ov[2]),
                                 double(av[0]), double(av[1]), double(av[2]), e->number, static_cast<unsigned long long>(netTraceFrameUs));
@@ -4566,7 +4582,7 @@ int main(int argc, char** argv) {
                     const bool vis = noCull || sphereVisible(ov[0], ov[1], ov[2] + 36.0f, 256.0f);
                     const Scene::CpuModel* body = vis ? sceneCpuModel(scene, dev, vfs, m.asString()) : nullptr;
                     if (kcTrace && ((e->isPlayer && world->mpKillcamSwapped()) || (netKillcam.active && e->obj->get("$deathanim").isDefined())))
-                        std::printf("kctrace draw t=%lld ent=%d org=%.1f,%.1f,%.1f vis=%d body=%d anim=%d model=%s\n", static_cast<long long>(world->timeMs()), e->number, // [server time]
+                        log::tracef("killcam", "kctrace draw t=%lld ent=%d org=%.1f,%.1f,%.1f vis=%d body=%d anim=%d model=%s\n", static_cast<long long>(world->timeMs()), e->number, // [server time]
                                     double(ov[0]), double(ov[1]), double(ov[2]), int(vis), int(body != nullptr), int(e->anim != nullptr), m.asString().c_str());
                     if (!vis) continue; // anim state already stepped
                     if (!body) continue;
@@ -5016,7 +5032,7 @@ int main(int argc, char** argv) {
                 const float last = float(std::max(0, an->numFrames - 1));
                 const float f = pweapon.animTime() * pweapon.animRate() * float(an->frameRate); // MP: the slot rate (weapons.md)
                 s.animFrame = pweapon.animLoops() && last > 0 ? std::fmod(f, last) : std::min(f, last);
-                if (std::getenv("IW2_VM_TRACE")) std::cout << "vm anim " << s.animName << " frame " << s.animFrame << "/" << an->numFrames << " t " << pweapon.animTime() << " hands '" << s.handsName << "' gun '" << s.gunName << "'\n";
+                if (std::getenv("IW2_VM_TRACE")) log::Trace("vm") << "vm anim " << s.animName << " frame " << s.animFrame << "/" << an->numFrames << " t " << pweapon.animTime() << " hands '" << s.handsName << "' gun '" << s.gunName << "'\n";
             }
             if (const char* forced = std::getenv("IW2_VM_ANIM")) { // debug: "anim,frame"
                 std::string spec = forced;
@@ -5124,6 +5140,21 @@ int main(int argc, char** argv) {
         auto killcamCamera = [&](Camera& c, float frac) -> std::optional<game::World::MpKillcamView> {
             if (!world || !world->multiplayer()) { killcamRig.active = false; return std::nullopt; }
             const auto v = world->mpKillcamView(frac).active ? world->mpKillcamView(frac) : netKillcam;
+            if (log::eventsEnabled()) { // event lines (docs/logging.md): the drawn killcam's start / end, the followed weapon's shots
+                static bool kcLogged = false;
+                static int kcFire = 0;
+                static std::string kcWeapon;
+                if (kcLogged != v.active) {
+                    kcLogged = v.active;
+                    if (v.active) log::Event("life") << "killcam start, following client " << v.client << ", weapon " << v.weapon;
+                    else log::event("life", "killcam end");
+                    kcFire = v.fireCount, kcWeapon = v.weapon;
+                } else if (v.active) {
+                    if (v.weapon != kcWeapon) log::Event("killcam") << "weapon " << kcWeapon << " -> " << v.weapon;
+                    if (v.fireCount != kcFire) log::Event("killcam") << "fire, " << v.fireCount - kcFire << " shot(s), frame " << v.frame << ", clip " << v.clip;
+                    kcFire = v.fireCount, kcWeapon = v.weapon;
+                }
+            }
             if (!v.active) {
                 killcamRig.active = false;
                 killcamRig.flash->valid = false; // the bolted flash particles of an ended killcam end with it
@@ -5160,7 +5191,7 @@ int main(int argc, char** argv) {
                                     vs.adsFrac, vs.adsHeld);
             static const bool trace = std::getenv("IW2_KILLCAM_TRACE") != nullptr;
             if (trace)
-                std::printf("kctrace view t=%lld lerp=%.2f frame=%lld ft=%lld killer=%d eye=%.1f,%.1f,%.1f ang=%.1f,%.1f fire=%d fireAge=%d clip=%d ads=%.2f state=%d anim=%s/%d\n",
+                log::tracef("killcam", "kctrace view t=%lld lerp=%.2f frame=%lld ft=%lld killer=%d eye=%.1f,%.1f,%.1f ang=%.1f,%.1f fire=%d fireAge=%d clip=%d ads=%.2f state=%d anim=%s/%d\n",
                             static_cast<long long>(world->timeMs()), double(frac), static_cast<long long>(v.frame), static_cast<long long>(v.frameTimeMs), // [server time]
                             v.killer, double(v.eye[0]), double(v.eye[1]), double(v.eye[2]), double(v.angles[0]), double(v.angles[1]), v.fireCount,
                             v.fireAgeMs, v.clip, double(vs.adsFrac), vs.weaponState, vs.animKey.c_str(), vs.animMs);
@@ -5197,7 +5228,7 @@ int main(int argc, char** argv) {
                 const bool loops = vs.weaponState == 0 || vs.animKey.empty() || vs.animKey == "idleAnim" || vs.animKey == "emptyIdleAnim";
                 s.animFrame = loops && last > 0 ? std::fmod(f, last) : std::min(f, last);
             }
-            if (std::getenv("IW2_VM_TRACE")) std::cout << "killcam vm hands '" << s.handsName << "' gun '" << s.gunName << "' anim " << s.animName << " frame " << s.animFrame << " ads " << vs.adsFrac << "\n";
+            if (std::getenv("IW2_VM_TRACE")) log::Trace("vm") << "killcam vm hands '" << s.handsName << "' gun '" << s.gunName << "' anim " << s.animName << " frame " << s.animFrame << " ads " << vs.adsFrac << "\n";
             s.adsFrac = vs.adsFrac;
             s.aimUp = r.aim.up();
             s.aimDown = r.aim.down();
@@ -5444,6 +5475,7 @@ int main(int argc, char** argv) {
         };
         // Console text run by menu "exec" (src/ui/frontend_exec.h): set, vstr, map, difficulty*, ';' separated.
         std::function<void(const std::string&)> connectText; // set below, with the join code
+        int cfgExecDepth = 0; // the cfg files execText runs inside: their binds are summed up in one event line
         std::function<void(const std::string&)> execText = [&](const std::string& text) {
             size_t start = 0;
             while (start <= text.size()) {
@@ -5458,7 +5490,12 @@ int main(int argc, char** argv) {
                 for (size_t k = 2; k < tok.size(); ++k) a2 += (k > 2 ? " " : "") + tok[k];
                 for (auto& ch : c) ch = char(std::tolower(static_cast<unsigned char>(ch)));
                 // Key bindings (default.cfg run by the controls "reset defaults" menu: unbindall, then bind lines) go to the key table.
-                if (c == "bind" || c == "unbind" || c == "unbindall") input.loadConfig(segment), profileDirty = true; // saved like a dvar (MP 0x40b0c8)
+                if (c == "bind" || c == "unbind" || c == "unbindall") {
+                    const size_t bindsBefore = input.bindings().size();
+                    input.loadConfig(segment), profileDirty = true; // saved like a dvar (MP 0x40b0c8)
+                    if (cfgExecDepth == 0 && (c != "bind" || bindsBefore != input.bindings().size())) // event lines (docs/logging.md): an unbind, a new key
+                        log::Event("cfg") << c << (a1.empty() ? "" : " " + a1) << ": binds " << bindsBefore << " -> " << input.bindings().size();
+                }
                 else if (c == "vstr") execText(menuEnv.getCvar(a1));
                 // Chat in a network game: "say" / "say_team" go to the server as client commands (docs/spec/net.md section 10).
                 else if (c == "cmd" && netClient) netClient->addReliableCommand(a1 + (a2.empty() ? "" : " " + a2)); // forwarded to the server (MP console command "cmd")
@@ -5468,11 +5505,16 @@ int main(int argc, char** argv) {
                 else if (c == "setfromdvar") menuEnv.setCvar(a1, menuEnv.getCvar(a2));
                 // "exec <file>" runs a shipped cfg (menu onOpen of options_graphics: ui/options_graphics.cfg), one command per line.
                 else if (c == "exec" && !a1.empty()) {
-                    if (const auto cfg = vfs.read(a1)) {
+                    const size_t bindsBefore = input.bindings().size();
+                    const auto cfg = vfs.read(a1);
+                    if (cfg) {
                         std::string t(cfg->begin(), cfg->end());
                         for (auto& ch : t) if (ch == '\r' || ch == '\n') ch = ';';
+                        ++cfgExecDepth;
                         execText(t);
+                        --cfgExecDepth;
                     }
+                    log::Event("cfg") << "exec " << a1 << (cfg ? "" : " (not found)") << ": binds " << bindsBefore << " -> " << input.bindings().size(); // docs/logging.md
                 }
                 // "fade <r> <g> <b> <a> <seconds>" (cgame console command, table 0x56e4d0 -> 0x4a4d60): needs all 5 arguments; only the alpha is
                 // kept: the screen fade (the scr_fade state 0xf79a50..5c drawn by 0x4bda70) goes to atoi(a) / 255 from the current alpha over
@@ -5568,6 +5610,7 @@ int main(int argc, char** argv) {
             std::error_code ec;
             std::filesystem::create_directories(profileCfg.parent_path(), ec);
             profileKeys.save(input, profileCfg.parent_path(), ui::formatConfig(uiCvars)); // config.cfg + config_mp.cfg (src/game/profilekeys.h)
+            log::Event("cfg") << "profile config written, " << input.bindings().size() << " binds";
         };
         auto profileCountChanged = [&] { uiCvars["ui_playerProfileCount"] = std::to_string(profiles.count()); };
         auto selectProfileRow = [&](int row) { // Menu_SetFeederSelection(0x18, row); an empty list clears the selection
@@ -5608,11 +5651,13 @@ int main(int argc, char** argv) {
             nc->waitForHandshake(netNowMs, 20, [&] { if (listenServer) listenServer->poll(netNowMs(), 0); });
             if (nc->state() == net::ClientState::Disconnected) {
                 std::cerr << "error: " << nc->error << "\n";
+                log::Event("net") << "connect failed: " << nc->error;
                 netError = netgame::errorDialog(nc->dropFromServer, nc->dropReason);
                 return;
             }
             const std::string map = net::infoValueForKey(nc->configstrings[0], "mapname");
             std::cout << "connected as client " << nc->clientNum << ", map " << map << "\n";
+            log::Event("net") << "connected as client " << nc->clientNum << ", map " << map;
             netClient = std::move(nc);
             ++netConnection;
             if (frontPtr) frontPtr->closeAll();
@@ -5816,6 +5861,7 @@ int main(int argc, char** argv) {
                     fresh[keep] = uiCvars[keep];
                 fresh["com_playerProfile"] = profileName;
                 uiCvars = fresh;
+                logProfileCvars("profile switched", uiCvars, input.bindings().size());
                 upgradeKeyBindings();
                 loadFavorites();
             }
@@ -6946,7 +6992,7 @@ int main(int argc, char** argv) {
                     static std::string lastLine;
                     const std::string line = hintFade < 0 ? std::string("none") : "hint " + std::to_string(cursorHint.held().hint) + " weapon '" + cursorHint.held().weapon +
                                              "' text '" + cursorHint.held().text + "'" + (cur.hint != 0 || !cur.weapon.empty() ? "" : " (fading)");
-                    if (line != lastLine) std::cout << "[hint] t=" << cgNowMs() << " " << line << "\n";
+                    if (line != lastLine) log::Trace("hint") << "[hint] t=" << cgNowMs() << " " << line << "\n";
                     lastLine = line;
                 }
             } else cursorHint.reset();
@@ -7008,7 +7054,7 @@ int main(int argc, char** argv) {
             if (world) {
                 if (const float fa = viewImp.damageFlashAlpha(cgNowMs()); fa > 0) {
                     if (static const bool tr = std::getenv("IW2_DAMAGE_TRACE") != nullptr; tr)
-                        std::printf("damagetrace t=%lld flash=%.3f\n", (long long)cgNowMs(), double(fa));
+                        log::tracef("damage", "damagetrace t=%lld flash=%.3f\n", (long long)cgNowMs(), double(fa));
                     Quad2D q{-10.0f, -10.0f, float(w) + 10.0f, float(h) + 10.0f};
                     q.rgba[0] = uint8_t(game::ViewImpulses::kDamageFlashRgb[0] * 255.0f);
                     q.rgba[1] = q.rgba[2] = 0;
@@ -9069,6 +9115,7 @@ int main(int argc, char** argv) {
         bool camLinkLerp = false;
         float camLinkHeight = 60.0f;
         game::PlayerState ps;
+        log::PlayerWatch playerWatch; // event lines of the own player (docs/logging.md), afresh for each level
         ps.origin = {cam.pos.x, cam.pos.y, cam.pos.z - 60.0f + 8.0f};
         game::markSpawned(ps);
         bool wasDead = false;
@@ -9445,13 +9492,41 @@ int main(int argc, char** argv) {
                 const double nowNetSubMs = double(nowNetNs % 1000000ull) * 1e-6;
                 const int snapshotsBefore = netClient->snapshots;
                 netClient->poll(nowNet);
+                if (log::eventsEnabled()) { // event lines (docs/logging.md): the connection summary, entities that come and go
+                    static log::ConnWatch connWatch;
+                    static log::EntityWatch entWatch;
+                    static std::pair<int, int> watchedFor{-1, -1};
+                    static int entMessage = -1;
+                    if (watchedFor != std::make_pair(netConnection, netClient->gamestates)) {
+                        connWatch.reset(), entWatch.reset(), entMessage = -1;
+                        watchedFor = {netConnection, netClient->gamestates};
+                    }
+                    if (const net::ClientSnapshot* ls = netClient->latest()) {
+                        const log::ConnSample cs{netClient->snapshots, netClient->droppedSnapshots, ls->messageNum, ls->receivedMs, netClient->timeDelta(),
+                                                 netClient->extrapolating(), -1};
+                        for (const auto& l : connWatch.update(cs, nowNet)) log::event("conn", l);
+                        // A killcam or spectator view shows another player's entities: the watch pauses and starts again after it.
+                        if (netgame::RemoteView::following(*ls)) entWatch.reset();
+                        else if (ls->messageNum != entMessage) {
+                            entMessage = ls->messageNum;
+                            std::map<int, std::string> kinds;
+                            for (const auto& [n, es] : ls->entities) {
+                                const int type = es.size() >= 8 ? int(uint32_t(es[4]) | uint32_t(es[5]) << 8 | uint32_t(es[6]) << 16 | uint32_t(es[7]) << 24) : -1;
+                                if (const char* k = type == netgame::kEtPlayer ? "player" : type == netgame::kEtCorpse ? "corpse" : type == netgame::kEtItem ? "item"
+                                                    : type == netgame::kEtGeneral ? "general" : nullptr)
+                                    kinds[n] = k;
+                            }
+                            for (const auto& l : entWatch.update(kinds)) log::event("ent", l);
+                        }
+                    }
+                }
                 netTraceFrameUs = profFrameStart / 1000;
                 netTraceClock = netClient->renderTime(nowNet);
                 if (static const bool frameTrace = std::getenv("IW2_FRAME_TRACE") != nullptr; frameTrace) {
                     const net::ClientSnapshot *ta = nullptr, *tb = nullptr;
                     float tf = 0;
                     const bool have = netClient->interpolation(int(netTraceClock), ta, tb, tf);
-                    std::printf("frametrace us=%llu now=%lld clock=%lld a=%d b=%d frac=%.3f newest=%d got=%d delta=%d ext=%d prevwait=%llu prevframe=%llu\n",
+                    log::tracef("frame", "frametrace us=%llu now=%lld clock=%lld a=%d b=%d frac=%.3f newest=%d got=%d delta=%d ext=%d prevwait=%llu prevframe=%llu\n",
                                 static_cast<unsigned long long>(netTraceFrameUs), static_cast<long long>(nowNet), static_cast<long long>(netTraceClock),
                                 have ? ta->serverTime : -1, have ? tb->serverTime : -1, double(tf), netClient->latest() ? netClient->latest()->serverTime : -1,
                                 netClient->snapshots - snapshotsBefore, netClient->timeDelta(), int(netClient->extrapolating()),
@@ -9468,6 +9543,7 @@ int main(int argc, char** argv) {
                     loadedGamestate = {netConnection, netClient->gamestates, netClient->serverId};
                     const std::string map = net::infoValueForKey(netClient->configstrings[0], "mapname");
                     std::cout << "new gamestate, map " << map << "\n";
+                    log::Event("life") << "gamestate " << netClient->gamestates << ", map " << map;
                     if (!map.empty()) pendingLevel = std::make_pair("mp/" + map, false);
                 }
                 if (const char* aj = std::getenv("IW2_MP_AUTOJOIN"); aj && std::atoi(aj) != 0 && netClient->latest()) {
@@ -9523,6 +9599,8 @@ int main(int argc, char** argv) {
                 }
                 if (netClient->state() == net::ClientState::Disconnected) {
                     std::cerr << "disconnected: " << netClient->error << "\n";
+                    log::Event("net") << "disconnected: " << netClient->error << (netClient->dropFromServer ? " (by the server)" : "");
+                    log::dumpTrace("disconnect"); // the trace recorder's last minute (docs/logging.md), when it holds anything
                     netError = netgame::errorDialog(netClient->dropFromServer, netClient->dropReason);
                     pendingDisconnect = true; // the level ends below; netClient goes with it
                 }
@@ -9593,7 +9671,7 @@ int main(int argc, char** argv) {
                                 bodies += b;
                             }
                         const game::Entity* own = world->mpClientEntity(netgame::RemoteView::kOwnBodySlot);
-                        std::printf("kctrace net t=%d follow=%d own=%d bodies=%zu%s\n", last->serverTime, int(netgame::RemoteView::following(*last)),
+                        log::tracef("killcam", "kctrace net t=%d follow=%d own=%d bodies=%zu%s\n", last->serverTime, int(netgame::RemoteView::following(*last)),
                                     own != nullptr, size_t(std::count(bodies.begin(), bodies.end(), '@')), bodies.c_str());
                     }
                 }
@@ -9874,6 +9952,11 @@ int main(int argc, char** argv) {
             // inside the turret's arcs (PM_UpdateViewAngles 0x50b120).
             const bool onTurret = world && world->playerOnTurret();
             if (onTurret) world->clampPlayerView(cam.pitch, cam.yaw);
+            if (log::eventsEnabled() && world && world->player()) { // event lines of the own player's transitions (docs/logging.md)
+                const int ws = pweapon.stateNumber();
+                const log::PlayerSample sample{!playerDead && ps.pmType < 4, int(ps.stance), ps.onLadder, ps.mantling, onTurret, pweapon.name(), ws == 5 || ws == 7};
+                for (const auto& l : playerWatch.update(sample, int64_t(SDL_GetTicks()))) log::event("player", l);
+            }
             // This frame's usercmd buttons from the bound commands (CL_CmdButtons); weapon states 0x13 / 0x14 force aim.
             // freezecontrols (client +0x8630 → pm_flags 0x8000) and an open menu: no movement or button commands.
             const bool controlsBlocked = (!frontStack.empty() && !menuBypassesInput()) || netControlsFrozen || (world && world->controlsFrozen());
@@ -9886,7 +9969,7 @@ int main(int argc, char** argv) {
                               pweapon.stock(), int(pweapon.offhandActive()), int(pweapon.cooking()), pweapon.fuseMs() > 0 ? 1 : 0, int(pweapon.adsHeld()),
                               unsigned(buttons), int(controlsBlocked));
                 if (lastWt != line) {
-                    std::printf("weapontrace rt=%llu t=%lld %s\n", (unsigned long long)(SDL_GetTicksNS() / 1000000), (long long)(world ? world->timeMs() : -1), line); // [server time]
+                    log::tracef("weapon", "weapontrace rt=%llu t=%lld %s\n", (unsigned long long)(SDL_GetTicksNS() / 1000000), (long long)(world ? world->timeMs() : -1), line); // [server time]
                     lastWt = line;
                 }
             }
@@ -10195,6 +10278,7 @@ int main(int argc, char** argv) {
                         if (ps.events[lastEventSeq & 3] == 0x8f) viewImp.step(ps.eventParms[lastEventSeq & 3], cgNowMs()); // CG_EntityEvent 0x4bac84
                         // Events 0x8d / 0x8e with parm 1 / 2 (the blocked stance changes of 0x509d10): the hint states 4 / 5 (0x4ba880).
                         const int ev = ps.events[lastEventSeq & 3], parm = ps.eventParms[lastEventSeq & 3];
+                        if (ev >= 1 && ev <= 0x45) playerWatch.footstep(int(ps.stance)); // the footstep summary (docs/logging.md)
                         input.stanceEvent(ev); // the wish follows the event, so a blocked rise is not asked for again
                         if ((ev == 0x8d || ev == 0x8e) && (parm == 1 || parm == 2)) setInvalidCmd(3 + parm, cgNowMs());
                         if (ev == 0x95) input.clearAds(); // 0x4dd090 (the prone aim cancel): the cgame clears the toggled aim (0x4bafbc)
@@ -10237,7 +10321,7 @@ int main(int argc, char** argv) {
                         const int rtime = netClient->renderTime(netDrawNowMs);
                         const bool interp = netClient->interpolation(rtime, ia, ib, ifrac);
                         const std::vector<net::UserCmd> replay = netClient->commandsAfter(sf.commandTime);
-                        std::printf("predtrace rt=%lld dt=%lld now=%lld cmd=%d snap=%d msg=%d ack=%d srv=%.2f,%.2f,%.2f pred=%.2f,%.2f,%.2f "
+                        log::tracef("pred", "predtrace rt=%lld dt=%lld now=%lld cmd=%d snap=%d msg=%d ack=%d srv=%.2f,%.2f,%.2f pred=%.2f,%.2f,%.2f "
                                     "miss=%.2f draw=%.2f,%.2f,%.2f render=%d frac=%.2f replay=%d first=%d fwd=%d snaps=%d dropped=%d yaw=%.1f pitch=%.1f%s\n",
                                     (long long)realMs, (long long)(lastRealMs ? realMs - lastRealMs : 0), (long long)netDrawNowMs,
                                     lc ? lc->serverTime : 0, sn.serverTime, sn.messageNum, sf.commandTime, double(sf.origin[0]),
@@ -10463,7 +10547,7 @@ int main(int argc, char** argv) {
                         static int64_t nextTrace = 0;
                         if (nowMs >= nextTrace) {
                             nextTrace = nowMs + 250;
-                            std::cout << "stancetrace t=" << nowMs << " menu=" << !frontStack.empty() << " buttons=0x" << std::hex << buttons << std::dec
+                            log::Trace("stance") << "stancetrace t=" << nowMs << " menu=" << !frontStack.empty() << " buttons=0x" << std::hex << buttons << std::dec
                                       << " stance=" << int(ps.stance) << " ads=" << pweapon.adsFrac() << " breath=" << ps.holdingBreath
                                       << " breathScale=" << ps.breathScale << " net=" << (netClient != nullptr) << "\n";
                         }
@@ -10612,7 +10696,7 @@ int main(int argc, char** argv) {
                                              ps.viewHeightTarget, pweapon.adsFrac(), pweapon.number("adsBobFactor"), false);
                 }
                 if (std::getenv("IW2_BOB_TRACE")) // debug: the movement inputs of the gun bob and offsets
-                    std::cout << "bob cycle " << ps.bobCycle << " xy " << std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1])
+                    log::Trace("bob") << "bob cycle " << ps.bobCycle << " xy " << std::sqrt(ps.velocity[0] * ps.velocity[0] + ps.velocity[1] * ps.velocity[1])
                               << " vht " << ps.viewHeightTarget << " ground " << ps.onGround << " gunBob " << gunBobAngles[0] << "," << gunBobAngles[1] << ","
                               << gunBobAngles[2] << " move " << vmMotion.move()[1] << "," << vmMotion.move()[2] << " anim " << pweapon.anim() << " dt " << simDt << "\n";
                 recoil.update([&](const char* k) { return pweapon.number(k); }, int(std::min(simDt, 0.1f) * 1000.0f), true, pweapon.adsFrac());
@@ -10715,7 +10799,7 @@ int main(int argc, char** argv) {
                 // grows by the count.
                 static const bool damageTrace = std::getenv("IW2_DAMAGE_TRACE") != nullptr; // debug (docs/debug-flags.md)
                 if (world->takeDamageFeedbackReset()) { // the multiplayer respawn reset (MP 0x4e0190): kicks and icons cleared
-                    if (damageTrace) std::printf("damagetrace t=%lld reset\n", (long long)cgNowMs());
+                    if (damageTrace) log::tracef("damage", "damagetrace t=%lld reset\n", (long long)cgNowMs());
                     viewImp.clearDamage();
                     damageIcons = {};
                     lastDamageEvent = world->playerDamageFeedback().event;
@@ -10723,7 +10807,7 @@ int main(int argc, char** argv) {
                 if (const auto& df = world->playerDamageFeedback(); df.event != lastDamageEvent) {
                     lastDamageEvent = df.event;
                     if (damageTrace)
-                        std::printf("damagetrace t=%lld event=%d count=%d yaw=%d pitch=%d\n", (long long)cgNowMs(), df.event, df.count, df.yaw, df.pitch);
+                        log::tracef("damage", "damagetrace t=%lld event=%d count=%d yaw=%d pitch=%d\n", (long long)cgNowMs(), df.event, df.count, df.yaw, df.pitch);
                     ps.aimSpread = std::min(255.0f, ps.aimSpread + float(df.count));
                     if (df.count != 0) { // 0x4ba1c3 / 0x4ba653: only with a damage count
                         if (hudFade.health < cgNowMs()) hudFade.health = cgNowMs(); // 0x4ba537: damage touches the health bar
@@ -10899,6 +10983,7 @@ int main(int argc, char** argv) {
                 static std::pair<int, int> seenRestarts{0, 0}; // (world generation, restart count): a new World may reuse the old one's address
                 if (world->multiplayer() && seenRestarts.first == worldGeneration && seenRestarts.second != world->mpRestarts()) {
                     std::cout << "fast restart " << world->mpRestarts() << " of " << currentMap << "\n";
+                    if (netClient) log::Event("life") << "map_restart " << world->mpRestarts() << " of " << currentMap; // a local server logs its own
                     lerpPrev.clear();
                     prevAnim.clear();
                     prevTurret.clear();

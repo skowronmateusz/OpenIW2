@@ -18,6 +18,7 @@
 #include "net/netchan.h"
 #include "net/oob.h"
 #include "net/udp.h"
+#include "util/logwatch.h"
 
 namespace iw2::net {
 
@@ -181,6 +182,7 @@ private:
     void writeServerCommands(int slot, Msg& ops);
 
     ServerGame& game_;
+    iw2::log::ServerWatch logWatch_; // the 10 s summary of the event lines (docs/logging.md)
     UdpSocket sock_;
     ConnectionlessServer oob_;
     std::vector<Client> clients_;

@@ -205,7 +205,9 @@ Start it with:
 prints `iw2server: log <path>` after its start line. Output to the terminal, a file or a pipe is unchanged. The
 last 10 server logs are kept. rcon passwords, `*password*` cvar values and chat text are not written to the file. A
 build from source writes a log only with `IW2_LOG=1` (or `--cvar iw2_log=1`); `IW2_LOG=0` turns it off,
-`IW2_LOG_DIR=<folder>` puts it elsewhere. Details: [logging.md](logging.md).
+`IW2_LOG_DIR=<folder>` puts it elsewhere. With the log on, the file also gets short `[ev]` lines (the map loads, map
+restarts, connects and drops with their reason, a summary of the frame timing and command lag every 10 s); traces
+such as `IW2_NET_TRACE=2` go to the trace recorder instead of the file. Details: [logging.md](logging.md).
 
 ## Console commands
 
@@ -228,6 +230,7 @@ and from rcon.
 | `set <cvar> <value>` (also `seta`, `sets`) | sets a cvar, for example `set sv_hostname "New name"` |
 | `<cvar>` | prints the cvar's value; `<cvar> <value>` sets it |
 | `exec <file>` | runs a config file from the main folder |
+| `dumptrace` | writes the last minute of the trace recorder (traces switched on with `IW2_NET_TRACE` and the like, or `traces.txt` in the log folder) to a file next to the log, see [logging.md](logging.md#trace-recorder) |
 | `quit` | stops the server |
 
 `status`, `map_restart`, `kick` and the like print `Server is not running.` before a map is loaded.

@@ -12,6 +12,7 @@
 #include "net/netfields.h"
 #include "net/playerstate.h"
 #include "net/scramble.h"
+#include "util/log.h"
 
 namespace iw2::net {
 
@@ -90,6 +91,7 @@ std::string gamePasswordRejection(const std::string& gPassword, const std::strin
 void Server::dropClient(int slot, const std::string& reason) {
     Client& c = clients_[static_cast<size_t>(slot)];
     if (c.state == ServerClientState::Free) return;
+    log::Event("net") << "drop slot " << slot << ": " << reason; // event lines (docs/logging.md)
     // Tell the client once, as the server command `w` with the reason (VAs in the 1.3 Linux dedicated server 0x808f252;
     // the other variant at 0x808f226 puts the client's name before the reason and " PB" after it; docs/spec/net.md section 14).
     sendServerCommand(slot, "w \"" + reason + "\"");
@@ -198,12 +200,15 @@ void Server::poll(int64_t nowMs, int waitMs) {
         runDueCommands(nextFrameMs_);
         const auto frameStart = std::chrono::steady_clock::now();
         game_.runFrame(frameMs);
+        if (log::eventsEnabled()) logWatch_.frame(nowMs - nextFrameMs_);
         if (frameTrace_)  // IW2_NET_TRACE=2 (docs/debug-flags.md): the frame's lateness against its schedule and its length
-            std::printf("NETTRACE frame t=%d late=%lld run_us=%lld\n", game_.serverTime(), (long long)(nowMs - nextFrameMs_),
+            log::tracef("net", "NETTRACE frame t=%d late=%lld run_us=%lld\n", game_.serverTime(), (long long)(nowMs - nextFrameMs_),
                         (long long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - frameStart).count());
         nextFrameMs_ += frameMs;
         framesRan = true;
     }
+    if (framesRan && log::eventsEnabled())
+        for (const auto& l : logWatch_.update(nowMs)) log::event("conn", l);
     // Frames that did not advance the time leave the server's time behind the real time.
     const int64_t drift = (nowMs - startMs_) - game_.serverTime();
     if (drift - timeDriftBase_ > kTimeJumpMs) timeJump = true;
@@ -280,15 +285,16 @@ void Server::poll(int64_t nowMs, int waitMs) {
              nowMs - c.lastSnapshotMs >= 1000)) {
             const int messageNum = c.chan->outgoingSequence();
             const int bytes = sendSnapshot(i, sub ? subMs : -1);
+            if (log::eventsEnabled()) logWatch_.client(i, serverTime - c.lastUsercmdTime, c.ping);
             if (frameTrace_) {  // IW2_NET_TRACE=2: what this snapshot carries of the client's own commands
-                std::printf("NETTRACE snap slot=%d t=%d bytes=%d cmdlag=%d cmds=%d pkts=%d hold=%d\n", i, serverTime, bytes,
+                log::tracef("net", "NETTRACE snap slot=%d t=%d bytes=%d cmdlag=%d cmds=%d pkts=%d hold=%d\n", i, serverTime, bytes,
                             serverTime - c.lastUsercmdTime, c.traceCmds, c.tracePackets, c.playout.holdMs());
                 c.traceCmds = c.tracePackets = 0;
             }
             if (c.shotReadMs >= 0) {
                 static const bool shotTrace = std::getenv("IW2_NET_TRACE") != nullptr;
                 if (shotTrace)
-                    std::printf("NETTRACE shot slot=%d read->snapshot %lld ms (server time %d%s)\n", i, (long long)(nowMs - c.shotReadMs), serverTime,
+                    log::tracef("net", "NETTRACE shot slot=%d read->snapshot %lld ms (server time %d%s)\n", i, (long long)(nowMs - c.shotReadMs), serverTime,
                                 c.shotHeld ? ", held" : "");
                 c.shotReadMs = -1;
             }
@@ -497,7 +503,7 @@ void Server::parseMove(int slot, Msg& msg, bool delta, int64_t nowMs) {
         if (cmd.serverTime <= c.lastUsercmdTime) {
             static const bool netTrace = std::getenv("IW2_NET_TRACE") != nullptr;
             if (netTrace && cmd.serverTime < c.lastUsercmdTime - 60 && cmd.serverTime == cmds.back().serverTime)
-                std::printf("NETTRACE stale slot=%d cmd=%d last=%d\n", slot, cmd.serverTime, c.lastUsercmdTime);
+                log::tracef("net", "NETTRACE stale slot=%d cmd=%d last=%d\n", slot, cmd.serverTime, c.lastUsercmdTime);
             if (!c.clockResetAllowed || c.lastUsercmdTime - cmd.serverTime <= kClockResetMs) continue;
             c.clockResetAllowed = false;
         }
@@ -524,7 +530,7 @@ void Server::runDueCommands(int64_t frameMs) {
             game_.clientThink(i, cmd);
         }
         if (netTrace && (before == 0) != (c.playout.holdMs() == 0))
-            std::printf("NETTRACE %s slot=%d\n", before == 0 ? "hold" : "release", i);
+            log::tracef("net", "NETTRACE %s slot=%d\n", before == 0 ? "hold" : "release", i);
     }
 }
 

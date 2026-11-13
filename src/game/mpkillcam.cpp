@@ -6,6 +6,7 @@
 #include "game/playerweapon.h"
 #include "game/pmove.h"
 #include "game/world.h"
+#include "util/log.h"
 
 #include <algorithm>
 #include <cmath>
@@ -352,7 +353,7 @@ void World::mpKillcamEndFrame() {
             const ArchivedClient& ac = f.clients[i];
             if (!ac.active) continue;
             const ArchivedEntity* ae = f.find(ac.entity);
-            std::printf("kctrace srv t=%lld c=%zu ent=%d org=%.1f,%.1f,%.1f eye=%.1f,%.1f,%.1f ang=%.1f,%.1f fire=%d clip=%d ss=%s hidden=%d\n",
+            log::tracef("killcam", "kctrace srv t=%lld c=%zu ent=%d org=%.1f,%.1f,%.1f eye=%.1f,%.1f,%.1f ang=%.1f,%.1f fire=%d clip=%d ss=%s hidden=%d\n",
                         static_cast<long long>(f.timeMs), i, ac.entity, double(ac.origin[0]), double(ac.origin[1]), double(ac.origin[2]),
                         double(ac.eye[0]), double(ac.eye[1]), double(ac.eye[2]), double(ac.viewAngles[0]), double(ac.viewAngles[1]),
                         ac.fireCount, ac.clip, ae ? ae->sessionstate.c_str() : "-", ae ? int(ae->hidden) : -1);
