@@ -1173,8 +1173,9 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             // +0x258 (0x4830d0), rgb, alpha; A = position, B = position + length · row0 (both through the bolt). Draw 0x483440:
             // renderer type 9 (A = +0x3c, B = +0x48, +0x64 = size, +0x68 = size2 result).
             // DLL 0x100401f0: n = clamp(round((1 − (|(A + B)/2 − view| · lodScale + lodBias) / 1024) · 32), 8, 32) (0x1019bf58,
-            // 0x1019bf20; lodScale / lodBias = r_lodScale (1) / r_lodBias (0) · tan(40°) / tan(fovX / 2), 0x10025b76).
-            // TODO(spec): r_lodScale / r_lodBias other than their defaults; the mode-2 builder 0x100405e0 (dvar 0x101ce710 = 2).
+            // 0x1019bf20; lodScale / lodBias = r_lodScale (1) / r_lodBias (0) · tan(fovX / 2) / tan(40°), 0x10025b10, docs/spec/render-hints.md
+            // "Model LOD": the divide at 0x10025bc2 is FDIVP st(1), st(0)). TODO(spec): r_lodScale / r_lodBias other than their defaults;
+            // the mode-2 builder 0x100405e0 (dvar 0x101ce710 = 2).
             const auto nus = e.numbers("nonuniformscale");
             const bool nonUniform = !nus.empty() && int(nus[0]) != 0;
             const float size2 = nonUniform ? channel(e, "size2", "size2rand", flags & 0x10000, p.rnd[3], u, 0, 1.0f) * p.scale[3] : s.size;
@@ -1193,7 +1194,7 @@ std::vector<FxSprite> FxSystem::sprites(int64_t nowMs) {
             if (viewValid) {
                 const FVec m = sub(mul(add(s.beamA, s.beamB), 0.5f), viewOrigin);
                 const float dist = std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
-                const float lodScale = viewScale != 0 ? 1.0f / viewScale : 1.0f, lodBias = 0.0f;
+                const float lodScale = viewScale, lodBias = 0.0f; // viewScale = tan(fovX / 2) / tan(40°), set by the caller
                 const double x = double((1.0f - (dist * lodScale + lodBias) * 0.0009765625f) * 32.0f) + 9.313225746154785e-10;
                 n = int(std::nearbyint(x));
                 n = n < 8 ? 8 : n > 32 ? 32 : n;

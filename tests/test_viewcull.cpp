@@ -87,6 +87,39 @@ int main() {
         stepShadowCookies(st, d, 15, 2000, p); // 14 pass: 14 > 13, shrink
         chk(std::abs(st.threshold - 8.0f) < 1e-5f, __LINE__);
     }
+    // Side planes from a view-projection (column-major, clip = m * p): eye at the origin looking down -z with a 90 degree symmetric
+    // frustum (x / -z and y / -z within +-1), w = -z.
+    {
+        const float m[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, -1, 0, 0, 0, 0};
+        ViewPlane side[4];
+        frustumSidePlanes(m, side);
+        const float s2 = std::sqrt(0.5f);
+        // -x table plane: w - x = -z - x >= 0 -> normal (-1, 0, -1) normalised
+        chk(std::abs(side[0].n[0] + s2) < 1e-6f && side[0].n[1] == 0.0f && std::abs(side[0].n[2] + s2) < 1e-6f && side[0].d == 0.0f, __LINE__);
+        chk(std::abs(side[1].n[0] - s2) < 1e-6f && std::abs(side[1].n[2] + s2) < 1e-6f, __LINE__);
+        chk(std::abs(side[2].n[1] + s2) < 1e-6f && std::abs(side[3].n[1] - s2) < 1e-6f, __LINE__);
+        auto cull = [&](float x0, float y0, float z0, float x1, float y1, float z1) {
+            const float mn[3] = {x0, y0, z0}, mx[3] = {x1, y1, z1};
+            return boxOutsidePlanes(side, 4, mn, mx);
+        };
+        chk(!cull(-1, -1, -11, 1, 1, -9), __LINE__);   // straight ahead
+        chk(cull(20, -1, -11, 22, 1, -9), __LINE__);    // right of the 45 degree edge
+        chk(!cull(9, -1, -11, 12, 1, -9), __LINE__);    // straddles the edge: kept
+        chk(cull(-1, 20, -11, 1, 22, -9), __LINE__);    // above
+        chk(cull(10, -1, -10, 12, 1, -8), __LINE__);    // nearest corner (10, -10) exactly on the right plane: equality culls
+        chk(cull(-1, -1, 5, 1, 1, 6), __LINE__);        // behind the eye near the axis: outside the side planes too
+    }
+    // Point-to-box distance and the dynamic light test.
+    {
+        const float mn[3] = {0, 0, 0}, mx[3] = {10, 10, 10};
+        const float in[3] = {5, 5, 5}, px[3] = {13, 5, 5}, corner[3] = {13, 14, -12};
+        chk(pointBoxDistanceSq(in, mn, mx) == 0.0f, __LINE__);
+        chk(pointBoxDistanceSq(px, mn, mx) == 9.0f, __LINE__);
+        chk(pointBoxDistanceSq(corner, mn, mx) == 9.0f + 16.0f + 144.0f, __LINE__);
+        chk(lightTouchesBox(px, 3.0f, mn, mx), __LINE__);  // exactly at the radius: lit
+        chk(!lightTouchesBox(px, 2.99f, mn, mx), __LINE__);
+        chk(lightTouchesBox(corner, 13.0f, mn, mx) && !lightTouchesBox(corner, 12.9f, mn, mx), __LINE__);
+    }
     std::printf(bad ? "FAIL\n" : "viewcull: ok\n");
     return bad ? 1 : 0;
 }

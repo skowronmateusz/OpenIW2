@@ -1,9 +1,11 @@
-// Box-versus-view-plane cull of the gfx renderer (dll 1.3), reduced to the two depth planes OpenIW2 can model without the full plane list.
-// Scene setup 0x1000a910 builds the plane list (four side planes from the fov via 0x10006c20, then 0x100062e0 appends the near and the
-// far plane) and every scene object is culled with it: AABB-tree nodes (0x10008110 -> 0x10006340), cell boxes (0x100092f0, 0x100093e0),
-// static models (0x100083e0), xmodel scene entities (0x100087e0) and brush-model entities (0x10009210), the last four through
-// 0x10006420 on a world-space box. See docs/spec/render-hints.md.
+// Box-versus-view-plane cull of the gfx renderer (dll 1.3). Scene setup 0x1000a910 builds the plane list (four side planes from the
+// view-projection via 0x10006c20, then 0x100062e0 appends the near and the far plane) and every scene object is culled with it: AABB-tree
+// nodes and world surfaces (0x100081a0, 0x10008110 -> 0x10006340), cell boxes (0x100092f0, 0x100093e0), static models (0x100095b0),
+// the scene entities linked to a cell (0x100083e0), xmodel scene entities (0x100087e0) and brush-model entities (0x10009210), the
+// entity tests through 0x10006420 on a world-space box. See docs/spec/render-hints.md "World and static model culling".
 #pragma once
+
+#include <cmath>
 
 namespace iw2::game {
 
@@ -39,6 +41,50 @@ inline ViewPlane farViewPlane(const float eye[3], const float fwd[3], float farD
 inline bool boxCulledByDepthPlanes(const float mins[3], const float maxs[3], const float eye[3], const float fwd[3], float farDist) {
     if (boxOutsidePlane(nearViewPlane(eye, fwd), mins, maxs)) return true;
     return farDist != 0.0f && boxOutsidePlane(farViewPlane(eye, fwd, farDist), mins, maxs);
+}
+
+// The four side planes of the view (0x10006c20, called by the scene setup 0x1000a910 with the view-projection matrix and the table
+// 0x10182948 of clip-space planes (-1,0,0,1), (1,0,0,1), (0,-1,0,1), (0,1,0,1)): each table plane is taken back to world space through
+// the matrix and normalised by the length of its normal (d scaled with it). For a column-major matrix m (clip = m * p, element (r, c)
+// at m[c * 4 + r]) these are row3 - row0, row3 + row0, row3 - row1, row3 + row1. A box is culled by them with boxOutsidePlane.
+inline void frustumSidePlanes(const float m[16], ViewPlane out[4]) {
+    for (int k = 0; k < 4; ++k) {
+        const int axis = k >> 1;                  // 0: x, 1: y
+        const float sign = (k & 1) ? 1.0f : -1.0f; // table order: -x, +x, -y, +y
+        float p[4];
+        for (int c = 0; c < 4; ++c) p[c] = sign * m[c * 4 + axis] + m[c * 4 + 3];
+        const float len = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+        const float inv = len > 0.0f ? 1.0f / len : 0.0f;
+        out[k] = {{p[0] * inv, p[1] * inv, p[2] * inv}, p[3] * inv};
+    }
+}
+
+// True when the box is outside any of the planes (the plane loop of 0x10006420 / 0x10006340, without the occluder hulls).
+inline bool boxOutsidePlanes(const ViewPlane* planes, int count, const float mins[3], const float maxs[3]) {
+    for (int i = 0; i < count; ++i)
+        if (boxOutsidePlane(planes[i], mins, maxs)) return true;
+    return false;
+}
+
+// Squared distance from a point to a box (0x1005a670: per axis, the gap below mins or above maxs, squared and summed; 0 inside).
+inline float pointBoxDistanceSq(const float p[3], const float mins[3], const float maxs[3]) {
+    float s = 0.0f;
+    for (int a = 0; a < 3; ++a) {
+        const float below = mins[a] - p[a];
+        if (below > 0.0f) {
+            s += below * below;
+            continue;
+        }
+        const float above = p[a] - maxs[a];
+        if (above > 0.0f) s += above * above;
+    }
+    return s;
+}
+
+// Dynamic light surface selection (0x10014fe0): a drawn surface whose technique set has a point light technique gets the light when the
+// squared distance from the light origin to its box is <= radius^2 (equality keeps it).
+inline bool lightTouchesBox(const float origin[3], float radius, const float mins[3], const float maxs[3]) {
+    return pointBoxDistanceSq(origin, mins, maxs) <= radius * radius;
 }
 
 // World-space axis-aligned box of a local box under a column-major 4x4 transform (columns 0..2 = the basis vectors, column 3 = origin):

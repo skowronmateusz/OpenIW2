@@ -53,6 +53,7 @@
 #include "game/fx.h"
 #include "game/fog.h"
 #include "game/viewcull.h"
+#include "game/modellod.h"
 #include "game/viewspace.h"
 #include "game/marks.h"
 #include "game/outdoor.h"
@@ -382,6 +383,25 @@ struct Batch {
     float fxParm[2] = {0, 0};
     int sort = 0, materialOrder = 0; // see MatInfo
     bool emissive = false, multiplyFog = false, pointLit = false, pointBlend = false; // see MatInfo
+    // Static world batches (Scene::batches): the range of Scene::cullPieces whose indices make up the batch, in index order.
+    uint32_t pieceFirst = 0, pieceCount = 0;
+};
+
+// A cullable index range of a static world batch (docs/spec/render-hints.md "World and static model culling"): one world soup, or one
+// surface of one LOD of one static model.
+struct CullPiece {
+    uint32_t firstIndex = 0, indexCount = 0; // into Scene::cpuIndices (the static index buffer)
+    int32_t owner = 0;                       // >= 0: Scene::staticModels index; < 0: world soup box -(owner + 1) in Scene::soupBoxes
+    int32_t lod = 0;                         // static models: the LOD the range belongs to
+};
+
+// A placed static model (misc_model) as the culls see it: origin, scale, world box over all its LODs and the LOD distances.
+struct StaticModelInstance {
+    float origin[3] = {0, 0, 0};
+    float scale = 1.0f;
+    float mins[3] = {1e30f, 1e30f, 1e30f}, maxs[3] = {-1e30f, -1e30f, -1e30f};
+    float lodDist[4] = {0, 0, 0, 0};
+    int lodCount = 0;
 };
 
 struct Lightmap {
@@ -444,7 +464,27 @@ struct GpuModel {
     SDL_GPUBuffer* vertices = nullptr;
     SDL_GPUBuffer* indices = nullptr;
     std::vector<Batch> batches;
+    // Model-space box of the drawn vertices (for skinned models: of the last skinning), for the dynamic light surface test.
+    bool hasBounds = false;
+    float mins[3] = {0, 0, 0}, maxs[3] = {0, 0, 0};
 };
+
+// Largest offset of the flag cloth wave (flag_flap in the shaders: 5 * weight * the sum of the three amplitudes 1.5, 0.6, 0.34, times the
+// offset scale); the cull boxes of flag surfaces are padded by it so the moving cloth is never culled.
+constexpr float kFlagWaveMaxOffset = 5.0f * (1.5f + 0.6f + 0.34f);
+
+// Box of a vertex array's positions; waving (flag) vertices widen it by the largest wave offset.
+static void vertexBounds(const std::vector<GpuVertex>& verts, GpuModel& gm) {
+    gm.hasBounds = !verts.empty();
+    for (int a = 0; a < 3; ++a) gm.mins[a] = 1e30f, gm.maxs[a] = -1e30f;
+    for (const GpuVertex& v : verts) {
+        const float pad = v.wave[0] != 0.0f ? kFlagWaveMaxOffset * std::abs(v.wave[1]) : 0.0f;
+        for (int a = 0; a < 3; ++a) {
+            gm.mins[a] = std::min(gm.mins[a], v.pos[a] - pad);
+            gm.maxs[a] = std::max(gm.maxs[a], v.pos[a] + pad);
+        }
+    }
+}
 
 struct Scene {
     SDL_GPUBuffer* vertices = nullptr;
@@ -458,6 +498,12 @@ struct Scene {
     std::vector<Lightmap> lightmaps;
     Lightmap dummyLightmap;
     std::vector<Batch> batches;
+    // Culling data of `batches` (Renderer::cullWorld): the pieces, the world soup boxes (mins xyz, maxs xyz), the static models and a
+    // CPU copy of the static index buffer the per-frame index list is built from.
+    std::vector<CullPiece> cullPieces;
+    std::vector<std::array<float, 6>> soupBoxes;
+    std::vector<StaticModelInstance> staticModels;
+    std::vector<uint32_t> cpuIndices;
     SDL_GPUTexture* sky = nullptr;
     std::vector<WaterMat> waters;
     std::unique_ptr<game::CollisionWorld> collision;
@@ -479,6 +525,12 @@ struct Scene {
         assets::XModelParts parts;
         std::vector<assets::XSurface> surfaces;
         std::vector<MatInfo> materials;
+        // The model's LODs (docs/spec/render-hints.md "Model LOD"): distances, surface file names and material names; this entry holds
+        // LOD 0, the lower ones are loaded on first use by sceneCpuModelLod.
+        float lodDist[4] = {0, 0, 0, 0};
+        int lodCount = 0;
+        std::vector<std::string> lodNames;
+        std::vector<std::vector<std::string>> lodMaterials;
     };
     std::unordered_map<std::string, std::optional<CpuModel>> cpuModels;
     // Per (entity, model) GPU buffers re-filled every frame with skinned vertices.
@@ -808,6 +860,7 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
         up.buffer(gm.vertices, verts.data(), vb.size);
         up.buffer(gm.indices, indices.data(), ib.size);
         up.flush();
+        vertexBounds(verts, gm);
         slot = std::move(gm);
         return &*slot;
     } catch (const std::exception& e) {
@@ -833,6 +886,12 @@ const Scene::CpuModel* sceneCpuModel(Scene& scene, SDL_GPUDevice* dev, const fs:
         Uploader up(dev);
         for (const auto& mn : xm.lods[0].materials) cm.materials.push_back(sceneMaterial(scene, dev, up, vfs, mn));
         up.flush();
+        for (size_t k = 0; k < xm.lods.size() && k < 4; ++k) {
+            cm.lodDist[k] = xm.lods[k].distance;
+            cm.lodNames.push_back(xm.lods[k].name);
+            cm.lodMaterials.push_back(xm.lods[k].materials);
+        }
+        cm.lodCount = int(cm.lodNames.size());
         slot = std::move(cm);
         return &*slot;
     } catch (const std::exception& e) {
@@ -842,9 +901,39 @@ const Scene::CpuModel* sceneCpuModel(Scene& scene, SDL_GPUDevice* dev, const fs:
     }
 }
 
+// LOD `lod` (> 0) of a CPU model: its surfaces (skinned with the LOD 0 skeleton, which every LOD shares) and materials, cached under
+// "<name>#lod<k>". Null when the files are missing.
+const Scene::CpuModel* sceneCpuModelLod(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& name, const Scene::CpuModel& base, int lod) {
+    const std::string key = name + "#lod" + std::to_string(lod);
+    if (auto it = scene.cpuModels.find(key); it != scene.cpuModels.end()) return it->second ? &*it->second : nullptr;
+    auto& slot = scene.cpuModels[key];
+    try {
+        if (lod <= 0 || lod >= base.lodCount) throw std::runtime_error("no such LOD");
+        const auto sd = vfs.read("xmodelsurfs/" + base.lodNames[size_t(lod)]);
+        if (!sd) throw std::runtime_error("missing surfs " + base.lodNames[size_t(lod)]);
+        Scene::CpuModel cm;
+        cm.parts = base.parts;
+        cm.surfaces = assets::parseXModelSurfs(*sd, cm.parts);
+        Uploader up(dev);
+        for (const auto& mn : base.lodMaterials[size_t(lod)]) cm.materials.push_back(sceneMaterial(scene, dev, up, vfs, mn));
+        up.flush();
+        slot = std::move(cm);
+        return &*slot;
+    } catch (const std::exception& e) {
+        std::cerr << "warning: model " << name << " lod " << lod << ": " << e.what() << "\n";
+        slot.reset();
+        return nullptr;
+    }
+}
+
 // Skins a CPU model with a pose into its per-entity GPU buffers; returns the model to draw.
+// IW2_BENCH counters: models skinned on the CPU and their vertices since the last reset.
+struct SkinStats { uint64_t models = 0, vertices = 0; std::map<std::string, std::pair<int, uint64_t>>* byName = nullptr; };
+SkinStats g_skinStats;
+
 const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int entity, const std::string& name,
                           const Scene::CpuModel& cm, const assets::XPose& pose) {
+    ++g_skinStats.models;
     auto key = std::make_pair(entity, name);
     auto it = scene.skinned.find(key);
     std::vector<GpuVertex> verts;
@@ -887,6 +976,8 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
         b.indexCount = uint32_t(indices.size()) - b.firstIndex;
         batches.push_back(b);
     }
+    g_skinStats.vertices += verts.size();
+    if (g_skinStats.byName) { auto& e = (*g_skinStats.byName)[name]; ++e.first; e.second += verts.size(); }
     if (verts.empty()) return nullptr;
     if (it == scene.skinned.end()) {
         GpuModel gm;
@@ -903,6 +994,7 @@ const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int en
         it = scene.skinned.emplace(key, gm).first;
     }
     up.buffer(it->second.vertices, verts.data(), uint32_t(verts.size() * sizeof(GpuVertex)));
+    vertexBounds(verts, it->second);
     return &it->second;
 }
 
@@ -1500,6 +1592,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
 
     // Batches: group soups by (pass, texture, lightmap) and emit global 32-bit indices.
     std::map<BatchKey, std::vector<uint32_t>> groups;
+    std::map<BatchKey, std::vector<CullPiece>> groupPieces; // per static world group: its pieces, firstIndex relative to the group
     std::map<int, std::map<BatchKey, std::vector<uint32_t>>> brushGroups;
     for (size_t si = 0; si < bsp.soups().size(); ++si) {
         const auto& s = bsp.soups()[si];
@@ -1514,8 +1607,23 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         static const bool noSpec = std::getenv("IW2_NO_SPEC") != nullptr;
         const bool spec = !noSpec && lm >= 0 && mi.normalTex > 0 && mi.specTex > 0 &&
                           (mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.pass == Pass::Blend);
-        auto& dst = (soupOwner[si] > 0 ? brushGroups[soupOwner[si]] : groups)[{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend), mi.pointNormalTex, int(mi.pointNormalState)}];
+        const BatchKey key{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend), mi.pointNormalTex, int(mi.pointNormalState)};
+        auto& dst = (soupOwner[si] > 0 ? brushGroups[soupOwner[si]] : groups)[key];
+        const uint32_t pieceStart = uint32_t(dst.size());
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
+        if (soupOwner[si] == 0) {
+            // The soup's own box from its indexed vertices (0x10002700), tested on its own each frame (Renderer::cullWorld).
+            std::array<float, 6> box{1e30f, 1e30f, 1e30f, -1e30f, -1e30f, -1e30f};
+            for (uint32_t k = 0; k < s.indexCount; ++k) {
+                const auto& pos = bsp.vertices()[s.firstVertex + bsp.indices()[s.firstIndex + k]].position;
+                for (int a = 0; a < 3; ++a) {
+                    box[size_t(a)] = std::min(box[size_t(a)], pos[size_t(a)]);
+                    box[size_t(3 + a)] = std::max(box[size_t(3 + a)], pos[size_t(a)]);
+                }
+            }
+            scene.soupBoxes.push_back(box);
+            groupPieces[key].push_back({pieceStart, s.indexCount, -int32_t(scene.soupBoxes.size()), 0});
+        }
         if (soupOwner[si] > 0) {
             auto bb = scene.brushBounds.try_emplace(soupOwner[si], std::array<float, 6>{1e30f, 1e30f, 1e30f, -1e30f, -1e30f, -1e30f}).first;
             for (uint32_t k = 0; k < s.indexCount; ++k) {
@@ -1546,9 +1654,76 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     scene.grid = std::make_unique<assets::LightGrid>(bsp.lump(2), bsp.lump(3));
     const assets::LightGrid& grid = *scene.grid;
 
-    // Static models placed by entities (world-space copies, lit per vertex from the light grid).
-    struct ModelData { std::vector<assets::XSurface> surfaces; std::vector<MatInfo> materials; };
+    // Static models placed by entities (world-space copies, lit per vertex from the light grid). Every LOD of every model is baked;
+    // Renderer::cullWorld draws the LOD the original picks per frame (docs/spec/render-hints.md "Model LOD"). LOD 0 of every model is
+    // baked first and the lower LODs after all of them, so the materials of LOD 0 register in the same order as before.
+    struct ModelLod { std::vector<assets::XSurface> surfaces; std::vector<MatInfo> materials; };
+    struct ModelData {
+        std::vector<ModelLod> lods; // [0] loaded with the model, the rest by the second pass
+        std::vector<std::string> lodNames;
+        std::vector<std::string> lodMaterials[4];
+        float lodDist[4] = {0, 0, 0, 0};
+        std::optional<assets::XModelParts> parts;
+        bool lowerLoaded = false;
+    };
     std::unordered_map<std::string, std::optional<ModelData>> modelCache;
+    // The placement and light of one model instance, kept for the second (lower LOD) pass.
+    struct Placed {
+        size_t instance;
+        ModelData* model;
+        Vec3 origin, ax0, ax1, ax2;
+        float scale;
+        assets::LightGridCoeffs coeffs;
+        float sunVis;
+        bool haveGrid;
+    };
+    std::vector<Placed> placed;
+    auto bakeLod = [&](const Placed& pl, int lod) {
+        const ModelLod& ml = pl.model->lods[size_t(lod)];
+        StaticModelInstance& inst = scene.staticModels[pl.instance];
+        auto xf = [&](const std::array<float, 3>& v, float k, bool translate) {
+            Vec3 r = pl.ax0 * (v[0] * k) + pl.ax1 * (v[1] * k) + pl.ax2 * (v[2] * k);
+            return translate ? r + pl.origin : r;
+        };
+        for (size_t si = 0; si < ml.surfaces.size(); ++si) {
+            const auto& surf = ml.surfaces[si];
+            const MatInfo mi = si < ml.materials.size() ? ml.materials[si] : MatInfo{Pass::Opaque, 0};
+            if (mi.pass == Pass::Skip) continue;
+            const uint32_t base = uint32_t(verts.size());
+            const float pad = mi.flag ? kFlagWaveMaxOffset * std::abs(pl.scale) : 0.0f;
+            for (const auto& v : surf.vertices) {
+                GpuVertex g{};
+                const Vec3 p = xf(v.position, pl.scale, true), n = normalize(xf(v.normal, 1.0f, false));
+                g.pos[0] = p.x; g.pos[1] = p.y; g.pos[2] = p.z;
+                const float pc[3] = {p.x, p.y, p.z};
+                for (int k = 0; k < 3; ++k) {
+                    inst.mins[k] = std::min(inst.mins[k], pc[k] - pad);
+                    inst.maxs[k] = std::max(inst.maxs[k], pc[k] + pad);
+                }
+                g.normal[0] = n.x; g.normal[1] = n.y; g.normal[2] = n.z;
+                const Vec3 tangent = normalize(xf(v.tangent, 1.0f, false)), binormal = normalize(xf(v.binormal, 1.0f, false));
+                g.tangent[0] = tangent.x; g.tangent[1] = tangent.y; g.tangent[2] = tangent.z;
+                g.binormal[0] = binormal.x; g.binormal[1] = binormal.y; g.binormal[2] = binormal.z;
+                { const auto c = assets::drawnVertexColor(mi.flag, v.color); std::memcpy(g.color, c.data(), 4); }
+                // Baked into world space: the wave runs in model space before the placement, so its offset takes the model scale.
+                // TODO(spec): whether static models wave in the original depends on the smodel technique the renderer picks
+                // (the flag techset maps only "lightprobe smodel no fog" to a flag shader; the fog and cached variants are rigid).
+                if (mi.flag) g.wave[0] = float(v.color[3]) / 255.0f, g.wave[1] = pl.scale;
+                g.uv[0] = v.uv[0]; g.uv[1] = v.uv[1];
+                const float ndl = std::max(0.0f, dot(n, scene.sunDirection));
+                std::array<float, 3> probe = {0.45f, 0.45f, 0.45f};
+                if (pl.haveGrid) probe = assets::LightGrid::evaluate(pl.coeffs, {n.x, n.y, n.z});
+                g.light[0] = probe[0] + pl.sunVis * ndl * scene.sunColor.x;
+                g.light[1] = probe[1] + pl.sunVis * ndl * scene.sunColor.y;
+                g.light[2] = probe[2] + pl.sunVis * ndl * scene.sunColor.z;
+                verts.push_back(g);
+            }
+            const BatchKey key{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1, 0, 0, -1, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend), mi.pointNormalTex, int(mi.pointNormalState)};
+            auto& dst = groups[key];
+            groupPieces[key].push_back({uint32_t(dst.size()), uint32_t(surf.indices.size()), int32_t(pl.instance), lod});
+            for (uint16_t i : surf.indices) dst.push_back(base + i);
+        }
+    };
     size_t modelCount = 0;
     for (const auto& e : bsp.entities()) {
         const std::string* cls = e.get("classname");
@@ -1565,15 +1740,22 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 const auto sd = vfs.read("xmodelsurfs/" + xm.lods.at(0).name);
                 if (!pd || !sd) throw std::runtime_error("missing parts or surfs");
                 ModelData d;
-                d.surfaces = assets::parseXModelSurfs(*sd, assets::parseXModelParts(*pd));
-                for (const auto& mn : xm.lods[0].materials) d.materials.push_back(material(mn));
+                d.parts = assets::parseXModelParts(*pd);
+                d.lods.emplace_back();
+                d.lods[0].surfaces = assets::parseXModelSurfs(*sd, *d.parts);
+                for (const auto& mn : xm.lods[0].materials) d.lods[0].materials.push_back(material(mn));
+                for (size_t k = 0; k < xm.lods.size() && k < 4; ++k) {
+                    d.lodNames.push_back(xm.lods[k].name);
+                    d.lodMaterials[k] = xm.lods[k].materials;
+                    d.lodDist[k] = xm.lods[k].distance;
+                }
                 cached = std::move(d);
             } catch (const std::exception& ex) {
                 std::cerr << "warning: " << *model << ": " << ex.what() << "\n";
                 cached = ModelData{};
             }
         }
-        if (cached->surfaces.empty()) continue;
+        if (cached->lods.empty() || cached->lods[0].surfaces.empty()) continue;
 
         Vec3 origin, angles;
         float scale = 1.0f;
@@ -1585,52 +1767,53 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         const float sp = std::sin(angles.x * d2r), cp = std::cos(angles.x * d2r);
         const float sy = std::sin(angles.y * d2r), cy = std::cos(angles.y * d2r);
         const float sr = std::sin(angles.z * d2r), cr = std::cos(angles.z * d2r);
-        const Vec3 ax0{cp * cy, cp * sy, -sp};
-        const Vec3 ax1{sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, sr * cp};
-        const Vec3 ax2{cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp};
-        auto xf = [&](const std::array<float, 3>& v, float k, bool translate) {
-            Vec3 r = ax0 * (v[0] * k) + ax1 * (v[1] * k) + ax2 * (v[2] * k);
-            return translate ? r + origin : r;
-        };
-
+        Placed pl{};
+        pl.model = &*cached;
+        pl.origin = origin;
+        pl.ax0 = Vec3{cp * cy, cp * sy, -sp};
+        pl.ax1 = Vec3{sr * sp * cy - cr * sy, sr * sp * sy + cr * cy, sr * cp};
+        pl.ax2 = Vec3{cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp};
+        pl.scale = scale;
         // One light-grid sample at the model origin, as the original does per model (inferred).
-        assets::LightGridCoeffs coeffs{};
-        float sunVis = 1.0f;
-        const bool haveGrid = grid.sample({origin.x, origin.y, origin.z + 4.0f}, coeffs, sunVis);
-
-        for (size_t si = 0; si < cached->surfaces.size(); ++si) {
-            const auto& surf = cached->surfaces[si];
-            const MatInfo mi = si < cached->materials.size() ? cached->materials[si] : MatInfo{Pass::Opaque, 0};
-            if (mi.pass == Pass::Skip) continue;
-            const uint32_t base = uint32_t(verts.size());
-            for (const auto& v : surf.vertices) {
-                GpuVertex g{};
-                const Vec3 p = xf(v.position, scale, true), n = normalize(xf(v.normal, 1.0f, false));
-                g.pos[0] = p.x; g.pos[1] = p.y; g.pos[2] = p.z;
-                g.normal[0] = n.x; g.normal[1] = n.y; g.normal[2] = n.z;
-                const Vec3 tangent = normalize(xf(v.tangent, 1.0f, false)), binormal = normalize(xf(v.binormal, 1.0f, false));
-                g.tangent[0] = tangent.x; g.tangent[1] = tangent.y; g.tangent[2] = tangent.z;
-                g.binormal[0] = binormal.x; g.binormal[1] = binormal.y; g.binormal[2] = binormal.z;
-                { const auto c = assets::drawnVertexColor(mi.flag, v.color); std::memcpy(g.color, c.data(), 4); }
-                // Baked into world space: the wave runs in model space before the placement, so its offset takes the model scale.
-                // TODO(spec): whether static models wave in the original depends on the smodel technique the renderer picks
-                // (the flag techset maps only "lightprobe smodel no fog" to a flag shader; the fog and cached variants are rigid).
-                if (mi.flag) g.wave[0] = float(v.color[3]) / 255.0f, g.wave[1] = scale;
-                g.uv[0] = v.uv[0]; g.uv[1] = v.uv[1];
-                const float ndl = std::max(0.0f, dot(n, scene.sunDirection));
-                std::array<float, 3> probe = {0.45f, 0.45f, 0.45f};
-                if (haveGrid) probe = assets::LightGrid::evaluate(coeffs, {n.x, n.y, n.z});
-                g.light[0] = probe[0] + sunVis * ndl * scene.sunColor.x;
-                g.light[1] = probe[1] + sunVis * ndl * scene.sunColor.y;
-                g.light[2] = probe[2] + sunVis * ndl * scene.sunColor.z;
-                verts.push_back(g);
-            }
-            auto& dst = groups[{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1, 0, 0, -1, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend), mi.pointNormalTex, int(mi.pointNormalState)}];
-            for (uint16_t i : surf.indices) dst.push_back(base + i);
-        }
+        pl.sunVis = 1.0f;
+        pl.haveGrid = grid.sample({origin.x, origin.y, origin.z + 4.0f}, pl.coeffs, pl.sunVis);
+        pl.instance = scene.staticModels.size();
+        StaticModelInstance inst;
+        inst.origin[0] = origin.x, inst.origin[1] = origin.y, inst.origin[2] = origin.z;
+        inst.scale = scale;
+        inst.lodCount = int(pl.model->lodNames.size());
+        for (int k = 0; k < inst.lodCount; ++k) inst.lodDist[k] = pl.model->lodDist[k];
+        scene.staticModels.push_back(inst);
+        bakeLod(pl, 0);
+        placed.push_back(pl);
         ++modelCount;
     }
-    std::cout << "placed " << modelCount << " static models (" << modelCache.size() << " unique)\n";
+    // Second pass: the lower LODs (each model's LOD files and materials once, then every instance of it).
+    size_t lowerLods = 0;
+    for (Placed& pl : placed) {
+        ModelData& md = *pl.model;
+        if (!md.lowerLoaded) {
+            md.lowerLoaded = true;
+            for (size_t k = 1; k < md.lodNames.size(); ++k) {
+                ModelLod ml;
+                try {
+                    const auto sd = vfs.read("xmodelsurfs/" + md.lodNames[k]);
+                    if (!sd) throw std::runtime_error("missing surfs " + md.lodNames[k]);
+                    ml.surfaces = assets::parseXModelSurfs(*sd, *md.parts);
+                    for (const auto& mn : md.lodMaterials[k]) ml.materials.push_back(material(mn));
+                } catch (const std::exception& ex) {
+                    std::cerr << "warning: lod " << k << " of " << md.lodNames[0] << ": " << ex.what() << "\n";
+                    ml = ModelLod{};
+                }
+                md.lods.push_back(std::move(ml));
+            }
+        }
+        for (size_t k = 1; k < md.lods.size(); ++k) {
+            bakeLod(pl, int(k));
+            ++lowerLods;
+        }
+    }
+    std::cout << "placed " << modelCount << " static models (" << modelCache.size() << " unique, " << lowerLods << " lower LODs baked)\n";
 
     std::vector<uint32_t> indices;
     auto emitBatches = [&](const auto& grouped, std::vector<Batch>& out) {
@@ -1660,6 +1843,15 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         b.firstIndex = uint32_t(indices.size());
         b.indexCount = uint32_t(idx.size());
         indices.insert(indices.end(), idx.begin(), idx.end());
+        if (&out == &scene.batches)
+            if (const auto gp = groupPieces.find(key); gp != groupPieces.end()) {
+                b.pieceFirst = uint32_t(scene.cullPieces.size());
+                b.pieceCount = uint32_t(gp->second.size());
+                for (CullPiece pc : gp->second) {
+                    pc.firstIndex += b.firstIndex;
+                    scene.cullPieces.push_back(pc);
+                }
+            }
         out.push_back(b);
     }
     };
@@ -1677,6 +1869,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     if (!scene.vertices || !scene.indices) sdlFail("SDL_CreateGPUBuffer");
     up.buffer(scene.vertices, verts.data(), vb.size);
     up.buffer(scene.indices, indices.data(), ib.size);
+    scene.cpuIndices = indices;
     {
         // Tangent frame of the BSP vertices (lib/normalmap.hlsl Normal_VertexSetup); static-model vertices appended after them have none.
         std::vector<float> tbn(verts.size() * 6, 0.0f);
@@ -1800,6 +1993,16 @@ static bool zFeatherFrom(const std::map<std::string, std::string>& cvars) {
     return true;
 }
 
+// r_lodScale (float 1..4, default 1) and r_lodBias (float -1000..0, default 0), registered at dll 0x1000acf9 / 0x1000ad1a: the menu cvar
+// store, else the defaults (docs/spec/render-hints.md "Model LOD").
+static void lodDvarsFrom(const std::map<std::string, std::string>& cvars, float& scale, float& bias) {
+    scale = 1.0f, bias = 0.0f;
+    for (const char* k : {"r_lodScale", "r_lodscale"})
+        if (const auto it = cvars.find(k); it != cvars.end()) scale = std::clamp(float(std::atof(it->second.c_str())), 1.0f, 4.0f);
+    for (const char* k : {"r_lodBias", "r_lodbias"})
+        if (const auto it = cvars.find(k); it != cvars.end()) bias = std::clamp(float(std::atof(it->second.c_str())), -1000.0f, 0.0f);
+}
+
 // r_dlightLimit dvar (int 0..32, registered at DLL 0x1000b318 with default 4): the menu cvar store, else the registered default.
 static size_t dlightLimitFrom(const std::map<std::string, std::string>& cvars) {
     for (const char* k : {"r_dlightLimit", "r_dlightlimit"}) {
@@ -1895,6 +2098,14 @@ struct Quad2D {
 };
 
 struct Renderer {
+    // Per-frame submission counters (IW2_BENCH, docs/debug-flags.md): indexed draws and their triangles.
+    struct Stats { uint64_t draws = 0, triangles = 0, phaseTriangles[4] = {0, 0, 0, 0}; int phase = 0; } stats; // phase: 0 other, 1 floatz, 2 lit + emissive walks, 3 dynamic lights
+    void drawIndexed(SDL_GPURenderPass* p, uint32_t indexCount, uint32_t instances, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) {
+        ++stats.draws;
+        stats.triangles += uint64_t(indexCount / 3) * instances;
+        stats.phaseTriangles[stats.phase] += uint64_t(indexCount / 3) * instances;
+        SDL_DrawGPUIndexedPrimitives(p, indexCount, instances, firstIndex, vertexOffset, firstInstance);
+    }
     SDL_GPUDevice* dev = nullptr;
     SDL_GPUBuffer* overlayVerts = nullptr;
     SDL_GPUBuffer* overlayIndices = nullptr;
@@ -2565,6 +2776,140 @@ struct Renderer {
         }
     }
 
+    // Per-frame world cull (docs/spec/render-hints.md "World and static model culling" and "Dynamic lights"): Scene::batches reduced
+    // to their visible pieces (world soups whose box is inside the side and near planes; static models that pass the distance cull and
+    // the box test, at the LOD picked for them), and per dynamic light the pieces of its point-lit batches whose box it touches. All of
+    // it is one index buffer, rebuilt and uploaded in the frame's own command buffer. IW2_NO_CULL=1 keeps every soup, every static
+    // model at LOD 0 and every light on every piece (the draw before the cull existed).
+    std::vector<Batch> culledBatches;                   // parallel to Scene::batches; indexCount 0 = nothing visible
+    std::vector<std::vector<Batch>> culledLightBatches; // [dlight][Scene::batches index]
+    std::vector<uint32_t> culledIndices;
+    std::vector<int8_t> staticLods;
+    std::vector<uint8_t> soupVisible;
+    SDL_GPUBuffer* culledIndexBuf = nullptr;
+    SDL_GPUTransferBuffer* culledTransfer = nullptr;
+    uint32_t culledCapacity = 0;                        // indices
+    float lodScaleDvar = 1.0f, lodBiasDvar = 0.0f;      // r_lodScale / r_lodBias (dll 0x1000acf9 / 0x1000ad1a: defaults 1 and 0)
+    struct CullStats { uint32_t soups = 0, soupsVisible = 0, models = 0, modelsVisible = 0, modelsBeyond = 0; } cullStats;
+
+    void cullWorld(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& cam, const Mat4& vp) {
+        static const bool noCull = std::getenv("IW2_NO_CULL") != nullptr;
+        static const bool noLod = std::getenv("IW2_NO_LOD") != nullptr; // debug: LOD 0 and no distance cull, the plane and light culls stay
+        game::ViewPlane planes[5];
+        game::frustumSidePlanes(vp.data(), planes);
+        const Vec3 f = cam.forward();
+        const float eye[3] = {cam.pos.x, cam.pos.y, cam.pos.z}, fwd[3] = {f.x, f.y, f.z};
+        planes[4] = game::nearViewPlane(eye, fwd);
+        const game::LodView lv = game::lodView(eye, cam.fovX43, lodScaleDvar, lodBiasDvar);
+        cullStats = {};
+        cullStats.models = uint32_t(scene.staticModels.size());
+        cullStats.soups = uint32_t(scene.soupBoxes.size());
+        staticLods.resize(scene.staticModels.size());
+        for (size_t i = 0; i < scene.staticModels.size(); ++i) {
+            const StaticModelInstance& m = scene.staticModels[i];
+            int lod = noCull || noLod ? 0 : game::staticModelLod(lv, m.origin, m.scale, m.lodDist, m.lodCount);
+            if (lod < 0) ++cullStats.modelsBeyond;
+            if (lod >= 0 && !noCull && game::boxOutsidePlanes(planes, 5, m.mins, m.maxs)) lod = -1;
+            if (lod >= 0) ++cullStats.modelsVisible;
+            staticLods[i] = int8_t(lod);
+        }
+        soupVisible.resize(scene.soupBoxes.size());
+        for (size_t i = 0; i < scene.soupBoxes.size(); ++i) {
+            const auto& b = scene.soupBoxes[i];
+            soupVisible[i] = noCull || !game::boxOutsidePlanes(planes, 5, &b[0], &b[3]);
+            cullStats.soupsVisible += soupVisible[i];
+        }
+        auto pieceVisible = [&](const CullPiece& pc) {
+            return pc.owner >= 0 ? staticLods[size_t(pc.owner)] == pc.lod : soupVisible[size_t(-pc.owner - 1)] != 0;
+        };
+        auto pieceBox = [&](const CullPiece& pc, const float*& mn, const float*& mx) {
+            if (pc.owner >= 0) {
+                mn = scene.staticModels[size_t(pc.owner)].mins;
+                mx = scene.staticModels[size_t(pc.owner)].maxs;
+            } else {
+                mn = &scene.soupBoxes[size_t(-pc.owner - 1)][0];
+                mx = &scene.soupBoxes[size_t(-pc.owner - 1)][3];
+            }
+        };
+        culledIndices.clear();
+        // Appends the batch's pieces that pass `keep` (in index order, adjacent ranges copied as one) and returns the batch with its range
+        // in culledIndices.
+        auto compact = [&](const Batch& src, auto&& keep) {
+            Batch b = src;
+            b.firstIndex = uint32_t(culledIndices.size());
+            uint32_t runFirst = 0, runEnd = 0;
+            bool run = false;
+            auto flush = [&]() {
+                if (run) culledIndices.insert(culledIndices.end(), scene.cpuIndices.begin() + runFirst, scene.cpuIndices.begin() + runEnd);
+            };
+            for (uint32_t k = 0; k < src.pieceCount; ++k) {
+                const CullPiece& pc = scene.cullPieces[src.pieceFirst + k];
+                if (!pieceVisible(pc) || !keep(pc)) continue;
+                if (run && pc.firstIndex == runEnd) {
+                    runEnd += pc.indexCount;
+                    continue;
+                }
+                flush();
+                runFirst = pc.firstIndex;
+                runEnd = pc.firstIndex + pc.indexCount;
+                run = true;
+            }
+            flush();
+            b.indexCount = uint32_t(culledIndices.size()) - b.firstIndex;
+            return b;
+        };
+        culledBatches.resize(scene.batches.size());
+        for (size_t i = 0; i < scene.batches.size(); ++i) {
+            if (scene.batches[i].pass == Pass::Sky) { // drawn by the sky pass from the static buffer
+                culledBatches[i] = scene.batches[i];
+                culledBatches[i].indexCount = 0;
+                continue;
+            }
+            culledBatches[i] = compact(scene.batches[i], [](const CullPiece&) { return true; });
+        }
+        culledLightBatches.assign(dlights.size(), {});
+        for (size_t li = 0; li < dlights.size(); ++li) {
+            auto& out = culledLightBatches[li];
+            out.resize(scene.batches.size());
+            const DLight& dl = dlights[li];
+            for (size_t i = 0; i < scene.batches.size(); ++i) {
+                out[i] = scene.batches[i];
+                out[i].indexCount = 0;
+                if (!scene.batches[i].pointLit || culledBatches[i].indexCount == 0) continue;
+                out[i] = compact(scene.batches[i], [&](const CullPiece& pc) {
+                    if (noCull) return true;
+                    const float *mn, *mx;
+                    pieceBox(pc, mn, mx);
+                    return game::lightTouchesBox(dl.pos, dl.radius, mn, mx);
+                });
+            }
+        }
+        const uint32_t n = uint32_t(culledIndices.size());
+        if (n == 0) return;
+        if (n > culledCapacity) {
+            if (culledIndexBuf) SDL_ReleaseGPUBuffer(dev, culledIndexBuf);
+            if (culledTransfer) SDL_ReleaseGPUTransferBuffer(dev, culledTransfer);
+            culledCapacity = std::max(n, culledCapacity + culledCapacity / 2);
+            SDL_GPUBufferCreateInfo bi{};
+            bi.usage = SDL_GPU_BUFFERUSAGE_INDEX;
+            bi.size = culledCapacity * 4;
+            culledIndexBuf = SDL_CreateGPUBuffer(dev, &bi);
+            SDL_GPUTransferBufferCreateInfo ti{};
+            ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+            ti.size = culledCapacity * 4;
+            culledTransfer = SDL_CreateGPUTransferBuffer(dev, &ti);
+            if (!culledIndexBuf || !culledTransfer) sdlFail("culled index buffer");
+        }
+        void* dst = SDL_MapGPUTransferBuffer(dev, culledTransfer, true);
+        std::memcpy(dst, culledIndices.data(), size_t(n) * 4);
+        SDL_UnmapGPUTransferBuffer(dev, culledTransfer);
+        SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+        const SDL_GPUTransferBufferLocation src{culledTransfer, 0};
+        const SDL_GPUBufferRegion region{culledIndexBuf, 0, n * 4};
+        SDL_UploadToGPUBuffer(cp, &src, &region, true);
+        SDL_EndGPUCopyPass(cp);
+    }
+
     // Draws the frame; with r_gamma != 1 the whole frame (menus and HUD included, like the hardware ramp of the original) goes to an
     // offscreen texture first and a final full-screen pass applies the ramp (game/gammaramp.h, docs/spec/ui.md "Brightness").
     void draw(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam,
@@ -2604,6 +2949,7 @@ struct Renderer {
     void drawFrame(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam,
                    const std::vector<DrawItem>& items, const std::vector<Quad2D>& overlay, float blur) {
         ensureDepth(w, h);
+        cullWorld(cmd, scene, cam, cam.viewProj(float(w) / float(h)));
         {   // gameTime for every vs_main / vs_dlight draw of this command buffer (vertex uniform slot 1)
             const assets::GameTimeConst g = assets::gameTimeConst(renderTimeMs);
             const float gt[4] = {g.x, g.y, g.z, g.w};
@@ -2748,6 +3094,7 @@ struct Renderer {
             fds.store_op = SDL_GPU_STOREOP_DONT_CARE;
             fds.texture = depth; // $floatz is single-sampled
             SDL_GPURenderPass* fp = SDL_BeginGPURenderPass(cmd, &fz, 1, &fds);
+            stats.phase = 1;
             auto drawFz = [&](const Batch& b, VU u) {
                 if (b.pass != Pass::Opaque && b.pass != Pass::AlphaTest) return;
                 SDL_BindGPUGraphicsPipeline(fp, floatzPipes[std::clamp(int(b.polygonOffset), 0, 2)][std::clamp(b.cull, 0, 2)]);
@@ -2757,13 +3104,18 @@ struct Renderer {
                 SDL_BindGPUFragmentSamplers(fp, 0, &tb, 1);
                 const struct { float p[4]; } fzu{{b.pass == Pass::AlphaTest ? 1.0f : 0.0f, 0.0f, 0, 0}};
                 SDL_PushGPUFragmentUniformData(cmd, 0, &fzu, sizeof(fzu));
-                SDL_DrawGPUIndexedPrimitives(fp, b.indexCount, 1, b.firstIndex, 0, 0);
+                drawIndexed(fp, b.indexCount, 1, b.firstIndex, 0, 0);
             };
             SDL_GPUBufferBinding fvb{scene.vertices, 0};
             SDL_BindGPUVertexBuffers(fp, 0, &fvb, 1);
+            if (culledIndexBuf) { // the static world after the cull (cullWorld)
+                SDL_GPUBufferBinding cib{culledIndexBuf, 0};
+                SDL_BindGPUIndexBuffer(fp, &cib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                for (const Batch& b : culledBatches)
+                    if (b.indexCount) drawFz(b, vu);
+            }
             SDL_GPUBufferBinding fib{scene.indices, 0};
             SDL_BindGPUIndexBuffer(fp, &fib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-            for (const Batch& b : scene.batches) drawFz(b, vu);
             for (const DrawItem& it : items) {
                 if (!it.worldBatches) continue;
                 VU u = vu;
@@ -2785,15 +3137,17 @@ struct Renderer {
                 for (const Batch& b : it.model->batches) drawFz(b, u);
             }
             SDL_EndGPURenderPass(fp);
+            stats.phase = 0;
         }
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &ds);
 
         // World surface groups: the static world, then each visible brush model at its entity transform (same shaders,
         // lightmaps and buffers).
-        struct WorldGroup { const std::vector<Batch>* batches; Mat4 model; };
-        std::vector<WorldGroup> worldGroups{{&scene.batches, kIdentity}};
+        // The static world is drawn from the culled index buffer (cullWorld), brush models from the static one.
+        struct WorldGroup { const std::vector<Batch>* batches; Mat4 model; SDL_GPUBuffer* indices; };
+        std::vector<WorldGroup> worldGroups{{&culledBatches, kIdentity, culledIndexBuf}};
         for (const DrawItem& it : items)
-            if (it.worldBatches) worldGroups.push_back({it.worldBatches, it.transform});
+            if (it.worldBatches) worldGroups.push_back({it.worldBatches, it.transform, scene.indices});
         // Binds the pass pipeline for a batch's polygon offset level; w of eye carries the constant depth bias.
         // lib/shade.hlsl USE_DETAIL: texture slot 3 + detailScale in FragmentUniforms.scroll.yzw (white texture when absent).
         auto detailBinding = [&](int d) {
@@ -2823,7 +3177,7 @@ struct Renderer {
             SDL_GPUTextureSamplerBinding sb{scene.sky, clampSampler};
             SDL_BindGPUFragmentSamplers(pass, 0, &sb, 1);
             for (const Batch& b : scene.batches)
-                if (b.pass == Pass::Sky) SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                if (b.pass == Pass::Sky) drawIndexed(pass, b.indexCount, 1, b.firstIndex, 0, 0);
         }
         // One l_point draw of a world batch (the DLL collects the touched surfaces per light, 0x10014fe0).
         auto drawDlightBatch = [&](const DLight& dl, const Batch& b, const Mat4& model) {
@@ -2852,34 +3206,40 @@ struct Renderer {
             fu.eye[0] = cam.pos.x, fu.eye[1] = cam.pos.y, fu.eye[2] = cam.pos.z;
             for (int k = 0; k < 16; ++k) fu.ramp[k] = ramp[k] / 255.0f;
             SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
-            SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+            drawIndexed(pass, b.indexCount, 1, b.firstIndex, 0, 0);
         };
         // The scene draw list (1.3 renderer key writer 0x100247d0, sort 0x10024900): world, brush-model, static and dynamic surfaces in one order.
         // Effect sprites and clouds stay after it (type-2 records sort after every other record).
-        struct ListRef { const Batch* batch; const Mat4* model; const DrawItem* item; assets::SurfaceKey key; };
+        // worldIndex: the Scene::batches index of a static world batch (its per-light ranges in culledLightBatches), else -1.
+        struct ListRef { const Batch* batch; const Mat4* model; const DrawItem* item; assets::SurfaceKey key; SDL_GPUBuffer* indices; int worldIndex; };
         std::vector<ListRef> drawList;
         for (size_t g = 0; g < worldGroups.size(); ++g)
-            for (const Batch& b : *worldGroups[g].batches) {
-                if (b.pass == Pass::Sky || b.pass == Pass::Skip || b.pass == Pass::Objective) continue;
+            for (size_t bi = 0; bi < worldGroups[g].batches->size(); ++bi) {
+                const Batch& b = (*worldGroups[g].batches)[bi];
+                if (b.pass == Pass::Sky || b.pass == Pass::Skip || b.pass == Pass::Objective || b.indexCount == 0) continue;
                 const int entity = g ? int(g) : b.lightmap == -2 ? assets::kStaticModelEntity : assets::kWorldEntity;
-                drawList.push_back({&b, &worldGroups[g].model, nullptr, {b.sort, b.materialOrder, b.lightmap >= 0 ? b.lightmap : 31, entity}});
+                drawList.push_back({&b, &worldGroups[g].model, nullptr, {b.sort, b.materialOrder, b.lightmap >= 0 ? b.lightmap : 31, entity},
+                                    worldGroups[g].indices, g ? -1 : int(bi)});
             }
         for (size_t n = 0; n < items.size(); ++n) {
             if (!items[n].model || items[n].effects) continue;
             for (const Batch& b : items[n].model->batches)
                 if (b.fxKind == 0 && b.pass != Pass::Objective && b.pass != Pass::Skip && b.pass != Pass::Sky)
-                    drawList.push_back({&b, &items[n].transform, &items[n], {b.sort, b.materialOrder, 31, int(n)}});
+                    drawList.push_back({&b, &items[n].transform, &items[n], {b.sort, b.materialOrder, 31, int(n)}, nullptr, -1});
         }
         std::stable_sort(drawList.begin(), drawList.end(), [](const ListRef& x, const ListRef& y) { return assets::surfaceDrawsBefore(x.key, y.key); });
         int stream = -1; // what the world buffers are bound as: 0 single vertex stream, 1 with the tangent frame, -1 not bound
-        auto bindStream = [&](int want) {
-            if (stream == want) return;
+        SDL_GPUBuffer* streamIndices = nullptr; // the index buffer bound with them (static or culled)
+        auto bindStream = [&](int want, SDL_GPUBuffer* indexBuf) {
+            if (stream == want && streamIndices == indexBuf) return;
             if (want) {
                 SDL_GPUBufferBinding tvb[2] = {{scene.vertices, 0}, {scene.tbn, 0}};
                 SDL_BindGPUVertexBuffers(pass, 0, tvb, 2);
             } else SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
-            SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+            const SDL_GPUBufferBinding sib{indexBuf, 0};
+            SDL_BindGPUIndexBuffer(pass, &sib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
             stream = want;
+            streamIndices = indexBuf;
         };
         auto bindItem = [&](const DrawItem& it) {
             SDL_GPUBufferBinding mvb{it.model->vertices, 0};
@@ -2923,7 +3283,7 @@ struct Renderer {
             detailUniforms(fu, b.detail);
             if (p != Pass::Multiply) applyFog(fu, p); // additive: black fog colour (render-hints.md); the multiply fix-up pass is world-only
             SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
-            SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+            drawIndexed(pass, b.indexCount, 1, b.firstIndex, 0, 0);
             unbindItem(it);
         };
         auto drawItemDlight = [&](const DLight& dl, const DrawItem& it, const Batch& b) {
@@ -2955,13 +3315,13 @@ struct Renderer {
             }
             for (int k = 0; k < 16; ++k) fu.ramp[k] = ramp[k] / 255.0f;
             SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
-            SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+            drawIndexed(pass, b.indexCount, 1, b.firstIndex, 0, 0);
             unbindItem(it);
         };
-        auto drawWater = [&](const Batch& b, const Mat4& model) {
+        auto drawWater = [&](const Batch& b, const Mat4& model, SDL_GPUBuffer* indexBuf) {
             const WaterMat& wm = scene.waters[size_t(b.texture)];
             if (!wm.cube || !wm.normalMap) return;
-            bindStream(0);
+            bindStream(0, indexBuf);
             SDL_BindGPUGraphicsPipeline(pass, waterPipelines[wm.blend ? 1 : 0][b.cull]);
             VU wu = vu;
             wu.model = model;
@@ -2977,7 +3337,7 @@ struct Renderer {
                 {wm.color[0], wm.color[1], wm.color[2], 0}};
             applyFog(fu);
             SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
-            SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+            drawIndexed(pass, b.indexCount, 1, b.firstIndex, 0, 0);
         };
         // One walk of the list: the lit surfaces (technique type 6) or the emissive ones (0x18 / 0x15).
         auto drawListWalk = [&](bool emissive) {
@@ -2988,12 +3348,12 @@ struct Renderer {
                 const Pass p = b.pass;
                 if (b.emissive != emissive || (noMultiply && p == Pass::Multiply)) continue;
                 if (r.item) { drawItemBatch(*r.item, b); continue; }
-                if (p == Pass::Water) { drawWater(b, *r.model); continue; }
+                if (p == Pass::Water) { drawWater(b, *r.model, r.indices); continue; }
                 const bool writesDepth = p == Pass::Opaque || p == Pass::AlphaTest;
                 const float tieBias = assets::layerTieBias(writesDepth);
                 if (b.specTex >= 0) {
                     if (!scene.tbn || !scene.specularity || !scene.lmWeightTex) continue;
-                    bindStream(1);
+                    bindStream(1, r.indices);
                     SDL_BindGPUGraphicsPipeline(pass, specPipelines[int(p)][b.polygonOffset][b.cull]);
                     const float specColorScale = specColorScaleDvar();
                     struct SVU { VU base; float sun[4]; } svu{vu, {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0}};
@@ -3015,9 +3375,9 @@ struct Renderer {
                         {0, 0, 0, 0}};
                     applyFog(fu);
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
-                    SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                    drawIndexed(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                 } else {
-                    bindStream(0);
+                    bindStream(0, r.indices);
                     VU gu = vu;
                     gu.model = *r.model;
                     bindOffset(p, b.polygonOffset, b.cull, gu, tieBias);
@@ -3036,7 +3396,7 @@ struct Renderer {
                     // (gfx 0x10035050; docs/spec/render-hints.md "Additive fog").
                     if (p != Pass::Multiply) applyFog(fu, p);
                     SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
-                    SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                    drawIndexed(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                     if (p == Pass::Multiply && b.multiplyFog && fog.active) {
                         // effect_multiply.techset "unlit linear / exp fog" = vertcol_mul_lfog / _efog: pass 1 is the plain multiply
                         // (stateMap nofog), pass 2 (stateMap multiply_fog: blend Add One One, depth write off, depth test and polygon
@@ -3045,14 +3405,16 @@ struct Renderer {
                         fu.params[1] = 5.0f;
                         applyFog(fu);
                         SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
-                        SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                        drawIndexed(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                     }
                 }
             }
-            bindStream(0);
+            bindStream(0, scene.indices);
             SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
         };
+        stats.phase = 2;
         drawListWalk(false);
+        stats.phase = 0;
         if (resumedPass) { // glow_setup reads the copy too
             // Scene builder 0x10025490: the sky and "lightmap no fog" lists, then render command 0x19 (0x100310a0: StretchRect of
             // the back buffer into resolvedPostSun), then the effect lists. ($floatz was built at the start of the frame.)
@@ -3086,19 +3448,44 @@ struct Renderer {
                 dlights.clear();
                 dlights.push_back({{cam.pos.x, cam.pos.y, cam.pos.z}, 1e9f, {1, 0, 0}});
             }
-            for (const DLight& dl : dlights)
+            stats.phase = 3;
+            // World boxes of the model items (drawn-vertex box through the item transform) for the light test of 0x10014fe0; the view
+            // model (camera-relative) and items without a box always take every light.
+            std::vector<std::array<float, 6>> itemBoxes(items.size());
+            std::vector<uint8_t> itemHasBox(items.size(), 0);
+            static const bool noCullLights = std::getenv("IW2_NO_CULL") != nullptr;
+            for (size_t n = 0; n < items.size(); ++n)
+                if (!noCullLights && !depthProbe && items[n].model && items[n].model->hasBounds && items[n].depthMax >= 1.0f) {
+                    game::transformedBoxBounds(items[n].model->mins, items[n].model->maxs, items[n].transform.data(), &itemBoxes[n][0], &itemBoxes[n][3]);
+                    itemHasBox[n] = 1;
+                }
+            for (size_t li = 0; li < dlights.size(); ++li) {
+                const DLight& dl = dlights[li];
                 for (auto r = drawList.rbegin(); r != drawList.rend(); ++r) {
                     if (!assets::receivesDynamicLight(r->batch->pointLit, r->batch->fullbright)) continue;
-                    if (r->item) drawItemDlight(dl, *r->item, *r->batch);
-                    else {
-                        bindStream(0);
+                    if (r->item) {
+                        const size_t n = size_t(r->item - items.data());
+                        if (itemHasBox[n] && !game::lightTouchesBox(dl.pos, dl.radius, &itemBoxes[n][0], &itemBoxes[n][3])) continue;
+                        drawItemDlight(dl, *r->item, *r->batch);
+                    }
+                    else if (r->worldIndex >= 0 && li < culledLightBatches.size() && !depthProbe) {
+                        // Static world: only the pieces whose box the light touches (0x10014fe0; cullWorld).
+                        const Batch& lb = culledLightBatches[li][size_t(r->worldIndex)];
+                        if (lb.indexCount == 0) continue;
+                        bindStream(0, r->indices);
+                        drawDlightBatch(dl, lb, *r->model);
+                    } else {
+                        bindStream(0, r->indices);
                         drawDlightBatch(dl, *r->batch, *r->model);
                     }
                 }
-            bindStream(0);
+            }
+            bindStream(0, scene.indices);
             SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
         }
+        stats.phase = 2;
         drawListWalk(true);
+        stats.phase = 0;
         // Effect items: after every list surface.
         for (const Pass p : {Pass::Blend, Pass::Additive, Pass::Multiply}) {
             SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
@@ -3153,7 +3540,7 @@ struct Renderer {
                         // so zfeather / distortion always run their no-fog variants (zfeather_lfog / _efog techniques are not even shipped).
                         FragmentUniforms fu{};
                         SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
-                        SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                        drawIndexed(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                         SDL_BindGPUGraphicsPipeline(pass, pipelines[int(p)]);
                         VU mu = vu;
                         mu.model = it.transform;
@@ -3193,7 +3580,7 @@ struct Renderer {
                         if (it.depthMax < 1.0f) applyViewModelSpace(mu, cam, it, float(w) / float(h));
                         bindOffset(p, b.polygonOffset, b.cull, mu);
                     }
-                    SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                    drawIndexed(pass, b.indexCount, 1, b.firstIndex, 0, 0);
                     if (b.polygonOffset || b.cull) {
                         VU mu = vu;
                         mu.model = it.transform;
@@ -3231,12 +3618,17 @@ struct Renderer {
                 SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
                 SDL_BindGPUFragmentSamplers(pass, 0, &tb, 1);
                 SDL_PushGPUFragmentUniformData(cmd, 0, &ou, sizeof(ou));
-                SDL_DrawGPUIndexedPrimitives(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                drawIndexed(pass, b.indexCount, 1, b.firstIndex, 0, 0);
             };
             for (const WorldGroup& wg : worldGroups) {
+                if (!wg.indices) continue;
                 VU gu = vu;
                 gu.model = wg.model;
-                for (const Batch& b : *wg.batches) drawObjective(b, gu);
+                SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
+                const SDL_GPUBufferBinding gib{wg.indices, 0};
+                SDL_BindGPUIndexBuffer(pass, &gib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                for (const Batch& b : *wg.batches)
+                    if (b.indexCount) drawObjective(b, gu);
             }
             for (const DrawItem& it : items) {
                 if (!it.model) continue;
@@ -3385,7 +3777,7 @@ struct Renderer {
                                                            {scene.dummyLightmap.sun, clampSampler},
                                                            {scene.textures[0], repeatSampler}};
                     SDL_BindGPUFragmentSamplers(p2, 0, tex, 4);
-                    SDL_DrawGPUIndexedPrimitives(p2, 6, 1, 0, 2 * 4, 0);
+                    drawIndexed(p2, 6, 1, 0, 2 * 4, 0);
                 }
                 // Capture (cmd 0xa) happens after the blend and before the 2D pass: end the pass, copy the composed frame to the target.
                 SDL_EndGPURenderPass(p2);
@@ -3445,7 +3837,7 @@ struct Renderer {
                                                        {scene.dummyLightmap.sun, clampSampler},
                                                        {scene.textures[0], repeatSampler}};
                 SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
-                SDL_DrawGPUIndexedPrimitives(pass, uint32_t((j - i) * 6), 1, uint32_t(i * 6), 0, 0);
+                drawIndexed(pass, uint32_t((j - i) * 6), 1, uint32_t(i * 6), 0, 0);
                 i = j;
             }
         }
@@ -4441,6 +4833,20 @@ int main(int argc, char** argv) {
             };
             const game::FogParams fogNow = world->clientFog.current(cgNowMs());
             Uploader up(dev, false);
+            // Model LOD of the CPU-skinned entities (docs/spec/render-hints.md "Model LOD"): one distance per entity from its drawn origin
+            // (scale 1), every attached model its own LOD from it; -1 = the model is not drawn (its tags are still posed). IW2_NO_CULL keeps
+            // LOD 0. The player's view model is not an entity here and always draws LOD 0.
+            const float lodEye[3] = {viewCam.pos.x, viewCam.pos.y, viewCam.pos.z};
+            const game::LodView entityLodView = game::lodView(lodEye, viewCam.fovX43, renderer.lodScaleDvar, renderer.lodBiasDvar);
+            auto skinLod = [&](int entity, const std::string& model, const std::string& key, const Scene::CpuModel& cm, const assets::XPose& pose,
+                               float lodDist) -> const GpuModel* {
+                static const bool noLod = std::getenv("IW2_NO_LOD") != nullptr;
+                int lod = noCull || noLod ? 0 : game::lodForDistance(cm.lodDist, cm.lodCount, lodDist);
+                if (lod < 0) return nullptr;
+                const Scene::CpuModel* use = lod > 0 ? sceneCpuModelLod(scene, dev, vfs, model, cm, lod) : &cm;
+                if (!use) use = &cm, lod = 0;
+                return skinModel(scene, dev, up, entity, lod > 0 ? key + "#lod" + std::to_string(lod) : key, *use, pose);
+            };
             ++renderStamp;
             for (const auto& e : world->entities()) {
                 // Multiplayer clients other than the local one are drawn in third person (docs/spec/mp-players.md).
@@ -4504,6 +4910,8 @@ int main(int argc, char** argv) {
                                 double(av[0]), double(av[1]), double(av[2]), e->number, static_cast<unsigned long long>(netTraceFrameUs));
                 DrawItem base;
                 base.transform = entityTransform({ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
+                const float entityOrigin[3] = {ov[0], ov[1], ov[2]};
+                const float entityLodDist = game::lodDistance(entityLodView, entityOrigin, 1.0f);
                 // gameTime.z of the *_scroll techniques (texscroll.hlsl subtracts it from V): frac(t), t = scene time - the refEntity
                 // material time (gfx 0x1002f6a0 / 0x1002fa49). The cgame (0x4ac839) sets the material time only for a vehicle whose
                 // accumulator (entityState +0x5c) is >= 0: (cg.time - trunc((next - cur) * cg.frameInterpolation) - cur) * 0.001, cur /
@@ -4566,7 +4974,7 @@ int main(int argc, char** argv) {
                             ctl.push_back(wc);
                     const assets::XPose drawnPose = assets::applyControls(vm->parts, vpose, ctl);
                     DrawItem it = base;
-                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *vm, drawnPose);
+                    it.model = skinLod(e->number, m.asString(), m.asString(), *vm, drawnPose, entityLodDist);
                     if (it.model) items.push_back(it);
                     {
                         // Vehicle flash / fx tags from the drawn pose (lerped turret controls, jolt, wheels) like actors and turrets:
@@ -4616,7 +5024,7 @@ int main(int argc, char** argv) {
                         }
                     }
                     DrawItem it = base;
-                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *body, pose);
+                    it.model = skinLod(e->number, m.asString(), m.asString(), *body, pose, entityLodDist);
                     if (it.model) items.push_back(it);
                     BoneMap bones;
                     addBones(bones, body->parts, pose);
@@ -4630,7 +5038,7 @@ int main(int argc, char** argv) {
                         const assets::XPose ap = attachmentPose(bones, am->parts, at.tag, animated ? &*animated : nullptr);
                         addBones(bones, am->parts, ap);
                         DrawItem ai = base;
-                        ai.model = skinModel(scene, dev, up, e->number, at.model + "@" + at.tag, *am, ap);
+                        ai.model = skinLod(e->number, at.model, at.model + "@" + at.tag, *am, ap, entityLodDist);
                         if (ai.model) items.push_back(ai);
                     }
                     // The weapon world model in a multiplayer client's hands (tag_weapon_right, docs/spec/mp-players.md).
@@ -4639,7 +5047,7 @@ int main(int argc, char** argv) {
                             const assets::XPose wp = attachmentPose(bones, wmodel->parts, "tag_weapon_right");
                             addBones(bones, wmodel->parts, wp);
                             DrawItem wi = base;
-                            wi.model = skinModel(scene, dev, up, e->number, wm + "@tag_weapon_right", *wmodel, wp);
+                            wi.model = skinLod(e->number, wm, wm + "@tag_weapon_right", *wmodel, wp, entityLodDist);
                             if (wi.model) items.push_back(wi);
                         }
                     recordDrawnTags(e->number, bones, {ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
@@ -4661,7 +5069,7 @@ int main(int argc, char** argv) {
                     }
                     const assets::XPose tpose = assets::controlledPose(tm->parts, game::World::turretBoneControls(tm->parts, tp, ty, e->turret->drop));
                     DrawItem it = base;
-                    it.model = skinModel(scene, dev, up, e->number, m.asString(), *tm, tpose);
+                    it.model = skinLod(e->number, m.asString(), m.asString(), *tm, tpose, entityLodDist);
                     if (it.model) items.push_back(it);
                     {
                         BoneMap tbones;
@@ -9078,8 +9486,61 @@ int main(int argc, char** argv) {
             renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
             hudKillcam = killcamView;
             forcedBlur = std::max(forcedBlur, worldMenuBlur());
-            renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars);
+            renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars), lodDvarsFrom(uiCvars, renderer.lodScaleDvar, renderer.lodBiasDvar);
             renderer.renderTimeMs = world ? cgNowMs() : 0;
+            // IW2_BENCH=N (docs/debug-flags.md): draws the shot's frame N times into an offscreen target, each one gathered again
+            // (entity skinning, culls) and waited for on the GPU, and prints the median times and what was submitted.
+            if (const char* bn = std::getenv("IW2_BENCH"); bn && std::atoi(bn) > 0) {
+                const int n = std::atoi(bn);
+                if (const char* bf = std::getenv("IW2_BENCH_FOV")) cam.fovX43 = float(std::atof(bf)); // the 4:3 field of view of the bench frames
+                SDL_GPUTextureCreateInfo ti{};
+                ti.type = SDL_GPU_TEXTURETYPE_2D;
+                ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+                ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+                ti.width = width;
+                ti.height = height;
+                ti.layer_count_or_depth = 1;
+                ti.num_levels = 1;
+                SDL_GPUTexture* benchTarget = SDL_CreateGPUTexture(dev, &ti);
+                if (!benchTarget) sdlFail("bench target");
+                const std::vector<Quad2D> benchHud = std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam);
+                std::vector<double> gatherMs, encodeMs, gpuMs, totalMs;
+                for (int i = 0; i < n; ++i) {
+                    static std::map<std::string, std::pair<int, uint64_t>> byName;
+                    byName.clear();
+                    g_skinStats = {};
+                    if (std::getenv("IW2_BENCH_SKINLIST")) g_skinStats.byName = &byName;
+                    const uint64_t t0 = SDL_GetTicksNS();
+                    auto benchItems = killcamView ? gatherKillcamItems(cam, 1.0f) : gatherItems(cam);
+                    benchItems.insert(benchItems.end(), shotVmItems.begin(), shotVmItems.end());
+                    const uint64_t t1 = SDL_GetTicksNS();
+                    renderer.stats = {};
+                    SDL_GPUCommandBuffer* bcmd = SDL_AcquireGPUCommandBuffer(dev);
+                    renderer.draw(bcmd, benchTarget, width, height, scene, cam, benchItems, benchHud, forcedBlur);
+                    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(bcmd);
+                    const uint64_t t2 = SDL_GetTicksNS();
+                    SDL_WaitForGPUFences(dev, true, &fence, 1);
+                    SDL_ReleaseGPUFence(dev, fence);
+                    const uint64_t t3 = SDL_GetTicksNS();
+                    gatherMs.push_back(double(t1 - t0) * 1e-6);
+                    encodeMs.push_back(double(t2 - t1) * 1e-6);
+                    gpuMs.push_back(double(t3 - t2) * 1e-6);
+                    totalMs.push_back(double(t3 - t0) * 1e-6);
+                }
+                SDL_ReleaseGPUTexture(dev, benchTarget);
+                if (g_skinStats.byName)
+                    for (const auto& [nm, cv] : *g_skinStats.byName) std::printf("bench skinned %s x%d %llu vertices\n", nm.c_str(), cv.first, static_cast<unsigned long long>(cv.second));
+                auto median = [](std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; };
+                std::printf("bench: %d frames %ux%u cam %.1f,%.1f,%.1f yaw %.1f pitch %.1f fov %.1f: total %.2f ms (gather %.2f, encode %.2f, gpu wait %.2f), "
+                            "%llu draws, %llu triangles (floatz %llu, lit %llu, %zu dlights %llu), %zu items, skinned %llu models %llu vertices\n", n, width, height, double(cam.pos.x), double(cam.pos.y), double(cam.pos.z), double(cam.yaw),
+                            double(cam.pitch), double(cam.fovX43), median(totalMs), median(gatherMs), median(encodeMs), median(gpuMs),
+                            static_cast<unsigned long long>(renderer.stats.draws), static_cast<unsigned long long>(renderer.stats.triangles),
+                            static_cast<unsigned long long>(renderer.stats.phaseTriangles[1]), static_cast<unsigned long long>(renderer.stats.phaseTriangles[2]),
+                            renderer.dlights.size(), static_cast<unsigned long long>(renderer.stats.phaseTriangles[3]), shotItems.size(),
+                            static_cast<unsigned long long>(g_skinStats.models), static_cast<unsigned long long>(g_skinStats.vertices));
+                std::printf("bench: cull: %u / %u world soups, %u / %u static models drawn (%u beyond their LOD distance)\n", renderer.cullStats.soupsVisible,
+                            renderer.cullStats.soups, renderer.cullStats.modelsVisible, renderer.cullStats.models, renderer.cullStats.modelsBeyond);
+            }
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
             Uploader::releasePool(dev);
             SDL_DestroyGPUDevice(dev);
@@ -9253,7 +9714,7 @@ int main(int argc, char** argv) {
                         quads.push_back(bar);
                     }
                     quads.push_back(q);
-                    renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars);
+                    renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars), lodDvarsFrom(uiCvars, renderer.lodScaleDvar, renderer.lodBiasDvar);
                     renderer.draw(cmd, swap, w, h, movieScene, cam, {}, quads, 0.0f);
                 }
                 SDL_SubmitGPUCommandBuffer(cmd);
@@ -11414,7 +11875,7 @@ int main(int argc, char** argv) {
                 hudKillcam = killcamView;
                 const std::vector<Quad2D> hud = buildHud(w, h, cam);
                 hudKillcam.reset();
-                renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars);
+                renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars), lodDvarsFrom(uiCvars, renderer.lodScaleDvar, renderer.lodBiasDvar);
                 renderer.draw(cmd, swap, w, h, scene, cam, items, hud, blur);
                 // debug token shot:<file.png> (IW2_MENU_KEYS): the same frame rendered once more into a PNG
                 if (!pendingShotPng.empty()) screenshot(dev, renderer, scene, cam, w, h, std::exchange(pendingShotPng, std::string()), items, hud, blur);

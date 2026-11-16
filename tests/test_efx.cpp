@@ -127,6 +127,15 @@ int main() {
             CHECK(std::fabs(sp[0].beamB[2] - 100.0f) < 1e-4f);
             CHECK(sp[0].segments == 30); // round((1 - 50 / 1024) * 32) = round(30.44)
         }
+        // A wider view scales the distance up (lodScale = tan(fovX / 2) / tan(40 deg), docs/spec/render-hints.md "Model LOD"):
+        // viewScale 10 turns the 50 units into 500, round((1 - 500 / 1024) * 32) = round(16.375) = 16.
+        iw2::game::FxSystem wide;
+        wide.viewValid = true;
+        wide.viewOrigin = {0, 0, 0};
+        wide.viewScale = 10.0f;
+        wide.play(cylFx, {0, 0, 0}, {0, 0, 1}, 0);
+        const auto ws = wide.sprites(100);
+        CHECK(ws.size() == 1 && ws[0].segments == 16);
     }
 
     // Particle angle (0x48ce70 start from `rotation`, 0x481b90 += frame ms * rotationDelta * 0.01) and half height = size2.

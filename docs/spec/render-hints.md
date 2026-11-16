@@ -18,25 +18,116 @@ Addresses: exe = CoD2SP_s.exe 1.3, dll = the gfx renderer DLL (gfx13). The exe's
 - OpenIW2: `farPlaneDistance` (src/game/fog.h), `World::cullDist()`, `FxSystem::beyondFar` (src/game/fx.cpp: spawn gate, clouds,
   oriented particles); iw2view feeds it each frame (`setFxFar`). Test: tests/test_farplane.cpp.
 - Where the far plane is applied in the renderer (dll): scene setup 0x1000a910 builds one plane list: four side planes (0x10006c20 from
-  the fov), then 0x100062e0 appends the near plane (pointer 0x101ce5b0) and, only when FarDist != 0, the far plane (0x101ce5b4);
+  the view-projection), then 0x100062e0 appends the near plane (pointer 0x101ce5b0) and, only when FarDist != 0, the far plane (0x101ce5b4);
   an orthographic view (0x1000a590, view +0xc4 != 0) has no far plane. Plane record = 20 bytes `{n[3], d, 3 corner-select bytes, cache byte}`.
   - Near (0x1000a400): `n = forward, d = 0.1 - forward . eye` (constant 0x1019bf48 = 0.1).
   - Far (0x1000a4e3): `n = -forward, d = far + forward . eye`.
   - Box test (0x10006420 / 0x10006340 / 0x100064f0): per plane the corner furthest along n is picked (max if n > 0 else min); the box is
     culled when `n . corner + d <= 0` (equality culls). The cache byte (+0x13) only skips planes the parent box was already fully inside;
     it does not change the result. After the planes, occluder hulls (0x101ce5c0 / 0x101ce5c4) can cull a box that lies fully inside one.
-  - Granularity: the same list culls world AABB-tree nodes (0x10008110, node box at +4, then the node's surface range is emitted by
-    0x100247d0), cell boxes (0x100093e0 / 0x100092f0, cell stride 0x20 at world +0xf0), static models by their instance box (0x100083e0),
-    xmodel scene entities (0x100087e0: world box from 0x10008500, then 0x10006420, then a small-object test) and brush-model entities
-    (0x10009210: box from 0x10008900). So there is no per-surface test: a world surface is far-culled with its AABB-tree node.
+  - Granularity: the same list culls AABB-tree nodes, single world surfaces, cell boxes, static models and scene entities; see
+    "World and static model culling" below for the walk. The far plane therefore also removes single world surfaces and static models.
   - OpenIW2 has the pure planes and box test as `viewcull.h` (tests/test_viewcull.cpp).
-- Wired into iw2view only for brush-model entities (`Scene::brushBounds` = local bounds of the model's drawn soup vertices, enclosing world box
-  via `transformedBoxBounds`, then `boxCulledByDepthPlanes` with `farPlaneDistance`; `IW2_NO_CULL=1` disables). Blockers for the rest: the
-  static world is one merged vertex buffer per material with no AABB-tree node ranges (lumps 10 / 11 not mapped to nodes), static models
-  are merged, and xmodel entity `DrawItem`s carry no local bounds (xmodel bounds were not read). Needs a human visual check: a brush
-  model (door / elevator) beyond a setculldist or fog far must disappear, and none may pop out near the screen edge. r_zfar defaults to 0 and an exponential fog adds no distance (only record type 1 counts, 0x1000aacb). TODO(spec): the four side planes, the loader that
-  turns lump 10 / 11 (cull groups, runtime copy at 0x101ae378) into the AABB-tree nodes used above (not decoded; the runtime layout
-  copied by 0x10004340 is mins[3], maxs[3], count, first index).
+- Wired into iw2view for brush-model entities (`Scene::brushBounds` = local bounds of the model's drawn soup vertices, enclosing world box
+  via `transformedBoxBounds`, then `boxCulledByDepthPlanes` with `farPlaneDistance`; `IW2_NO_CULL=1` disables). The static world and the
+  static models get the side and near planes (below), not the far plane: TODO(spec): the original clears the frame and draws the sky
+  outside the cell walk (sky surfaces have their own list, 0x10002a00), and what fills the screen beyond a far plane was not traced, so
+  OpenIW2 keeps drawing world surfaces beyond it (fully fogged) rather than show a different background. Xmodel entity `DrawItem`s carry no
+  local bounds (xmodel bounds were not read). Needs a human visual check: a brush model (door / elevator) beyond a setculldist or fog far
+  must disappear, and none may pop out near the screen edge. r_zfar defaults to 0 and an exponential fog adds no distance (only record
+  type 1 counts, 0x1000aacb).
+
+## World and static model culling
+
+Addresses are in the 1.3 renderer DLL unless marked exe. World pointer 0x101d1b9c.
+
+- Side planes (0x10006c20, called by the scene setup 0x1000a910 with the view-projection matrix at view +0xc8): the four clip-space
+  planes of the table 0x10182948 ((-1,0,0,1), (1,0,0,1), (0,-1,0,1), (0,1,0,1)) are taken back to world space through the matrix (each
+  plane component is the table plane dotted with one matrix column, i.e. the classic "w +- x", "w +- y" planes), then normal and
+  distance are divided by the length of the normal. The corner-select bytes are 0xc / 0x10 / 0x14 (maxs) for a positive component and
+  0 / 4 / 8 (mins) otherwise, the cache byte 0xff. The near and far planes follow (0x100062e0, see setculldist above).
+- Load-time data:
+  - World surfaces (0x10002a00, from the triangle soups of lump 7): 12-byte entries at world +0x14 `{material, lightmap (u16), sort
+    key (u16), draw surface}`; the 0x28-byte draw surface carries a box at +4 that 0x10002700 builds from the soup's indexed vertices
+    (indices relative to the soup's first vertex). Sky soups also go to a separate sky surface list (0x101ae2a4); a map may have one sky
+    material only.
+  - AABB trees (lump 22, 12-byte rows, loader 0x10003f20): runtime nodes of 0x30 bytes `{mins, maxs, surface count (+0x18), first
+    surface (+0x1c, -1 when the count is 0), static model count (+0x20), static model list (+0x24), child count (+0x28), children
+    (+0x2c)}`; the file row gives first surface, surface count and child count, and children are stored after their parent in file order
+    (0x10003d80 walks them, sets the children pointer and builds every node box from its children or, for a leaf, from its surfaces'
+    boxes). A node's surface range covers the surfaces of all its descendants.
+  - Cells (lump 23, 52-byte rows, loader 0x10003fd0): runtime 0x3c bytes: bounds, the root AABB-tree node (file index * 0x30), the
+    portal range (first, count), a range into the cull group index lump 11 (0x101ae494) and a second index range (0x101ae490, not
+    followed). Lump 10 (cull groups, runtime 0x101ae378, 32 bytes: bounds, count, first index) is loaded but no reader was found in the
+    cell walk. TODO(spec): the readers of lump 10 and of the two cell index ranges.
+  - Static models (0x100038c0): every entity whose classname is misc_model (case-insensitive) becomes a 0x60-byte static model
+    (array 0x101ae380, world +0xf8), except models whose name starts with `xmodel/shadow_` (0x10003070). A model that fails to load or
+    is not rigid (a surface of some LOD with more than one bone, 0x1002ad10) is replaced by `xmodel/default_static_model`. Keys: angle
+    (yaw) else angles, modelscale_vec else modelscale (default 1); the scale used for culling and LOD is the third component
+    (0x100031f0, uniform for modelscale). 0x1002ad90 fills: +0 cull distance = (exe 0x47dd60, the model's last LOD distance) * scale,
+    +4 origin, +0x10 model, +0x14 / +0x20 world box (a box 0x1002a730 builds from the model and the rotation, then scaled and offset by
+    the origin; 0x1002a730 was not read),
+    +0x50 scale. 0x10003850 then distributes the static models over the AABB trees (0x10029fc0: a leaf holding 8 or more models is
+    split into up to four child nodes by the x / y midpoints of their boxes; a node without surfaces takes the models' box).
+- Per frame (0x1000a6c0, called from the scene setup with the camera cell and the plane list): the camera cell comes from the BSP node
+  tree at world +0xc (0x10007da0: a point exactly on a plane goes to the back child; a leaf gives the cell index). With the camera
+  outside every cell (index < 0) every cell is walked with the view planes. Otherwise (r_singleCell 0) the portal flood 0x1000a060
+  starts at the camera cell; with r_singleCell only the camera cell is walked. r_skipPvs skips the world walk.
+  - Portal flood (0x1000a060 with the queue 0x100097b0): portals are queued by distance (heap, at most 256), each visible portal is
+    clipped and its hull turned into new planes from the eye (0x10007470) for the cell behind it; r_portalWalkLimit (default 0 = no
+    limit) ends the flood after that many portals. TODO(spec): the portal clip (0x10057e40 / 0x10058310), r_portalBevels (0.7),
+    r_portalBevelsOnly, r_portalMinClipArea (0.02); OpenIW2 does not implement the flood (below).
+  - Cell walk (0x100092f0): with r_drawWorld, the cell's root node is walked. With r_portalFineCull (dvar 0x101ce808, default 1) and a
+    node with children, each child goes through 0x100081a0: a node outside a plane is dropped; a node fully inside every plane
+    (0x10006600) draws all its static models (0x100094c0: distance cull only) and all its surfaces without further tests; a partly
+    visible leaf tests each static model (0x100095b0) and each surface (0x10008110: the surface's own box against the planes) on its
+    own; a partly visible inner node recurses. A root without children (or r_portalFineCull 0) goes straight to the per-model and
+    per-surface tests. Every surface and static model carries a frame stamp (0x101d7e98, 0x101d7e94), so one reached through two cells
+    is added once. Scene entities linked to the cell follow (0x100083e0).
+  - Static model test (0x100095b0): when the cull distance is not 0, `|lod origin - model origin| * lodScale + lodBias` (distance
+    0x10059120, lod values below) greater than the cull distance drops the model for the frame (equal keeps it); then the model box
+    against the planes (a box outside does not stamp the model, so another cell may still add it). A model that passes is added through
+    0x10023fe0 / 0x1001f950, which picks its LOD (Model LOD below).
+- OpenIW2 (iw2view `Renderer::cullWorld`): no cells, no portal flood. Every frame each world surface (soup) box and each static model is
+  tested on its own against the four side planes and the near plane of the drawn view, and the static models get the distance cull and
+  LOD of the original. Without the flood this draws every surface the original draws plus those it would reject through portals, so
+  nothing visible is lost; the same holds for the AABB-tree walk, which only drops what a per-surface test drops too. The far plane is
+  not applied (see setculldist). The static model box is the box of the model's transformed vertices over all its LODs (flag surfaces
+  padded by the largest cloth wave offset, 12.2 units times the scale), not the rotated model bounds. `IW2_NO_CULL=1` disables the
+  surface and model culls (static models then draw LOD 0 at any distance). Tests: tests/test_viewcull.cpp, tests/test_modellod.cpp.
+- Dynamic lights (0x10015210 -> 0x10014fe0): for each of at most r_dlightLimit lights, every surface of the frame's draw list (walked
+  backwards) whose technique set has a point light technique and whose box (world surfaces: the draw surface box; models: the type's own
+  box function, table 0x101a5a8c) satisfies `distance^2(light origin, box) <= radius^2` (0x1005a670) is added to the light's surface
+  list; only those surfaces get the light pass. The box functions of table 0x101a5a8c by draw surface type: 3 and 4 (xmodel surfaces)
+  the scene entity's world box (0x106570d8 + entity * 0x34, for a static model the box copied by 0x10023fe0), 5 the static model box
+  (world +0xf8 record +0x14), 6 (world triangles) the draw surface box, or for a brush model entity that box taken through the entity
+  transform (0x1005ccc0). OpenIW2 applies the test to world soups, static models (their instance box) and xmodel items (the box of the
+  drawn vertices through the item transform, in place of the entity box of 0x10008500, which was not read); the view model and brush
+  model items still get every light. Beyond the radius the l_point falloff ramp is 0, so the test drops no light.
+
+## Model LOD
+
+- Exe xmodel side (reached through the renderer import table, slots 0x18c, 0x190, 0x188 of the table the exe passes to GetRefAPI):
+  - The LOD count (model +0x7c) counts the LOD names up to the first empty one; LOD i keeps its distance at +4 + i * 0x14.
+  - LOD for a distance (0x47dd90): the first LOD i whose distance is 0 or greater than the distance; -1 when there is none (the model
+    is not drawn). A test override (below) replaces a LOD's distance when enabled.
+  - Last LOD distance (0x47dd60): the distance of the last LOD (or its override); the static model cull distance above.
+  - Test overrides (0x47ddf0, per LOD: distance stored, enabled when >= 0): set every frame by the renderer (0x10022210) from
+    r_highLodDist, r_mediumLodDist, r_lowLodDist, r_lowestLodDist (floats, default -1 = off, range -1..FLT_MAX); r_forceLod (enum,
+    default 4 = none) instead sets 0 for the forced LOD and 0.001 for the others (so the forced LOD is the first to qualify).
+- Renderer per scene (0x10025b10): lod origin = the view origin (refdef +0x18; r_lockPvs keeps a locked one), lodScale = r_lodScale
+  (default 1, range 1..4), lodBias = r_lodBias (default 0, range -1000..0); when the refdef fov_x is not exactly 80, both are multiplied
+  by tan(fov_x / 2) / tan(40 deg) (instruction bytes de f9 at 0x10025bc2: FDIVP st(1), st(0), so a narrower view lowers the distance and
+  raises the detail).
+- LOD distance of a model instance (0x1001dbd0): `(|lod origin - origin| * lodScale + lodBias) / scale`, the division skipped for a
+  scale of 0. Static models use their origin and scale (0x10023fe0 copies them into the scene model record); scene entities their
+  refEntity origin (+0x3c) and scale (+0x38). For a DObj (0x1001dc60) every attached model gets its own LOD from that one distance
+  (exe 0x474520 -> 0x47dd90).
+- OpenIW2: `game/modellod.h` (lodForDistance, lodOutDistance, lodView, lodDistance, staticModelDistanceCulled), tests/test_modellod.cpp.
+  iw2view bakes every LOD of each static model and draws the one picked per frame; CPU-skinned entities skin the LOD picked from the
+  entity origin (scale 1; TODO(spec): the refEntity scale the cgame sets). r_lodScale / r_lodBias are read from the cvar store
+  (`--cvar`), the test overrides and r_forceLod are not implemented. TODO(spec): the fov the refdef carries on a non-4:3 screen;
+  OpenIW2 uses the 4:3 field of view (cg_fov and the ADS zoom). Static script models drawn as entities without skinning still draw LOD 0.
 
 ## setshadowhint
 
