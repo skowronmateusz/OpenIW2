@@ -54,6 +54,7 @@
 #include "game/fog.h"
 #include "game/viewcull.h"
 #include "game/modellod.h"
+#include "game/portalvis.h"
 #include "game/viewspace.h"
 #include "game/marks.h"
 #include "game/outdoor.h"
@@ -467,6 +468,7 @@ struct GpuModel {
     // Model-space box of the drawn vertices (for skinned models: of the last skinning), for the dynamic light surface test.
     bool hasBounds = false;
     float mins[3] = {0, 0, 0}, maxs[3] = {0, 0, 0};
+    float headerMins[3] = {0, 0, 0}, headerMaxs[3] = {0, 0, 0}; // xmodel header bounds (entity cull, docs/spec/render-hints.md "Entity cull")
 };
 
 // Largest offset of the flag cloth wave (flag_flap in the shaders: 5 * weight * the sum of the three amplitudes 1.5, 0.6, 0.34, times the
@@ -504,6 +506,12 @@ struct Scene {
     std::vector<std::array<float, 6>> soupBoxes;
     std::vector<StaticModelInstance> staticModels;
     std::vector<uint32_t> cpuIndices;
+    // Cells and portals (game/portalvis.h), the soup box of each world soup (-1: none), and per cell the static models whose box
+    // overlaps the cell bounds (static models overlapping no cell are in `outsideStaticModels`).
+    game::VisWorld vis;
+    std::vector<int> soupBoxOfSoup;
+    std::vector<std::vector<int>> cellStaticModels;
+    std::vector<int> outsideStaticModels;
     SDL_GPUTexture* sky = nullptr;
     std::vector<WaterMat> waters;
     std::unique_ptr<game::CollisionWorld> collision;
@@ -531,6 +539,7 @@ struct Scene {
         int lodCount = 0;
         std::vector<std::string> lodNames;
         std::vector<std::vector<std::string>> lodMaterials;
+        float headerMins[3] = {0, 0, 0}, headerMaxs[3] = {0, 0, 0}; // xmodel header bounds (entity cull)
     };
     std::unordered_map<std::string, std::optional<CpuModel>> cpuModels;
     // Per (entity, model) GPU buffers re-filled every frame with skinned vertices.
@@ -861,6 +870,7 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
         up.buffer(gm.indices, indices.data(), ib.size);
         up.flush();
         vertexBounds(verts, gm);
+        for (int a = 0; a < 3; ++a) gm.headerMins[a] = xm.mins[size_t(a)], gm.headerMaxs[a] = xm.maxs[size_t(a)];
         slot = std::move(gm);
         return &*slot;
     } catch (const std::exception& e) {
@@ -892,6 +902,7 @@ const Scene::CpuModel* sceneCpuModel(Scene& scene, SDL_GPUDevice* dev, const fs:
             cm.lodMaterials.push_back(xm.lods[k].materials);
         }
         cm.lodCount = int(cm.lodNames.size());
+        for (int a = 0; a < 3; ++a) cm.headerMins[a] = xm.mins[size_t(a)], cm.headerMaxs[a] = xm.maxs[size_t(a)];
         slot = std::move(cm);
         return &*slot;
     } catch (const std::exception& e) {
@@ -1622,6 +1633,8 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 }
             }
             scene.soupBoxes.push_back(box);
+            if (scene.soupBoxOfSoup.size() <= si) scene.soupBoxOfSoup.resize(si + 1, -1);
+            scene.soupBoxOfSoup[si] = int(scene.soupBoxes.size()) - 1;
             groupPieces[key].push_back({pieceStart, s.indexCount, -int32_t(scene.soupBoxes.size()), 0});
         }
         if (soupOwner[si] > 0) {
@@ -1814,6 +1827,21 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         }
     }
     std::cout << "placed " << modelCount << " static models (" << modelCache.size() << " unique, " << lowerLods << " lower LODs baked)\n";
+    // Cells and portals for the portal flood (docs/spec/render-hints.md "World and static model culling").
+    scene.vis = game::parseVisWorld(bsp.lump(4), bsp.lump(10), bsp.lump(11), bsp.lump(17), bsp.lump(22), bsp.lump(23), bsp.lump(24), bsp.lump(25),
+                                    bsp.lump(26));
+    scene.cellStaticModels.assign(scene.vis.cells.size(), {});
+    for (size_t i = 0; i < scene.staticModels.size(); ++i) {
+        const StaticModelInstance& m = scene.staticModels[i];
+        bool any = false;
+        for (size_t c = 0; c < scene.vis.cells.size(); ++c) {
+            const game::VisCell& cell = scene.vis.cells[c];
+            bool overlap = true;
+            for (int a = 0; a < 3; ++a) overlap = overlap && m.mins[a] <= cell.maxs[a] && m.maxs[a] >= cell.mins[a];
+            if (overlap) scene.cellStaticModels[c].push_back(int(i)), any = true;
+        }
+        if (!any) scene.outsideStaticModels.push_back(int(i));
+    }
 
     std::vector<uint32_t> indices;
     auto emitBatches = [&](const auto& grouped, std::vector<Batch>& out) {
@@ -2790,16 +2818,21 @@ struct Renderer {
     SDL_GPUTransferBuffer* culledTransfer = nullptr;
     uint32_t culledCapacity = 0;                        // indices
     float lodScaleDvar = 1.0f, lodBiasDvar = 0.0f;      // r_lodScale / r_lodBias (dll 0x1000acf9 / 0x1000ad1a: defaults 1 and 0)
-    struct CullStats { uint32_t soups = 0, soupsVisible = 0, models = 0, modelsVisible = 0, modelsBeyond = 0; } cullStats;
+    float farDist = 0.0f;                               // the far plane distance (game::farPlaneDistance), 0 = none
+    struct CullStats { uint32_t soups = 0, soupsVisible = 0, models = 0, modelsVisible = 0, modelsBeyond = 0; int cell = -1, visits = 0, portals = 0; } cullStats;
 
     void cullWorld(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& cam, const Mat4& vp) {
         static const bool noCull = std::getenv("IW2_NO_CULL") != nullptr;
         static const bool noLod = std::getenv("IW2_NO_LOD") != nullptr; // debug: LOD 0 and no distance cull, the plane and light culls stay
-        game::ViewPlane planes[5];
-        game::frustumSidePlanes(vp.data(), planes);
+        static const bool noPortals = std::getenv("IW2_NO_PORTALS") != nullptr; // debug: the plane test only, no portal flood
+        // The plane list (0x1000a910): four side planes, the near plane and, with a far distance, the far plane.
+        std::vector<game::ViewPlane> planes(4);
+        game::frustumSidePlanes(vp.data(), planes.data());
         const Vec3 f = cam.forward();
         const float eye[3] = {cam.pos.x, cam.pos.y, cam.pos.z}, fwd[3] = {f.x, f.y, f.z};
-        planes[4] = game::nearViewPlane(eye, fwd);
+        planes.push_back(game::nearViewPlane(eye, fwd));
+        if (farDist != 0.0f) planes.push_back(game::farViewPlane(eye, fwd, farDist));
+        const size_t tailCount = planes.size() - 4;
         const game::LodView lv = game::lodView(eye, cam.fovX43, lodScaleDvar, lodBiasDvar);
         cullStats = {};
         cullStats.models = uint32_t(scene.staticModels.size());
@@ -2807,18 +2840,58 @@ struct Renderer {
         staticLods.resize(scene.staticModels.size());
         for (size_t i = 0; i < scene.staticModels.size(); ++i) {
             const StaticModelInstance& m = scene.staticModels[i];
-            int lod = noCull || noLod ? 0 : game::staticModelLod(lv, m.origin, m.scale, m.lodDist, m.lodCount);
+            const int lod = noCull || noLod ? 0 : game::staticModelLod(lv, m.origin, m.scale, m.lodDist, m.lodCount);
             if (lod < 0) ++cullStats.modelsBeyond;
-            if (lod >= 0 && !noCull && game::boxOutsidePlanes(planes, 5, m.mins, m.maxs)) lod = -1;
-            if (lod >= 0) ++cullStats.modelsVisible;
             staticLods[i] = int8_t(lod);
         }
-        soupVisible.resize(scene.soupBoxes.size());
-        for (size_t i = 0; i < scene.soupBoxes.size(); ++i) {
-            const auto& b = scene.soupBoxes[i];
-            soupVisible[i] = noCull || !game::boxOutsidePlanes(planes, 5, &b[0], &b[3]);
-            cullStats.soupsVisible += soupVisible[i];
+        soupVisible.assign(scene.soupBoxes.size(), noCull ? 1 : 0);
+        // Portal flood from the camera cell; outside every cell (or when the flood gives up) each box is tested against the plane list.
+        const int cell = noCull || noPortals || !scene.vis.valid() ? -1 : game::cellForPoint(scene.vis, eye);
+        cullStats.cell = cell;
+        game::PortalFlood flood;
+        if (cell >= 0) {
+            game::FloodParams fp;
+            for (int a = 0; a < 3; ++a) fp.eye[a] = eye[a], fp.forward[a] = fwd[a];
+            fp.viewProj = vp.data();
+            flood = game::portalFlood(scene.vis, cell, planes, tailCount, fp);
+            cullStats.visits = int(flood.visits.size());
+            cullStats.portals = flood.portalsTaken;
         }
+        if (!noCull && cell >= 0 && !flood.fellBack) {
+            std::vector<uint8_t> modelSeen(scene.staticModels.size(), 0);
+            for (const game::CellVisit& v : flood.visits) {
+                const std::vector<game::ViewPlane>& pl = flood.planeLists[size_t(v.planeList)];
+                for (const int s : scene.vis.cells[size_t(v.cell)].surfaces) {
+                    if (s < 0 || size_t(s) >= scene.soupBoxOfSoup.size()) continue;
+                    const int b = scene.soupBoxOfSoup[size_t(s)];
+                    if (b < 0 || soupVisible[size_t(b)]) continue;
+                    const auto& bx = scene.soupBoxes[size_t(b)];
+                    soupVisible[size_t(b)] = !game::boxOutsidePlanes(pl.data(), int(pl.size()), &bx[0], &bx[3]);
+                }
+                for (const int mi : scene.cellStaticModels[size_t(v.cell)]) {
+                    if (modelSeen[size_t(mi)] || staticLods[size_t(mi)] < 0) continue;
+                    const StaticModelInstance& m = scene.staticModels[size_t(mi)];
+                    modelSeen[size_t(mi)] = !game::boxOutsidePlanes(pl.data(), int(pl.size()), m.mins, m.maxs);
+                }
+            }
+            for (const int mi : scene.outsideStaticModels) {
+                const StaticModelInstance& m = scene.staticModels[size_t(mi)];
+                modelSeen[size_t(mi)] = !game::boxOutsidePlanes(planes.data(), int(planes.size()), m.mins, m.maxs);
+            }
+            for (size_t i = 0; i < staticLods.size(); ++i)
+                if (!modelSeen[i]) staticLods[i] = -1;
+        } else if (!noCull) {
+            for (size_t i = 0; i < scene.staticModels.size(); ++i) {
+                const StaticModelInstance& m = scene.staticModels[i];
+                if (staticLods[i] >= 0 && game::boxOutsidePlanes(planes.data(), int(planes.size()), m.mins, m.maxs)) staticLods[i] = -1;
+            }
+            for (size_t i = 0; i < scene.soupBoxes.size(); ++i) {
+                const auto& b = scene.soupBoxes[i];
+                soupVisible[i] = !game::boxOutsidePlanes(planes.data(), int(planes.size()), &b[0], &b[3]);
+            }
+        }
+        for (size_t i = 0; i < staticLods.size(); ++i) cullStats.modelsVisible += staticLods[i] >= 0;
+        for (const uint8_t v : soupVisible) cullStats.soupsVisible += v;
         auto pieceVisible = [&](const CullPiece& pc) {
             return pc.owner >= 0 ? staticLods[size_t(pc.owner)] == pc.lod : soupVisible[size_t(-pc.owner - 1)] != 0;
         };
@@ -3041,7 +3114,8 @@ struct Renderer {
         }
         SDL_GPUColorTargetInfo color{};
         color.texture = post ? sceneTex : target;
-        color.clear_color = {0.55f, 0.65f, 0.78f, post ? 0.0f : 1.0f};
+        // Frame clear (0x10024d70): the current fog colour, black without fog (docs/spec/render-hints.md "World and static model culling").
+        color.clear_color = {fog.active ? fog.color[0] : 0.0f, fog.active ? fog.color[1] : 0.0f, fog.active ? fog.color[2] : 0.0f, post ? 0.0f : 1.0f};
         color.load_op = SDL_GPU_LOADOP_CLEAR;
         if (sceneSamples > 1) {
             color.resolve_texture = sceneTex;
@@ -4803,6 +4877,12 @@ int main(int argc, char** argv) {
             for (const auto& te : world->takeTracerEvents())
                 fxSystem.addTracer({te.from[0], te.from[1], te.from[2]}, {te.to[0], te.to[1], te.to[2]}, fxTime(), 0);
         };
+        // The renderer's far plane distance (FarDist 0x1000aaa0: linear fog far or setculldist, whichever is larger; r_zfar 0), 0 = none.
+        auto rendererFarDist = [&]() -> float {
+            if (!world) return 0.0f;
+            const game::FogParams fogNow = world->clientFog.current(cgNowMs());
+            return game::farPlaneDistance(fogNow.active && !fogNow.exponential, fogNow.farDist, 0.0f, world->cullDist());
+        };
         auto gatherItems = [&](const Camera& viewCam) {
             std::vector<DrawItem> items;
             if (!world) return items;
@@ -4826,10 +4906,24 @@ int main(int argc, char** argv) {
                 }
             }
             static const bool noCull = std::getenv("IW2_NO_CULL") != nullptr; // debug: disable the culling above
-            auto sphereVisible = [&](float x, float y, float z, float radius) {
-                for (const auto& pl : cullPlanes)
-                    if (pl[0] * x + pl[1] * y + pl[2] * z + pl[3] < -radius) return false;
-                return true;
+            // Entity cull (0x100087e0, docs/spec/render-hints.md "Entity cull"): the summed header bounds of the entity's models at its
+            // origin (no rotation, scale 1) against the planes above and the far plane.
+            std::vector<game::ViewPlane> entityPlanes;
+            for (const auto& pl : cullPlanes) entityPlanes.push_back({{pl[0], pl[1], pl[2]}, pl[3]});
+            if (const float farD = rendererFarDist(); farD != 0.0f) {
+                const Vec3 vf = viewCam.forward();
+                const float eyeP[3] = {viewCam.pos.x, viewCam.pos.y, viewCam.pos.z}, fwdP[3] = {vf.x, vf.y, vf.z};
+                entityPlanes.push_back(game::farViewPlane(eyeP, fwdP, farD));
+            }
+            auto entityVisible = [&](const std::vector<std::pair<const float*, const float*>>& bounds, const script::Vec3& origin) {
+                if (noCull) return true;
+                std::vector<std::array<float, 3>> mn, mx;
+                for (const auto& [lo, hi] : bounds) mn.push_back({lo[0], lo[1], lo[2]}), mx.push_back({hi[0], hi[1], hi[2]});
+                const float org[3] = {origin[0], origin[1], origin[2]};
+                float bmin[3], bmax[3];
+                game::dobjCullBox(reinterpret_cast<const float(*)[3]>(mn.data()), reinterpret_cast<const float(*)[3]>(mx.data()), int(mn.size()), org,
+                                  1.0f, bmin, bmax);
+                return !game::boxOutsidePlanes(entityPlanes.data(), int(entityPlanes.size()), bmin, bmax);
             };
             const game::FogParams fogNow = world->clientFog.current(cgNowMs());
             Uploader up(dev, false);
@@ -4991,8 +5085,16 @@ int main(int argc, char** argv) {
                 if (e->isActor || ((e->anim || !e->attachments.empty()) && !e->turret)) {
                     // Animated: skin the body with the blended pose and attach head/helmet/etc.
                     static const bool kcTrace = std::getenv("IW2_KILLCAM_TRACE") != nullptr;
-                    const bool vis = noCull || sphereVisible(ov[0], ov[1], ov[2] + 36.0f, 256.0f);
-                    const Scene::CpuModel* body = vis ? sceneCpuModel(scene, dev, vfs, m.asString()) : nullptr;
+                    const Scene::CpuModel* body = sceneCpuModel(scene, dev, vfs, m.asString());
+                    bool vis = noCull;
+                    if (!vis && body) {
+                        std::vector<std::pair<const float*, const float*>> bounds{{body->headerMins, body->headerMaxs}};
+                        for (const auto& at : e->attachments)
+                            if (const Scene::CpuModel* am = sceneCpuModel(scene, dev, vfs, at.model)) bounds.push_back({am->headerMins, am->headerMaxs});
+                        if (const std::string wm = world->mpPlayerWeaponModel(*e); !wm.empty())
+                            if (const Scene::CpuModel* wmodel = sceneCpuModel(scene, dev, vfs, wm)) bounds.push_back({wmodel->headerMins, wmodel->headerMaxs});
+                        vis = entityVisible(bounds, ov);
+                    }
                     if (kcTrace && ((e->isPlayer && world->mpKillcamSwapped()) || (netKillcam.active && e->obj->get("$deathanim").isDefined())))
                         log::tracef("killcam", "kctrace draw t=%lld ent=%d org=%.1f,%.1f,%.1f vis=%d body=%d anim=%d model=%s\n", static_cast<long long>(world->timeMs()), e->number, // [server time]
                                     double(ov[0]), double(ov[1]), double(ov[2]), int(vis), int(body != nullptr), int(e->anim != nullptr), m.asString().c_str());
@@ -5080,6 +5182,7 @@ int main(int argc, char** argv) {
                 }
                 const GpuModel* gm = sceneModel(scene, dev, vfs, m.asString());
                 if (!gm) continue;
+                if (!entityVisible({{gm->headerMins, gm->headerMaxs}}, ov)) continue;
                 DrawItem it = base;
                 it.model = gm;
                 items.push_back(it);
@@ -9482,6 +9585,7 @@ int main(int argc, char** argv) {
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
             updateWaterMaps(scene, dev, world ? float(cgNowMs()) / 1000.0f : 0.0f);
             renderer.fog = (world ? world->clientFog.consts(cgNowMs()) : game::FogConsts{});
+            renderer.farDist = rendererFarDist();
             applyTextureFilter(renderer);
             renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
             hudKillcam = killcamView;
@@ -9538,8 +9642,10 @@ int main(int argc, char** argv) {
                             static_cast<unsigned long long>(renderer.stats.phaseTriangles[1]), static_cast<unsigned long long>(renderer.stats.phaseTriangles[2]),
                             renderer.dlights.size(), static_cast<unsigned long long>(renderer.stats.phaseTriangles[3]), shotItems.size(),
                             static_cast<unsigned long long>(g_skinStats.models), static_cast<unsigned long long>(g_skinStats.vertices));
-                std::printf("bench: cull: %u / %u world soups, %u / %u static models drawn (%u beyond their LOD distance)\n", renderer.cullStats.soupsVisible,
-                            renderer.cullStats.soups, renderer.cullStats.modelsVisible, renderer.cullStats.models, renderer.cullStats.modelsBeyond);
+                std::printf("bench: cull: %u / %u world soups, %u / %u static models drawn (%u beyond their LOD distance), camera cell %d, %d cell "
+                            "visits, %d portals taken, far %.0f\n", renderer.cullStats.soupsVisible, renderer.cullStats.soups, renderer.cullStats.modelsVisible,
+                            renderer.cullStats.models, renderer.cullStats.modelsBeyond, renderer.cullStats.cell, renderer.cullStats.visits,
+                            renderer.cullStats.portals, double(renderer.farDist));
             }
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
             Uploader::releasePool(dev);
@@ -11847,6 +11953,7 @@ int main(int argc, char** argv) {
             if (gotSwap && swap)
             {
                 renderer.fog = (world ? world->clientFog.consts(cgNowMs()) : game::FogConsts{});
+                renderer.farDist = rendererFarDist();
                 applyTextureFilter(renderer);
                 renderer.dlights.clear(); for (const auto& d : selectDlights(fxSystem.lights(), cam.pos, dlightLimitFrom(uiCvars), fxSystem.viewPlanes)) renderer.dlights.push_back({{d[0], d[1], d[2]}, d[3], {d[4], d[5], d[6]}});
                 screenBlur.update(cgNowMs(), int64_t(SDL_GetTicks()));

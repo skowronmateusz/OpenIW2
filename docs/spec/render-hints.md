@@ -29,11 +29,9 @@ Addresses: exe = CoD2SP_s.exe 1.3, dll = the gfx renderer DLL (gfx13). The exe's
     "World and static model culling" below for the walk. The far plane therefore also removes single world surfaces and static models.
   - OpenIW2 has the pure planes and box test as `viewcull.h` (tests/test_viewcull.cpp).
 - Wired into iw2view for brush-model entities (`Scene::brushBounds` = local bounds of the model's drawn soup vertices, enclosing world box
-  via `transformedBoxBounds`, then `boxCulledByDepthPlanes` with `farPlaneDistance`; `IW2_NO_CULL=1` disables). The static world and the
-  static models get the side and near planes (below), not the far plane: TODO(spec): the original clears the frame and draws the sky
-  outside the cell walk (sky surfaces have their own list, 0x10002a00), and what fills the screen beyond a far plane was not traced, so
-  OpenIW2 keeps drawing world surfaces beyond it (fully fogged) rather than show a different background. Xmodel entity `DrawItem`s carry no
-  local bounds (xmodel bounds were not read). Needs a human visual check: a brush model (door / elevator) beyond a setculldist or fog far
+  via `transformedBoxBounds`, then `boxCulledByDepthPlanes` with `farPlaneDistance`; `IW2_NO_CULL=1` disables). The static world and
+  the static models get the whole plane list, far plane included, and xmodel entities their box test (see "Entity cull" below); the sky
+  and the frame clear are described under "World and static model culling". Needs a human visual check: a brush model (door / elevator) beyond a setculldist or fog far
   must disappear, and none may pop out near the screen edge. r_zfar defaults to 0 and an exponential fog adds no distance (only record
   type 1 counts, 0x1000aacb).
 
@@ -56,10 +54,25 @@ Addresses are in the 1.3 renderer DLL unless marked exe. World pointer 0x101d1b9
     (+0x2c)}`; the file row gives first surface, surface count and child count, and children are stored after their parent in file order
     (0x10003d80 walks them, sets the children pointer and builds every node box from its children or, for a leaf, from its surfaces'
     boxes). A node's surface range covers the surfaces of all its descendants.
-  - Cells (lump 23, 52-byte rows, loader 0x10003fd0): runtime 0x3c bytes: bounds, the root AABB-tree node (file index * 0x30), the
-    portal range (first, count), a range into the cull group index lump 11 (0x101ae494) and a second index range (0x101ae490, not
-    followed). Lump 10 (cull groups, runtime 0x101ae378, 32 bytes: bounds, count, first index) is loaded but no reader was found in the
-    cell walk. TODO(spec): the readers of lump 10 and of the two cell index ranges.
+  - Cells (lump 23, 52-byte rows of 13 dwords, loader 0x10003fd0): `mins[3], maxs[3]` (floats), root AABB-tree node, first portal,
+    portal count, first cull group index, cull group count, first occluder index, occluder count. Runtime 0x3c bytes: bounds at +4, root
+    node +0x1c, portal count +0x20 and portals +0x24, cull group count +0x28 and the index list into lump 11 (0x101ae494) +0x2c,
+    occluder count +0x30 and list (0x101ae490, lump 21) +0x34.
+  - Cull groups (lump 10, 32 bytes: `mins[3], maxs[3], first surface, surface count`; loader 0x10004340 keeps the count at +0x18 and the
+    first surface at +0x1c, -1 when the count is 0; world +0xf0, stride 0x20): surface ranges reached through a cell's indices into lump
+    11. After the AABB-tree walk the cell's groups are walked (0x100096d0 -> 0x100093e0): a group outside a plane is dropped, else all its
+    surfaces are added; a group stamp (0x101d7e9c) adds a group once per frame. On the shipped maps every surface of model 0 belongs to
+    some cell (duhoc_assault: surfaces 179.. through the trees, 0..178 through cull groups, 60 of them in groups of two cells; toujane and
+    newvillers: each surface in exactly one cell).
+  - Occluders (lumps 18-21, cell +0x30): no shipped single player map has any (lump 18 is empty on every map), so 0x10007ae0 and the
+    occluder tests after the planes never cull anything there.
+  - Portals (lump 24, 16 bytes: `plane index, cell, first vertex, vertex count`; vertices: lump 17, 3 floats; loader 0x100041b0):
+    runtime 0x44 bytes: +0 queued flag, +1 on-the-chain flag, +4 the portal that led here, +8 plane normal, +0x14 minus the plane
+    distance, +0x18 corner-select bytes, +0x1c the cell behind the portal, +0x20 vertices, +0x24 vertex count, +0x25 clipped point
+    count, +0x28 clipped point buffer, +0x2c / +0x38 two axes spanning the portal plane (0x1005a350 and the cross product with the normal).
+    A cell's portals lead out of it.
+  - BSP nodes and leaves (lumps 25 / 26, 36 bytes each, loader 0x10004770) for the camera cell: node `plane, child0, child1` (a negative
+    child c is leaf -1 - c); leaf dword 6 is its cell (-1 outside every cell).
   - Static models (0x100038c0): every entity whose classname is misc_model (case-insensitive) becomes a 0x60-byte static model
     (array 0x101ae380, world +0xf8), except models whose name starts with `xmodel/shadow_` (0x10003070). A model that fails to load or
     is not rigid (a surface of some LOD with more than one bone, 0x1002ad10) is replaced by `xmodel/default_static_model`. Keys: angle
@@ -73,10 +86,36 @@ Addresses are in the 1.3 renderer DLL unless marked exe. World pointer 0x101d1b9
   tree at world +0xc (0x10007da0: a point exactly on a plane goes to the back child; a leaf gives the cell index). With the camera
   outside every cell (index < 0) every cell is walked with the view planes. Otherwise (r_singleCell 0) the portal flood 0x1000a060
   starts at the camera cell; with r_singleCell only the camera cell is walked. r_skipPvs skips the world walk.
-  - Portal flood (0x1000a060 with the queue 0x100097b0): portals are queued by distance (heap, at most 256), each visible portal is
-    clipped and its hull turned into new planes from the eye (0x10007470) for the cell behind it; r_portalWalkLimit (default 0 = no
-    limit) ends the flood after that many portals. TODO(spec): the portal clip (0x10057e40 / 0x10058310), r_portalBevels (0.7),
-    r_portalBevelsOnly, r_portalMinClipArea (0.02); OpenIW2 does not implement the flood (below).
+  - Portal flood (0x1000a060). Visiting a cell (0x10009e30) with a plane list walks the cell (below), then looks at each of its
+    portals that is not on the chain of portals leading here: with v = normal . eye - distance, the portal is skipped when v > 0 (the
+    eye is in front of it) or when all its vertices lie outside one plane of the list (0x10007e50: n . p + d <= 0 for every vertex).
+    - v <= -0.125: the portal polygon is clipped by the plane list (0x10009ab0 -> 0x10007f30, one plane after the other: a vertex with
+      e = n . p + d - 0.001 below -0.001 is outside, above 0.001 inside, else on the plane and kept as it is; new points are made only on
+      edges from an inside to an outside vertex, at the fraction e0 / (e0 - e1); no inside vertex leaves nothing). The clipped points are
+      added, in the portal's 2D axes, to the portal's point buffer (0x10009950; buffers of 64 points from a pool of 255, reduced to their
+      convex hull when full). Inferred from the arguments passed on: before the plane list the polygon is first clipped by the plane of
+      the portal through which the cell was entered (TODO(spec); OpenIW2 leaves that clip out, which only keeps more). The first time a portal gets points this frame it is queued with the chain that reached it; reached again
+      through another chain before it is taken from the queue, it only gathers those points too and forgets its chain.
+    - -0.125 < v <= 0 (the eye stands in the portal plane): when the eye lies inside the portal polygon (0x1005dc00, a 2D side test on
+      the polygon projected along its dominant axis) the cell behind is visited at once with the same plane list.
+    - The queue (0x100097b0 / 0x10009860) is a heap of at most 256 portals keyed by a linear function over the portal vertices
+      (0x100066a0; inferred: the nearest depth along the view, so the nearest portal is taken first). The loop takes portals until the
+      queue is empty, or until r_portalWalkLimit portals were taken (default 0: no limit; the counter starts at 1, so 0 never stops it).
+    - A taken portal: the convex hull of its points (0x10057e40 picks the two extreme x points, 0x10058310 / 0x10058100 a quick hull with
+      tolerance 0.001); no hull drops it. The hull points go back to 3D on the portal plane and become a plane list (0x10007470): for each
+      hull edge the plane through the eye and the edge (normal = normalised cross product of the two eye-to-point vectors) with
+      d = 0.001 - n . point, i.e. pushed 0.001 outward, edges with a zero normal skipped; then the view's near plane (moved up to the
+      portal by 0x10006940 when that gives a positive amount, TODO(spec): which extreme 0x10006940 returns) and the far plane when there
+      is one. With r_portalBevelsOnly, with more than 10 hull points, or with r_portalBevels > 0 (default 0.7) bevel planes
+      (0x10007040) come first; with more than 10 hull points or r_portalBevelsOnly the edge planes are left out. TODO(spec): 0x10007040.
+    - Small portals (0x10006de0, only when bevels or r_portalMinClipArea > 0): the hull points are projected with the view-projection;
+      a point with w < 0.125 makes the portal count as large. Otherwise, when a quarter of the area of the projected bounding rectangle,
+      or a quarter of the projected polygon's area (shoelace), is below r_portalMinClipArea (default 0.02, a fraction of the screen),
+      the portal is small: the cell behind is walked with the new plane list and then, instead of queueing its portals, every cell
+      reachable from it through portals that pass the same plane list (not behind the eye, a vertex inside every plane, a non-empty
+      clip; 0x10009c00, each cell once) is walked with that same list (0x10009d30).
+    - The chain flags of the taken portal and its predecessors are set while its cell is visited and cleared after; a taken portal
+      returns its point buffer to the pool and may be queued again later in the frame.
   - Cell walk (0x100092f0): with r_drawWorld, the cell's root node is walked. With r_portalFineCull (dvar 0x101ce808, default 1) and a
     node with children, each child goes through 0x100081a0: a node outside a plane is dropped; a node fully inside every plane
     (0x10006600) draws all its static models (0x100094c0: distance cull only) and all its surfaces without further tests; a partly
@@ -88,13 +127,25 @@ Addresses are in the 1.3 renderer DLL unless marked exe. World pointer 0x101d1b9
     0x10059120, lod values below) greater than the cull distance drops the model for the frame (equal keeps it); then the model box
     against the planes (a box outside does not stamp the model, so another cell may still add it). A model that passes is added through
     0x10023fe0 / 0x1001f950, which picks its LOD (Model LOD below).
-- OpenIW2 (iw2view `Renderer::cullWorld`): no cells, no portal flood. Every frame each world surface (soup) box and each static model is
-  tested on its own against the four side planes and the near plane of the drawn view, and the static models get the distance cull and
-  LOD of the original. Without the flood this draws every surface the original draws plus those it would reject through portals, so
-  nothing visible is lost; the same holds for the AABB-tree walk, which only drops what a per-surface test drops too. The far plane is
-  not applied (see setculldist). The static model box is the box of the model's transformed vertices over all its LODs (flag surfaces
-  padded by the largest cloth wave offset, 12.2 units times the scale), not the rotated model bounds. `IW2_NO_CULL=1` disables the
-  surface and model culls (static models then draw LOD 0 at any distance). Tests: tests/test_viewcull.cpp, tests/test_modellod.cpp.
+- Sky and the far plane: when there is a far plane, 0x1000a7c0 adds every sky surface (the sky list, world +0x18 / +0x1c) once more,
+  tested against the plane list without its last (far) plane, so the sky is never removed by the far plane.
+- Frame clear (0x10024e10 -> 0x10024d70, render command 0x100302b0): once a fog record has been blended (0x101d61c8, set by the blend
+  0x100244d0), the clear colour is the current fog colour (bytes 0x101d61b8..ba; all zero, i.e. black, while record 0 "no fog" is
+  selected), else r_clearColor (colour dvar, default 0 0 0 0); alpha 1. So beyond the far plane the screen shows the sky where sky
+  surfaces lie behind, and the fog colour (black without fog) elsewhere.
+- OpenIW2 (iw2view `Renderer::cullWorld`, `game/portalvis.h`): the camera cell from the BSP nodes; outside every cell (or with
+  `IW2_NO_PORTALS=1`) every world surface (soup) box and every static model is tested against the view's plane list; inside a cell the
+  portal flood above gives a list of (cell, plane list) visits and a surface is drawn when its box passes the plane list of a visit of
+  its cell (its tree or cull group); a static model when its box passes the plane list of a visit of any cell whose bounds its box
+  overlaps (TODO(spec): the original links each model to one AABB-tree node, 0x1002a620, not read). Testing each surface's own box
+  gives the same set as the tree walk, which only skips tests for boxes inside a node box that is inside every plane. Plane lists are
+  the four side planes, the near plane and, with a far distance (setculldist / linear fog far), the far plane; the sky is drawn by its
+  own pass without any cull. Not implemented, all only ever drop more: bevel planes and bevel-only hulls (OpenIW2 always uses the
+  edge planes), the near plane moved up to the portal, occluders; a flood that reaches 4096 taken portals falls back to the plane test
+  for the frame (OpenIW2 safety limit; the original has none). The static model box is the box of the model's transformed vertices
+  over all its LODs (flag surfaces padded by the largest cloth wave offset, 12.2 units times the scale), not the rotated model bounds.
+  The frame is cleared to the current fog colour (black without fog). `IW2_NO_CULL=1` disables the surface and model culls (static
+  models then draw LOD 0 at any distance). Tests: tests/test_viewcull.cpp, tests/test_modellod.cpp, tests/test_portalvis.cpp.
 - Dynamic lights (0x10015210 -> 0x10014fe0): for each of at most r_dlightLimit lights, every surface of the frame's draw list (walked
   backwards) whose technique set has a point light technique and whose box (world surfaces: the draw surface box; models: the type's own
   box function, table 0x101a5a8c) satisfies `distance^2(light origin, box) <= radius^2` (0x1005a670) is added to the light's surface
@@ -128,6 +179,22 @@ Addresses are in the 1.3 renderer DLL unless marked exe. World pointer 0x101d1b9
   entity origin (scale 1; TODO(spec): the refEntity scale the cgame sets). r_lodScale / r_lodBias are read from the cvar store
   (`--cvar`), the test overrides and r_forceLod are not implemented. TODO(spec): the fov the refdef carries on a non-4:3 screen;
   OpenIW2 uses the 4:3 field of view (cg_fov and the ADS zoom). Static script models drawn as entities without skinning still draw LOD 0.
+
+## Entity cull
+
+- Xmodel scene entities (0x100087e0): the world box (0x10008500) is the DObj box from the exe (import slot 0x1f8 -> 0x473800, the box
+  stored at DObj +0x4c / +0x58), times the refEntity scale (+0x38), plus the refEntity origin (+0x3c), with no rotation. The DObj box
+  (0x473130, when the DObj is built) is the sum over its models (the body and every attachment) of each model's bounds: xmodel +0x64 /
+  +0x70, the mins / maxs of the xmodel file header (copied by the loader at 0x47d7df..0x47d827 from the header parse 0x47cd90). Summing
+  covers attachments placed anywhere on the body. The box is tested against the scene plane list (0x10006420: side, near and far planes,
+  then occluders); a box outside is not drawn. A box no larger than 1536 units in two axes is then linked to the cells it touches
+  (0x10008640) and drawn by those cells' walks (0x100083e0, another box test against the cell's plane list); a larger box is drawn at once.
+- Example: the duhoc_assault cliff ropes (duhoc_rope_climb_cliff_rig and others) have header bounds of +-1400 units, so they stay drawn
+  while their origin is far off screen.
+- OpenIW2 (iw2view gatherItems): the CPU skinning of actors and animated script models and the drawing of plain xmodel entities are
+  skipped when that box (header bounds of the body and its attachments summed, scale 1) is outside the four side planes of a 32:9 view
+  (wider than any window), the near plane, or the far plane. Vehicles and turrets are not culled (their drawn tags feed bolted
+  effects). The cell link is not implemented (it only drops more). `game::dobjCullBox` (modellod.h), tests/test_modellod.cpp.
 
 ## setshadowhint
 

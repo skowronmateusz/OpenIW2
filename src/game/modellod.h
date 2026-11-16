@@ -63,4 +63,16 @@ inline int staticModelLod(const LodView& v, const float origin[3], float scale, 
     return lodForDistance(dists, count, lodDistance(v, origin, scale));
 }
 
+// World box of an xmodel entity for the scene cull (docs/spec/render-hints.md "Entity cull", 0x10008500 / exe 0x473130): the sum of the
+// header bounds of the DObj's models (body and attachments), times the entity scale, plus the origin; no rotation.
+inline void dobjCullBox(const float (*modelMins)[3], const float (*modelMaxs)[3], int count, const float origin[3], float scale, float outMin[3],
+                        float outMax[3]) {
+    for (int a = 0; a < 3; ++a) {
+        float lo = 0.0f, hi = 0.0f;
+        for (int m = 0; m < count; ++m) lo += modelMins[m][a], hi += modelMaxs[m][a];
+        outMin[a] = lo * scale + origin[a];
+        outMax[a] = hi * scale + origin[a];
+    }
+}
+
 } // namespace iw2::game

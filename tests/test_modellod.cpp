@@ -77,6 +77,21 @@ int main() {
         const LodView zoom = lodView(eye, 20.0f);
         chk(staticModelLod(zoom, p150, 1.0f, sandbag, 3) == 0, __LINE__);
     }
+    // Entity cull box: header bounds of the body and its attachments summed, scaled, offset by the origin.
+    {
+        const float mn[2][3] = {{-16, -16, 0}, {-4, -4, -4}}, mx[2][3] = {{16, 16, 72}, {4, 4, 8}};
+        const float org[3] = {100, 200, 300};
+        float bmin[3], bmax[3];
+        dobjCullBox(mn, mx, 2, org, 1.0f, bmin, bmax);
+        chk(bmin[0] == 80 && bmin[1] == 180 && bmin[2] == 296 && bmax[0] == 120 && bmax[1] == 220 && bmax[2] == 380, __LINE__);
+        dobjCullBox(mn, mx, 1, org, 2.0f, bmin, bmax);
+        chk(bmin[0] == 68 && bmax[2] == 444, __LINE__);
+        // A rope rig with +-1400 bounds whose origin is 1000 units to the side of a narrow view is still in it.
+        const float rope[1][3] = {{-1400, -1400, -1400}}, ropeMax[1][3] = {{1400, 1400, 1400}};
+        const float ropeOrg[3] = {0, 1000, 0};
+        dobjCullBox(rope, ropeMax, 1, ropeOrg, 1.0f, bmin, bmax);
+        chk(bmin[1] == -400 && bmax[1] == 2400, __LINE__);
+    }
     if (bad == 0) std::printf("modellod: ok\n");
     return bad ? 1 : 0;
 }
