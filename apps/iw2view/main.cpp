@@ -4454,6 +4454,7 @@ int main(int argc, char** argv) {
         else aliases.loadLevel(vfs, args[1]); // plus the interface rows: the pause menu's music and clicks work on a direct level start
         constexpr int kAudioRate = 48000;
         audio::Mixer mixer(vfs, aliases, kAudioRate);
+        if (const char* rf = std::getenv("IW2_ROOM_FX")) mixer.roomFx = std::atoi(rf) != 0; // the room-effect approximation (audio/roomfx.h)
         mixer.logPlays = std::getenv("IW2_SOUND_LOG") != nullptr;
         mixer.logPositions = std::getenv("IW2_SOUND_LOG") && std::atoi(std::getenv("IW2_SOUND_LOG")) >= 2; // [snd-pos] lines // debug: one [snd] line per sound request (docs/debug-flags.md)
         SDL_AudioStream* audioStream = nullptr;
@@ -11215,6 +11216,9 @@ int main(int argc, char** argv) {
                             volSlots.set(4, sc);
                         } else volSlots.clear(4);
                         volSlots.resolve(mixer.channelScale);
+                        // The shock's room effect on environment-effects slot 2 (0x4b223c..0x4b225e; off at f <= 0, 0x4b2004).
+                        if (const game::ShockReverb sr = game::shockReverb(rec, f); sr.on) mixer.reverbCommand(2, sr.room, sr.dry, sr.wet, 0.0f);
+                        else mixer.deactivateReverbCommand(2, 0.0f);
                     }
                     if (rec && rec->sound) {
                         const int el = int(cgNowMs() - ss.startMs);

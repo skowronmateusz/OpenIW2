@@ -223,7 +223,17 @@ are the only ones that run in practice (health items: dead code in SP). Both han
 and rests on the floor after 11 frames (tests/test_itemdrop.cpp), so "bags hang in the air" is not reproduced headless.
 LaunchItem (0x521e00): eType 2, weapon items (item type 1) box (−1, −1, −1)..(1, 1, 1), other items (−1, −1, 0)..(1, 1, 2);
 TR_GRAVITY from the origin at the level time; no owner is set. FinishSpawningItem (0x5225e0) map items rest with trType 0 and
-groundEntityNum = the drop trace's entity (0x52283f). Port: a ground entity counts as moving while its mover position channel is
+groundEntityNum = the drop trace's entity (0x52283f).
+FinishSpawningItem in order: spawnflags & 1 (suspended, +0x124 bit 0): the item stays where the map put it, stationary, and is
+linked; nothing else. Otherwise a box trace (weapon items (−1, −1, −1)..(1, 1, 1), other items (−1, −1, 0)..(1, 1, 2); the
+entity's clipmask, 0x491 when it has none) from the origin straight down 4096 units (0x56f6dc); when it starts in solid it is
+traced again from 15 units (0x592114) below the origin to the same end point; starting in solid again prints a warning with the
+classname and origin and frees the item. The item is put at the end point (stationary trajectory, groundEntityNum = the trace's
+entity). When the trace hit something (fraction < 1, 0x591e20) the item is laid on the hit surface with the same rule as a
+settling item (0x5228d1..0x522a35): its forward vector (from its pitch and yaw) projected onto the plane of the hit normal,
+(n × f) × n, gives the new pitch and yaw (vectoangles 0x424b70, roll 0), a weapon item (type 1) adds 90 to the roll (0x5920bc),
+and G_SetAngle (0x4d83c0) sets them. So a map weapon placed upright with angles (0, yaw, 0) lies on its side on the floor
+(duhoc_assault: the Thompson on the cliff top). No hit keeps the map's angles. Port: World::runItem, game::itemRestAngles. Port: a ground entity counts as moving while its mover position channel is
 active; passEnt is the item itself (owner unset); only weapon items run.
 
 ## Rockets (G_FireRocket 0x527810, G_RunMissile, decoded)

@@ -147,8 +147,30 @@ entity gets that notify when the sound ends. Also `playsoundasmaster`, `playloca
   every consumer reads only the wet level (and Miles' dry arg is the constant 1.0).
 - Implemented: `audio/reverb.h` (state machine, tested in tests/test_sound.cpp), `Mixer::reverbCommand/deactivateReverbCommand/voiceWetLevel`,
   alias `noWetLevel`/`fullDryLevel`, iw2view `reverb`/`deactivatereverb` client commands. The reverb DSP itself is inside mss32.dll
-  (EAX/software presets), a third-party library that is not analysed, so the mixer does not render a reverb tail (the shipped corridor / ambient
-  reverbs of the entry above are therefore inaudible in this port); `fulldrylevel` (flag 0x8) has no consumer found.
+  (EAX/software presets), a third-party library that is not analysed, so the mixer renders a tail only for the rooms of the
+  openiw2 approximation ("Shell shock room effect" below: `underwater`); the shipped corridor / ambient reverbs of the entry above
+  are still inaudible in this port; `fulldrylevel` (flag 0x8) has no consumer found.
+
+## Shell shock room effect (exe evidence) and the openiw2 room approximation
+
+- The shell-shock sound step (0x4b1f90) drives the environment effects as well as the channel volumes. With the record's
+  `cg_shock_sound` set and the sound fraction f above 0 (the same f as for the volumes), every client frame activates the
+  shell-shock priority (slot 2) with the record's `cg_shock_soundRoomType` and dry = `cg_shock_soundDryLevel` · f,
+  wet = `cg_shock_soundWetLevel` · f, fade 0 (0x4b223c..0x4b225e -> 0x443ec0; the room name is passed in a register and looked
+  up by 0x4411e0). When f is 0 the slot is deactivated with fade 0 (0x4b2004..0x4b200b -> 0x443fd0), and so does the stop path
+  of a record without sound (0x4b1e90 -> 0x4b1ea7). Both shipped explosion shocks (`shock/default.shock`,
+  `shock/duhoc_boatexplosion.shock`) use the room `underwater` with dry 1.0 and wet 1.0; pain, hold-breath and the victory
+  screen use `generic`. Only aliases with `nowetlevel` (the menu clicks) stay out of the room, so speech (channel `voice`,
+  whose shock volume is 1.0 in duhoc_boatexplosion.shock) gets the room effect at full wet while other channels are also
+  turned down. Port: `game::shockReverb` (tests/test_shellshock.cpp), applied by iw2view each frame; openiw2 had parsed the
+  room and levels and never used them.
+- Rendering (openiw2 approximation, not the original): the room DSP is Miles' (Round 5) and is not analysed. `audio/roomfx.h`
+  renders rooms that have parameters, so far only `underwater`: each voice sends its signal times its wet level into a mono
+  Schroeder reverb (four damped combs, two allpasses) whose output is added to both channels; the dry signal is not changed (the
+  exe passes dry 1.0 to Miles). TODO(spec): all its constants (decay about 1.5 s, damping, predelay, gain) are openiw2 choices,
+  and the other 25 room types (the level reverbs of `_ambient.gsc`, moscow's `stonecorridor`) are still not rendered. Because
+  `default.shock` uses the same room, every explosion shell shock now has this tail too. `IW2_ROOM_FX=0` turns the rendering
+  off (docs/debug-flags.md). Tests: tests/test_sound.cpp (`testRoomFx`).
 
 ## Round 6: audit (exe evidence)
 

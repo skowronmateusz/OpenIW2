@@ -63,7 +63,7 @@ target_link_libraries(iw2_assets PUBLIC ZLIB::ZLIB)
 
 add_library(iw2_audio
   src/audio/sound.cpp
-  src/audio/reverb.cpp
+  src/audio/reverb.cpp src/audio/roomfx.cpp
   src/audio/decode.cpp)
 target_include_directories(iw2_audio PUBLIC src)
 target_link_libraries(iw2_audio PUBLIC iw2_fs)
@@ -198,6 +198,8 @@ add_executable(test_vm tests/test_vm.cpp)
 target_link_libraries(test_vm PRIVATE iw2_script)
 add_test(NAME vm COMMAND test_vm)
 
+add_executable(test_takeweapons tests/test_takeweapons.cpp)
+target_link_libraries(test_takeweapons PRIVATE iw2_game)
 add_executable(test_playerweapon tests/test_playerweapon.cpp)
 target_link_libraries(test_playerweapon PRIVATE iw2_game)
 add_test(NAME playerweapon COMMAND test_playerweapon)
@@ -581,6 +583,8 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(damageorder_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   add_test(NAME corpses_world COMMAND test_corpses)
   set_tests_properties(corpses_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+  add_test(NAME takeweapons COMMAND test_takeweapons)
+  set_tests_properties(takeweapons PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   add_test(NAME itemdrop_world COMMAND test_itemdrop)
   set_tests_properties(itemdrop_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
   # Mission-script smoke: a few maps headless (plain + one --autoplay run + a determinism check).

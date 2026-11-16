@@ -2,6 +2,7 @@
 #pragma once
 
 #include "audio/reverb.h"
+#include "audio/roomfx.h"
 #include "fs/vfs.h"
 
 #include <array>
@@ -197,6 +198,9 @@ public:
     float voiceWetLevel(int handle) const;
     EnvReverb reverb;
     bool enableReverb = true;
+    // openiw2 approximation of the room effect (audio/roomfx.h): voices feed it by their wet level while the active room
+    // has parameters (the shell-shock room "underwater"). Off: the room effect stays silent as before (env IW2_ROOM_FX=0).
+    bool roomFx = true;
 
 private:
     std::string lastSubtitle_;
@@ -246,6 +250,9 @@ private:
     Vec3 listener_{0, 0, 0}, forward_{1, 0, 0}, right_{0, -1, 0};
     int nextHandle_ = 1;
     double reverbMs_ = 0;
+    RoomFx roomFx_;
+    int roomFxRoom_ = -1;      // room type the room effect state belongs to (-1 none)
+    std::vector<float> send_;  // this mix's room send (mono)
     double fadeMs_ = 0;
     int stampNow_ = 0; // 0x793db8
     int allocSlot(Voice& v);

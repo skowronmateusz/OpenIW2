@@ -196,13 +196,25 @@ void World::registerInventoryBuiltins() {
         logLoadout(c, "takeweapon", w);
         inv.ammo[weaponField(w, "ammoName")] = 0;
         inv.clip[weaponField(w, "clipName")] = 0;
+        const bool owned = inv.owned.count(w) != 0;
         takeWeapon(inv, w);
+        // 0x4dc8a0 clears the player state's weapon (ps+0xb0) when it is the one taken (0x4dc9df..0x4dc9e7): it leaves the
+        // hand at once, without a putaway (docs/spec/inventory.md).
+        Entity& p = player(c);
+        if (owned && lowerCopy(p.obj->get("$weapon").toString()) == w) {
+            p.obj->set("$weapon", Value("none"));
+            p.obj->set("$weapontaken", Value(true));
+        }
         return Value();
     });
     vm_.registerBuiltin("takeallweapons", [this, player](CallContext& c) {
         Entity& p = player(c);
         logLoadout(c, "takeallweapons", "");
         inventory(p) = Inventory{};
+        // 0x5379f1: the player state's weapon (ps+0xb0) is set to 0 at once, so the weapon in hand disappears without a
+        // putaway (duhoc_assault.gsc:1336, the rope climb).
+        const Value held = p.obj->get("$weapon");
+        if (held.isString() && !held.asString().empty() && lowerCopy(held.asString()) != "none") p.obj->set("$weapontaken", Value(true));
         p.obj->set("$weapon", Value("none"));
         return Value();
     });

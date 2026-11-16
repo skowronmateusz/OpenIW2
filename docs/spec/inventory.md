@@ -14,7 +14,8 @@ stance `stand duck prone`; offhandClass `None, Frag Grenade, Smoke Grenade`.
 
 - 0x518: bitset of owned weapons; 0x530: a second per-weapon bitset cleared on give (meaning not known yet).
 - 0x529 / 0x52a: weapon in the `primary` / `primaryb` slot (byte, 0 = none).
-- 0xac: current offhand; 0xb0: cleared by `takeallweapons`.
+- 0xac: current offhand; 0xb0: the weapon in hand (the player state's weapon; PM_Weapon compares the command's weapon byte
+  with it, 0x4de94d..0x4de959).
 - 0x118 + 4·ammoIndex: stock rounds; 0x318 + 4·clipIndex: loaded rounds. Ammo and clip indices come from the
   weapon's `ammoName` / `clipName`, so weapons with the same name share ammunition (indexes into the ammo and clip
   definition tables at 0x1c64750 / 0x1c64950).
@@ -33,8 +34,18 @@ stance `stand duck prone`; offhandClass `None, Frag Grenade, Smoke Grenade`.
 - **add ammo (0x520e40)**: stock += amount; a `clipOnly` weapon is given as well; the clip is filled (0x520de0:
   move min(clipSize − clip, stock) from stock to clip) when asked or when the weapon was just given; stock is
   clamped to the ammo's `maxAmmo` and the clip to `clipSize`.
-- **takeweapon (0x537850)**: zeroes its stock and clip, then removes it (0x4dc8a0, slot details not specified).
-- **takeallweapons (0x537960)**: clears 0xb0 and, for every weapon, stock, clip and ownership.
+- **takeweapon (0x537850)**: zeroes its stock and clip, then removes it (0x4dc8a0, slot details not specified). When the
+  removed weapon is the one in hand, 0x4dc8a0 sets 0xb0 to 0 (0x4dc9df..0x4dc9e7, again at 0x4dca48..0x4dca50): the weapon
+  leaves the hand at once, with no putaway animation.
+- **takeallweapons (0x537960)**: sets the weapon in hand (0xb0) to 0 at once (0x5379f1), then for every weapon zeroes stock
+  and clip and removes it (0x4dc8a0). Nothing is in hand afterwards, so the client draws no view weapon until a weapon is
+  given and selected again (duhoc_assault.gsc:1336 takes the weapons for the rope climb and gives them back after it).
+  Port: the builtins set `$weapon` to "none" and flag `$weapontaken`; the front end then empties the hand of its player
+  weapon state machine (`PlayerWeapon::weaponTaken`, PM_BeginWeaponChange with weapon 0, no putaway).
+- PM_Weapon's weapon-change step (0x4de880): a weapon in hand that is no longer owned (owned bitset 0x518) starts a change
+  to weapon 0 (0x4de982..0x4de9a2, PM_BeginWeaponChange 0x4ddb40 with 0). Port: not modelled, the take builtins above
+  already empty the hand. TODO(spec): whether setweaponslotweapon (0x539f40) replacing the weapon in hand goes through the
+  same clear.
 - **givemaxammo (0x538020)**: add ammo `maxAmmo − stock`.
 - **getfractionstartammo (0x538130)**: 1 if `startAmmo` < 1, 0 if stock < 1, else stock / startAmmo.
 - **getfractionmaxammo (0x538270)**: as above with clip / `clipSize` for `clipOnly` weapons, otherwise

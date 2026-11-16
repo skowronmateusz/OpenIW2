@@ -303,7 +303,85 @@ static void testVolumeSlots() {
     for (int c = 0; c < 11; ++c) CHECK(out[c] == 1.0f);
 }
 
+// The room effect (audio/roomfx.h, an openiw2 approximation of the Miles room DSP): only rooms with parameters are rendered (the
+// shell-shock room "underwater"); a voice feeds it by its wet level, an alias with `nowetlevel` does not, and the dry signal is
+// unchanged.
+static void testRoomFx() {
+    namespace fsys = std::filesystem;
+    CHECK(iw2::audio::roomFxParams(iw2::audio::EnvReverb::roomIndex("underwater")).has_value());
+    CHECK(!iw2::audio::roomFxParams(iw2::audio::EnvReverb::roomIndex("generic")).has_value());
+    CHECK(!iw2::audio::roomFxParams(iw2::audio::EnvReverb::roomIndex("stonecorridor")).has_value());
+    {
+        // An impulse comes back as a decaying tail after the predelay; silence stays silent.
+        iw2::audio::RoomFx fx(48000);
+        const auto p = *iw2::audio::roomFxParams(iw2::audio::EnvReverb::roomIndex("underwater"));
+        std::vector<float> send(48000, 0.0f), out(2 * 48000, 0.0f);
+        send[0] = 1.0f;
+        fx.process(send.data(), out.data(), 48000, p);
+        auto energy = [&](int from, int to) {
+            double e = 0;
+            for (int i = from; i < to; ++i) e += double(out[size_t(i) * 2]) * out[size_t(i) * 2];
+            return e;
+        };
+        CHECK(energy(0, 400) == 0.0);                       // within the predelay
+        CHECK(energy(2400, 9600) > 0.0);                    // the tail
+        CHECK(energy(38400, 48000) < energy(2400, 9600));   // it decays
+        CHECK(out[2 * 4000] == out[2 * 4000 + 1]);          // the same in both channels
+        std::fill(send.begin(), send.end(), 0.0f);
+        fx.reset();
+        std::fill(out.begin(), out.end(), 0.0f);
+        fx.process(send.data(), out.data(), 48000, p);
+        CHECK(energy(0, 48000) == 0.0);
+    }
+    const fsys::path dir = fsys::temp_directory_path() / ("iw2_test_roomfx_" + std::to_string(::getpid()));
+    fsys::remove_all(dir);
+    const auto wav = makeWav(std::vector<int16_t>(4800, 16384), 48000); // 0.1 s
+    fsys::create_directories(dir / "sound");
+    std::ofstream(dir / "sound" / "c.wav", std::ios::binary).write(reinterpret_cast<const char*>(wav.data()), std::streamsize(wav.size()));
+    writeFile(dir / "soundaliases" / "r.csv",
+              "name,file,vol_min,vol_max,channel,reverb\n"
+              "say,c.wav,1,1,voice,\n"
+              "click,c.wav,1,1,menu,nowetlevel\n");
+    iw2::fs::Vfs vfs;
+    vfs.mountDirectory(dir.string());
+    iw2::audio::SoundAliases al;
+    al.load(vfs, "test");
+    // Output of one alias: the first 0.05 s (while it plays) and the 0.1 s after it ended.
+    auto run = [&](const char* alias, const char* room, float wet, bool fxOn, float& during, double& tail) {
+        iw2::audio::Mixer m(vfs, al, 48000);
+        m.masterVolume = 1.0f;
+        m.roomFx = fxOn;
+        if (room) m.reverbCommand(2, room, 1.0f, wet, 0.0f);
+        m.play(alias);
+        std::vector<float> out(2 * 2400);
+        m.mix(out.data(), 240);
+        during = out[2 * 100];
+        m.mix(out.data(), 2400);
+        m.mix(out.data(), 2400); // the voice ends at frame 4800
+        m.mix(out.data(), 2400); // frames 5040..7440: only the room tail
+        tail = 0;
+        for (size_t i = 0; i < out.size(); ++i) tail += double(out[i]) * out[i];
+    };
+    float dryPlain = 0, dryFx = 0, d = 0;
+    double tailPlain = 0, tailFx = 0, t = 0;
+    run("say", nullptr, 0, true, dryPlain, tailPlain);
+    run("say", "underwater", 1.0f, true, dryFx, tailFx);
+    CHECK(tailPlain == 0.0 && tailFx > 0.0);       // the voice's wet send rings on after it ended
+    CHECK(dryFx == dryPlain && dryPlain != 0.0f);  // the dry signal is unchanged (before the predelay ends)
+    run("say", "underwater", 0.0f, true, d, t);
+    CHECK(t == 0.0);                               // wet 0: no send
+    run("say", "underwater", 1.0f, false, d, t);
+    CHECK(t == 0.0);                               // switched off (IW2_ROOM_FX=0)
+    run("say", "generic", 1.0f, true, d, t);
+    CHECK(t == 0.0);                               // a room without parameters is not rendered
+    run("click", "underwater", 1.0f, true, d, t);
+    CHECK(t == 0.0);                               // nowetlevel alias
+    std::error_code ec;
+    fsys::remove_all(dir, ec);
+}
+
 int main() {
+    testRoomFx();
     testVolumeSlots();
     const auto bytes = makeWav({100, -200, 16384}, 22050);
     const auto w = iw2::audio::parseWav(bytes);

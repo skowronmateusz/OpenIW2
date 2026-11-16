@@ -172,6 +172,16 @@ float shockSoundFraction(const ShockRecord& r, int elapsedMs, int durationMs) {
     return 1.0f;
 }
 
+ShockReverb shockReverb(const ShockRecord* r, float f) {
+    ShockReverb out;
+    if (!r || !r->sound || !(f > 0.0f)) return out;
+    out.on = true;
+    out.room = r->room;
+    out.dry = r->dry * f;
+    out.wet = r->wet * f;
+    return out;
+}
+
 float shockChannelVolume(const ShockRecord& r, int channel, float f) {
     if (channel < 0 || channel >= 11) return 1.0f;
     return (r.volume[channel] - 1.0f) * f + 1.0f;

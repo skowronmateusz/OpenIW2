@@ -240,7 +240,8 @@ const SoundAlias* SoundAliases::pick(const std::string& name, std::mt19937& rng)
     return &it->second[std::uniform_int_distribution<size_t>(0, it->second.size() - 1)(rng)];
 }
 
-Mixer::Mixer(const fs::Vfs& vfs, const SoundAliases& aliases, int outputRate) : vfs_(vfs), aliases_(aliases), rate_(outputRate) {}
+Mixer::Mixer(const fs::Vfs& vfs, const SoundAliases& aliases, int outputRate)
+    : vfs_(vfs), aliases_(aliases), rate_(outputRate), roomFx_(outputRate) {}
 
 std::shared_ptr<const Wav> Mixer::load(const std::string& file) {
     const std::string key = lower(file);
@@ -627,6 +628,13 @@ void Mixer::mix(float* out, int frames) {
         if (slaveFadeMs <= 0) duck_ = masterPlaying ? 1.0f : 0.0f;
         else duck_ = std::clamp(duck_ + (masterPlaying ? 1.0f : -1.0f) * float(frames) * 1000.0f / (float(rate_) * float(slaveFadeMs)), 0.0f, 1.0f);
     }
+    // Room effect (roomfx.h, openiw2 approximation): rendered while the active room type has parameters.
+    const std::optional<RoomFxParams> fx = roomFx ? roomFxParams(reverb.roomType()) : std::nullopt;
+    if (!fx || reverb.roomType() != roomFxRoom_) {
+        roomFx_.reset();
+        roomFxRoom_ = fx ? reverb.roomType() : -1;
+    }
+    if (fx) send_.assign(size_t(frames), 0.0f);
     for (Voice& v : voices_) {
         if (v.held || loading_) continue;
         if (pausedChannels && v.chan >= 0 && channelPausable[v.chan]) continue; // paused samples keep their position
@@ -638,6 +646,9 @@ void Mixer::mix(float* out, int frames) {
         gl *= masterVolume * fadeVolume * cs * sl;
         gr *= masterVolume * fadeVolume * cs * sl;
         const float baseL = gl, baseR = gr;
+        // The voice's room send: its wet level (0x49e9f0: 0 with snd_enableReverb off or a `nowetlevel` alias); the dry signal is
+        // left as it is (the exe's dry argument is always 1.0).
+        const float wetv = fx ? reverb.voiceWet(v.noWet, enableReverb) : 0.0f;
         const Wav& w = *v.wav;
         const size_t n = w.frames();
         for (int i = 0; i < frames; ++i) {
@@ -667,10 +678,12 @@ void Mixer::mix(float* out, int frames) {
             }
             out[i * 2] += l * gl;
             out[i * 2 + 1] += r * gr;
+            if (wetv > 0) send_[size_t(i)] += (l * gl + r * gr) * 0.5f * wetv;
             v.pos += v.step;
         }
     }
     std::erase_if(voices_, [](const Voice& v) { return !v.loop && v.pos >= double(v.wav->frames()); });
+    if (fx) roomFx_.process(send_.data(), out, frames, *fx);
     for (int i = 0; i < frames * 2; ++i) out[i] = std::clamp(out[i], -1.0f, 1.0f);
 }
 

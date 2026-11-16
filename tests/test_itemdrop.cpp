@@ -4,6 +4,7 @@
 // but falls and rests on the floor below.
 #include "fs/vfs.h"
 #include "game/collision.h"
+#include "game/itemslide.h"
 #include "game/world.h"
 #include "script/vm.h"
 
@@ -219,6 +220,38 @@ int main() {
             std::cout << "water at " << water[0] << " " << water[1] << " " << water[2] << ": splash at frame " << splashFrame << ", splashes "
                       << r.stats.waterSplashes << "\n";
             CHECK(splashFrame > 0 && r.stats.waterSplashes == 1);
+        }
+    }
+    // 5. Map-placed weapon items (FinishSpawningItem 0x5225e0) are laid on the floor their 4096-unit drop hits: a weapon item
+    // lies on its side (roll 90) with its yaw kept on a flat floor. duhoc_assault places the cliff-top Thompson at
+    // (428, -3489, 1115) with angles (0, 60, 0).
+    {
+        const auto flat = itemRestAngles({0, 60, 0}, {0, 0, 1}, true);
+        CHECK(std::fabs(flat[0]) < 1e-3f && std::fabs(flat[1] - 60.0f) < 1e-3f && flat[2] == 90.0f);
+        const auto other = itemRestAngles({0, 60, 0}, {0, 0, 1}, false);
+        CHECK(other[2] == 0.0f);
+        World d(vfs, "duhoc_assault");
+        d.start();
+        for (int i = 0; i < 4; ++i) d.frame(); // FinishSpawningItem runs at level time 100
+        int mapItems = 0, lying = 0;
+        Entity* thompson = nullptr;
+        for (const auto& ep : d.entities()) {
+            Entity& e = *ep;
+            if (e.obj->removed || e.classname.rfind("weapon_", 0) != 0) continue;
+            const Vec3 o = e.obj->get("origin").asVector();
+            ++mapItems;
+            if (e.obj->get("angles").asVector()[2] == 90.0f) ++lying;
+            if (e.classname == "weapon_thompson" && std::fabs(o[0] - 428.0f) < 1 && std::fabs(o[1] + 3489.0f) < 1) thompson = &e;
+        }
+        std::cout << "duhoc_assault: " << mapItems << " map weapon items, " << lying << " lying on their side\n";
+        CHECK(mapItems > 0 && lying == mapItems);
+        CHECK(thompson != nullptr);
+        if (thompson) {
+            const Vec3 o = thompson->obj->get("origin").asVector(), a = thompson->obj->get("angles").asVector();
+            const TraceResult down = d.collision().trace({428, -3489, 1115}, {428, -3489, 1115 - 4096.0f}, mins, maxs, 0x491);
+            std::cout << "cliff-top thompson at " << o[0] << " " << o[1] << " " << o[2] << " angles " << a[0] << " " << a[1] << " " << a[2] << "\n";
+            CHECK(std::fabs(o[2] - down.endPos[2]) < 0.05f);
+            CHECK(a[2] == 90.0f);
         }
     }
     return failures ? 1 : 0;

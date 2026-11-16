@@ -1087,13 +1087,22 @@ void World::runItem(Entity& e) {
             if (suspended) return; // groundEntityNum stays unset; the suspended flag blocks the re-base (step 1)
             Vec3 o = e.obj->get("origin").asVector();
             TraceResult tr = collision_->trace(o, {o[0], o[1], o[2] - 4096.0f}, mins, maxs, 0x491, e.number);
-            if (tr.startSolid) {
+            if (tr.startSolid) { // retried from 15 below the origin to the same end (0x522764..0x5227d6)
+                const float endZ = o[2] - 4096.0f;
                 o[2] -= 15.0f;
-                tr = collision_->trace(o, {o[0], o[1], o[2] - 4096.0f}, mins, maxs, 0x491, e.number);
+                tr = collision_->trace(o, {o[0], o[1], endZ}, mins, maxs, 0x491, e.number);
                 if (tr.startSolid) { freeEntity(e); return; }
             }
             e.obj->set("origin", Value(Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]}));
             e.obj->set("$groundent", Value(int32_t(tr.fraction < 1.0f ? tr.entity : kItemNoGround)));
+            // A hit (fraction < 1, 0x52289c) lays the item on the surface as a settling item is (0x5228d1..0x522a35, G_SetAngle
+            // 0x4d83c0): a weapon item lies on its side. No hit keeps the map angles.
+            if (tr.fraction < 1.0f) {
+                const Value av = e.obj->get("angles");
+                const Vec3 a = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
+                const auto r = itemRestAngles({a[0], a[1], a[2]}, {tr.normal[0], tr.normal[1], tr.normal[2]}, true);
+                e.obj->set("angles", Value(Vec3{r[0], r[1], r[2]}));
+            }
             return;
         }
         Trajectory trj;
@@ -1169,27 +1178,13 @@ void World::runItem(Entity& e) {
         if (body || !(tr.fraction < 0.01f)) return;
         if (tr.normal[2] <= 0.0f) { freeEntity(e); return; }
         if (collision_->trace(cur, cur, {0, 0, 0}, {0, 0, 0}, 0x80000000u).startSolid) { freeEntity(e); return; }
-        // 0x522ea0: the item's forward vector (its pitch and yaw) is projected onto the plane of the hit normal, (n x f) x n, and
-        // the angles become its vectoangles with roll 0, +90 for a weapon item (item type 1: it lies on its side); the angular
-        // trajectory is cleared and currentAngles (+0xe8..) set.
+        // 0x522ea0: laid on the surface (itemRestAngles; every item that runs here is a weapon item); the angular trajectory is
+        // cleared and currentAngles (+0xe8..) set.
         {
             const Value av = e.obj->get("angles");
             const Vec3 a = av.isVector() ? av.asVector() : Vec3{0, 0, 0};
-            const float rad = 0.01745329238474369f;
-            const Vec3 f{std::cos(a[0] * rad) * std::cos(a[1] * rad), std::cos(a[0] * rad) * std::sin(a[1] * rad), -std::sin(a[0] * rad)};
-            const Vec3 n{tr.normal[0], tr.normal[1], tr.normal[2]};
-            const Vec3 t{n[1] * f[2] - n[2] * f[1], n[2] * f[0] - n[0] * f[2], n[0] * f[1] - n[1] * f[0]};
-            const Vec3 g{t[1] * n[2] - t[2] * n[1], t[2] * n[0] - t[0] * n[2], t[0] * n[1] - t[1] * n[0]};
-            float pitch = 90.0f, yaw = 0.0f;
-            if (g[0] == 0.0f && g[1] == 0.0f) {
-                pitch = g[2] > 0.0f ? 270.0f : 90.0f; // vectoangles of a vertical vector
-            } else {
-                yaw = std::atan2(g[1], g[0]) / rad;
-                if (yaw < 0) yaw += 360.0f;
-                pitch = -std::atan2(g[2], std::sqrt(g[0] * g[0] + g[1] * g[1])) / rad;
-                if (pitch < 0) pitch += 360.0f;
-            }
-            e.obj->set("angles", Value(Vec3{pitch, yaw, 90.0f}));
+            const auto r = itemRestAngles({a[0], a[1], a[2]}, {tr.normal[0], tr.normal[1], tr.normal[2]}, true);
+            e.obj->set("angles", Value(Vec3{r[0], r[1], r[2]}));
         }
         e.obj->set("$arate", Value()); // landing clears the angular trajectory (0x522ea0)
         // G_SetOrigin(endpos) (0x4d8380) and groundEntityNum = tr.entityNum.

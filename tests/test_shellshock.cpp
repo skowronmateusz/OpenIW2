@@ -24,6 +24,19 @@ int main() {
     CHECK(shockMs(2.5f) == 2500);
     CHECK(shockMs(-0.75f) == -750);
 
+    // The shock's room effect (0x4b1f90): slot 2 gets the record's room with dry * f and wet * f while f > 0, else it is off.
+    {
+        const ShockRecord u = parseShockFile("cg_shock_soundRoomType \"underwater\"\ncg_shock_soundDryLevel \"1.0\"\n"
+                                             "cg_shock_soundWetLevel \"1.0\"\ncg_shock_sound \"1\"\n");
+        const ShockReverb on = shockReverb(&u, 0.5f);
+        CHECK(on.on && on.room == "underwater" && on.dry == 0.5f && on.wet == 0.5f);
+        CHECK(!shockReverb(&u, 0.0f).on);
+        CHECK(!shockReverb(nullptr, 1.0f).on);
+        ShockRecord quiet = u;
+        quiet.sound = false;
+        CHECK(!shockReverb(&quiet, 1.0f).on);
+    }
+
     {
         // End / abort sounds (0x4b1f90, 0x4b1e90).
         using A = ShockEndSound::Action;

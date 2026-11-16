@@ -67,6 +67,16 @@ ShockMouse shockMouse(const ShockRecord& r, int elapsedMs, int durationMs);
 float shockSoundFraction(const ShockRecord& r, int elapsedMs, int durationMs);
 // The volume factor of a channel at fraction f: (volume - 1) * f + 1.
 float shockChannelVolume(const ShockRecord& r, int channel, float f);
+// The environment effects (reverb) of the shell shock (0x4b1f90): while the record has cg_shock_sound and the fraction f is
+// above 0, every frame activates the shell-shock priority slot (2) with the record's room and dry * f, wet * f, fade 0
+// (0x4b223c..0x4b225e -> 0x443ec0); otherwise the slot is deactivated with fade 0 (0x4b2004..0x4b200b, and the stop path
+// 0x4b1e90 -> 0x4b1ea7 when the record has no sound).
+struct ShockReverb {
+    bool on = false;
+    std::string room;
+    float dry = 0, wet = 0;
+};
+ShockReverb shockReverb(const ShockRecord* r, float f);
 // The shellshock_loop sound: plays while duration + loopEndDelay + loopFade lies ahead; the returned blend 0..1 goes
 // from the loud loop (0) to its silent twin (1) over the last loopFadeMs. Negative: no loop.
 float shockLoopBlend(const ShockRecord& r, int elapsedMs, int durationMs);
