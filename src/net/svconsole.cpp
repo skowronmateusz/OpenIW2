@@ -256,6 +256,44 @@ std::string ServerConsole::serverInfo() const {
     return info;
 }
 
+std::string consoleLineForLog(const std::string& line) {
+    auto maskedValue = [](const std::string& name) { return lower(name).find("password") != std::string::npos; };
+    std::string out;
+    for (const std::string& part : splitCommands(line)) {
+        const auto tok = tokenize(part);
+        if (tok.empty()) continue;
+        std::string text = part;
+        const std::string cmd = lower(tok[0]);
+        if ((cmd == "set" || cmd == "seta" || cmd == "sets") && tok.size() >= 3 && maskedValue(tok[1]))
+            text = tok[0] + " " + tok[1] + " ***";
+        else if (tok.size() >= 2 && maskedValue(tok[0]))
+            text = tok[0] + " ***";
+        else {
+            const size_t b = text.find_first_not_of(" \t");
+            const size_t e = text.find_last_not_of(" \t");
+            text = b == std::string::npos ? std::string() : text.substr(b, e - b + 1);
+        }
+        if (!out.empty()) out += "; ";
+        for (const char ch : text) {
+            const auto u = static_cast<unsigned char>(ch);
+            if (u < 0x20 || u == 0x7f) {
+                char b[8];
+                std::snprintf(b, sizeof b, "\\x%02x", u);
+                out += b;
+            } else {
+                out += ch;
+            }
+        }
+    }
+    return out;
+}
+
+void ServerConsole::executeTyped(const std::string& source, const std::string& line) {
+    const std::string shown = consoleLineForLog(line);
+    if (!shown.empty()) iw2::log::event("cmd", source + ": " + shown);
+    execute(line);
+}
+
 void ServerConsole::execute(const std::string& text) {
     for (const std::string& line : splitCommands(text)) {
         auto tok = tokenize(line);
@@ -496,6 +534,8 @@ std::optional<std::vector<std::string>> ServerConsole::rcon(const std::string& l
             if (cmdline.size() > 1024) break;
         }
         if (cmdline.size() > 1024) cmdline.resize(1024);
+        // openiw2: the command (without the password) as an event line, as for the console (executeTyped).
+        if (const std::string shown = consoleLineForLog(cmdline); !shown.empty()) iw2::log::event("cmd", "rcon " + from + ": " + shown);
         execute(cmdline);
     }
     print = saved;

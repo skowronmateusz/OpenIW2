@@ -467,9 +467,9 @@ int runDedicated(fs::Vfs& vfs, const DedicatedSettings& s) {
     const int64_t start = nowMs();
     while (!host.quitRequested && !gSignalQuit && (s.seconds <= 0 || nowMs() - start < s.seconds * 1000LL)) {
         server.poll(nowMs(), 5);
-        for (const auto& line : in.poll()) console.execute(line);
+        for (const auto& line : in.poll()) console.executeTyped("console", line);
         if (s.frontEnd)
-            for (const auto& line : s.frontEnd()) console.execute(line);
+            for (const auto& line : s.frontEnd()) console.executeTyped("window", line);
         host.showScriptErrors();
         // A gametype that ended its round with exitLevel goes on with the rotation.
         if (host.world() && host.world()->mpState().exitRequested) console.mapRotate();

@@ -230,7 +230,8 @@ prints `iw2server: log <path>` after its start line. Output to the terminal, a f
 last 10 server logs are kept. rcon passwords, `*password*` cvar values and chat text are not written to the file. A
 build from source writes a log only with `IW2_LOG=1` (or `--cvar iw2_log=1`); `IW2_LOG=0` turns it off,
 `IW2_LOG_DIR=<folder>` puts it elsewhere. With the log on, the file also gets short `[ev]` lines (the map loads, map
-restarts, connects and drops with their reason, a summary of the frame timing and command lag every 10 s); traces
+restarts, connects and drops with their reason, the commands typed in the terminal or the server window and run
+by rcon, a summary of the frame timing and command lag every 10 s); traces
 such as `IW2_NET_TRACE=2` go to the trace recorder instead of the file. Details: [logging.md](logging.md).
 
 ## Console commands

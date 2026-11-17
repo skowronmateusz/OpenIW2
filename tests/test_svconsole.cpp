@@ -2,6 +2,7 @@
 // hooks for rcon, live getstatus, private slots and the game password over UDP loopback. Headless, no game data.
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -429,7 +430,65 @@ void testDumpTrace() {
     unsetenv("IW2_LOG_DIR");
 }
 
+// What fd 1 receives while f runs (the event lines go to standard output without a log file).
+template <class F> std::string stdoutOf(F f) {
+    std::fflush(stdout);
+    std::string path = (std::filesystem::temp_directory_path() / "iw2_svconsole_evXXXXXX").string();
+    const int fd = mkstemp(path.data());
+    const int saved = dup(1);
+    dup2(fd, 1);
+    f();
+    std::fflush(stdout);
+    dup2(saved, 1);
+    close(saved);
+    std::string out;
+    char buf[4096];
+    lseek(fd, 0, SEEK_SET);
+    for (ssize_t n; (n = read(fd, buf, sizeof buf)) > 0;) out.append(buf, size_t(n));
+    close(fd);
+    unlink(path.c_str());
+    return out;
+}
+
+// Typed console and rcon commands as event lines (docs/logging.md "Event lines", category cmd), passwords masked.
+void testCommandLog() {
+    CHECK(consoleLineForLog("  map mp_carentan  ") == "map mp_carentan");
+    CHECK(consoleLineForLog("set rcon_password Secret") == "set rcon_password ***");
+    CHECK(consoleLineForLog("seta g_password \"two words\"") == "seta g_password ***");
+    CHECK(consoleLineForLog("sv_privatePassword abc") == "sv_privatePassword ***");
+    CHECK(consoleLineForLog("set sv_hostname x; set RCON_PASSWORD y; map_restart") == "set sv_hostname x; set RCON_PASSWORD ***; map_restart");
+    CHECK(consoleLineForLog("rcon_password") == "rcon_password"); // reading the value prints it anyway
+    // A terminal's up arrow before the command: shown, so a line the console took for an unknown command can be seen.
+    CHECK(consoleLineForLog("\x1b[Amap mp_carentan") == "\\x1b[Amap mp_carentan");
+    CHECK(consoleLineForLog("   ").empty());
+
+    FakeHost host;
+    ServerConsole con(host);
+    host.console = &con;
+    con.print = [](const std::string&) {};
+    const bool was = iw2::log::eventsEnabled();
+    iw2::log::setEventsEnabled(true);
+    const std::string typed = stdoutOf([&] {
+        con.executeTyped("console", "map mp_carentan");
+        con.executeTyped("window", "set rcon_password Secret");
+        con.executeTyped("console", "");
+    });
+    CHECK(has(typed, "[ev] cmd console: map mp_carentan\n"));
+    CHECK(has(typed, "[ev] cmd window: set rcon_password ***\n"));
+    CHECK(!has(typed, "Secret"));
+    CHECK(host.loads.size() == 1 && host.loads[0] == "mp_carentan/" + con.cvar("g_gametype"));
+    CHECK(con.cvar("rcon_password") == "Secret");
+    const std::string remote = stdoutOf([&] {
+        (void)con.rcon("rcon Secret kick all", "192.168.1.5:28960", 10000);
+        (void)con.rcon("rcon Wrong map mp_toujane", "192.168.1.5:28960", 11000);
+    });
+    CHECK(has(remote, "[ev] cmd rcon 192.168.1.5:28960: kick all\n"));
+    CHECK(!has(remote, "[ev] cmd rcon 192.168.1.5:28960: map")); // a refused request runs nothing
+    iw2::log::setEventsEnabled(was);
+}
+
 int main() {
+    testCommandLog();
     testDumpTrace();
     testRotation();
     testDebugDamage();

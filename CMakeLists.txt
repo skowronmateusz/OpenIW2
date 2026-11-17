@@ -1252,6 +1252,15 @@ if(IW2_TEST_MAIN)
   set_tests_properties(mp64soak_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 600)
 endif()
 
+# A map change from the dedicated console with players connected (tests/test_mpmapchange.cpp, docs/spec/net.md section
+# 10 "Map change"): two network clients and 50 bots on mp_toujane, `map mp_carentan`; both stay and spawn on carentan.
+add_executable(test_mpmapchange tests/test_mpmapchange.cpp)
+target_link_libraries(test_mpmapchange PRIVATE iw2_dedicated iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpmapchange_e2e COMMAND test_mpmapchange)
+  set_tests_properties(mpmapchange_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 300)
+endif()
+
 add_executable(test_flakcrew tests/test_flakcrew.cpp)
 target_link_libraries(test_flakcrew PRIVATE iw2_game)
 add_test(NAME flakcrew COMMAND test_flakcrew)

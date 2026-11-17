@@ -1315,6 +1315,9 @@ gametype's connect. Implemented: iw2view counts the gamestates (`GameClient::gam
 each one newer than the one its level was built from that carries another server id (a gamestate sent again
   while the client was still loading is not a new map). TODO(spec): the client's state machine during that load (the
 exe's client states 5..7) is not modelled; snapshots arriving meanwhile are applied to the new world.
+Tested end to end by tests/test_mpmapchange.cpp (ctest `mpmapchange_e2e`): two network clients and 50 bots on
+mp_toujane dm, the console's `map mp_carentan`; both clients stay connected, get the new gamestate, join through the
+menus again and spawn at mp_carentan's deathmatch spawn points (also with the bots' graph generated during the load).
 
 ## 11. Network game content
 

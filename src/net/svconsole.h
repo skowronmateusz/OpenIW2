@@ -66,6 +66,11 @@ struct RotationStep {
 // Advances current (sv_mapRotationCurrent) through rotation (sv_mapRotation).
 RotationStep rotateMap(std::string& current, const std::string& rotation);
 
+// The text of a typed console line for the event log (`[ev] cmd`, docs/logging.md): the value of a password cvar
+// (any cvar whose name holds "password", set with set / seta / sets or the bare `<name> <value>` form) becomes ***, and
+// control characters (a terminal's arrow keys send escape sequences) are shown as \xHH.
+std::string consoleLineForLog(const std::string& line);
+
 class ServerConsole {
 public:
     explicit ServerConsole(ConsoleHost& host);
@@ -96,6 +101,10 @@ public:
 
     // Runs a command buffer: commands separated by newlines or ';' outside quotes.
     void execute(const std::string& text);
+    // A line typed by the operator (`source`: "console" for standard input, "window" for the app's server window):
+    // logged as the event line `cmd <source>: <line>` (consoleLineForLog), then executed. openiw2 addition: the
+    // original's console does not log its input.
+    void executeTyped(const std::string& source, const std::string& line);
     // Runs text and returns what it printed.
     std::string capture(const std::string& text);
     void mapRotate();
