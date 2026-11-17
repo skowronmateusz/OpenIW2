@@ -3,7 +3,7 @@
 // the client side of iw2view's network play step by step: the server commands (`t` / `u` menus answered with `mr`,
 // `v` client cvars), a remote World per gamestate (World::mpStartRemote) fed by RemoteView (players, apply,
 // placeTrajectories, playerEvents, followEvents, killcamView), the client weapon (game::PlayerWeapon with the view
-// world's ammunition, the weapon select and the network lag rule of iw2view's syncWeapon), the user command
+// world's ammunition and the weapon selection of iw2view's syncWeapon, NetWeaponSelection), the user command
 // (netgame::makeUserCmd with the weapon byte of the weapon list) and the prediction (netgame::Predictor from the
 // newest snapshot, reset per gamestate, weaponMoveOf of the client weapon).
 //
@@ -14,6 +14,11 @@
 // The ids listed in the known-violations file (one per line, `#` comments) are reported as KNOWN and do not fail the
 // test; any other id fails it. Whoever fixes a known violation removes its line. A known id that did not occur is a
 // warning only. The report goes to stdout and to the report file.
+//
+// A busy machine: pauses of this process are noted (kPauseMs); the measures read every snapshot received, not only the
+// newest of a frame. A stall of the server loses commands as the original's does (kServerStallMs), so the checks that
+// count presses against the prediction are not judged for a life with one during its presses (counted in the report; a
+// run that judged none fails with stall.unjudged).
 //
 // The second client leaves and joins again every 25 seconds, outside the first client's measured steps; hud.duplicate
 // reports two live HUD elements of a client with one position and content (the per-client set of an earlier connection
@@ -59,6 +64,7 @@
 #include "netgame/netcombat.h"
 #include "netgame/netmove.h"
 #include "netgame/remoteview.h"
+#include "netgame/weaponselect.h"
 #include "netgame/worldgame.h"
 
 extern char** environ;
@@ -229,8 +235,8 @@ struct NetClient {
     netgame::Predictor predictor;
     netgame::PredictedWeapon predictedWeapon;  // the weapon, counters and shots against the acknowledged player state
     int predictorGamestate = -1;  // the gamestate the prediction belongs to
-    std::string weaponSelect, weaponWritten, prevSelect;
-    int64_t netSelectUntilMs = 0;
+    std::string weaponSelect, weaponWritten;
+    netgame::NetWeaponSelection netSelection;
     std::tuple<int, int> loadedGamestate{0, -1};
     std::string map, gametype;
     std::vector<std::string> menuStack;
@@ -350,7 +356,7 @@ void loadLevel(NetClient& c) {
     c.predictedWeapon.clear();
     c.weaponSelect.clear();
     c.weaponWritten.clear();
-    c.prevSelect.clear();
+    c.netSelection.clear();
     c.menuStack.clear();  // a level load closes the open menus; the new level's scripts open theirs
     c.predicted.clear();
     c.lastEventSeq = 0;
@@ -404,6 +410,16 @@ struct Life {
     float jumpBaseZ = 0, jumpApex = -1e9f;
     std::vector<float> apexes;
     int openJump = -1;  // the jump being measured
+    int apexMsg = -1;   // the newest snapshot the apex measure has seen
+    float apexGroundZ = 0;  // the place of the last snapshot on the ground before the jump's first rising one
+    bool apexGround = false, apexBased = false;
+    int walkMsg = -1;   // the newest snapshot the walk measure has seen
+    int jumpFrames[3] = {0, 0, 0};  // frames with the jump button held, per press
+    struct Press {
+        double start = -1;
+        int frames = 0;
+    };
+    std::map<int, Press> presses;  // the timed presses of the scenario (by id)
     int predictedJumpsAtStart = 0, landsAtStart = 0, eventsAtStart = 0, landsAtSpawn = 0, damageAtStart = 0;
     std::string pressDetail, grenadeDetail;
     float freeHeight = 44;  // over the head at the first press (a ceiling ends the jump early)
@@ -430,6 +446,7 @@ struct Life {
     bool scoreboardAnswered = false;
     std::set<int> once;  // one-shot steps done
     bool emptied = false;  // the server's magazine reached 0 in the fire step
+    int64_t fireEndMs = 0;  // the last frame the fire step pressed the trigger
 };
 
 // A pause of the test process itself (the machine did not schedule it: the wall time of a loop frame minus its CPU time,
@@ -437,6 +454,16 @@ struct Life {
 // gap already swallows a jump press and shifts a shot, the rejoin note in main), so a failure next to one may be the
 // machine's, not the game's.
 constexpr int kPauseMs = 250;
+
+// A stall of the server (the machine did not run it) from this length on, as client A sees it: two snapshots read one
+// after the other whose server times lie this far apart (snapshots missed in a long pause of this process count too: the
+// server may have stalled meanwhile). The server reads the commands that waited
+// meanwhile against its old level time, clamps those beyond it + 200 ms to that time and runs only the first of them
+// (docs/spec/net.md section 10 "Command steps"): a jump press or a shot in the others never reaches the game, while the
+// client predicted it. The checks that count presses against the prediction (event.jump, event.land, event.fire) are not
+// judged for a life with such a stall during a jump press or while it fires; the report counts them, and a run that judged
+// none of them fails.
+constexpr int kServerStallMs = 150;
 
 // The killcam begins two seconds and a frame after the death (the gametype waits 2 s first, tdm.gsc:491-495; the soak's
 // notes measure 2093 .. 2139 ms at the client). A level that ends before that shows none.
@@ -476,10 +503,12 @@ struct Soak {
     std::vector<std::pair<double, long>> rss;
     int mapsPlayed = 0;
     int rejoins = 0;
+    int64_t mapStartMs = 0;  // when client A got the current level
     std::string currentMapKey;
     int expectedBots = 3;
     int64_t lastStatusMs = 0;
     bool statusPending = false;
+    int statusRejoins = 0, statusMaps = 0;  // the rejoins and map changes when the status was asked for
     std::vector<std::string> statusLines;
     // smoothness of other players (as drawn) per client 0
     std::map<int, std::vector<std::array<float, 3>>> drawn;
@@ -493,10 +522,76 @@ struct Soak {
     // frame timing
     std::vector<int> frameDurations;
     int maxOffMs = 0, pauses = 0;  // the longest time the process did not run in a loop frame; pauses of kPauseMs or more
+    // Server stalls (kServerStallMs): when client A read the snapshot after one, and its length; pauses of this process
+    // of that length too (when the frame after one began, and its length).
+    std::vector<std::pair<int64_t, int>> serverStalls, testPauses;
+    int stallMsg = -1, stallTime = -1, stallGamestate = -1, stallRestart = -1;
+    std::map<std::string, std::pair<int, int>> judged;  // per check group: lives judged, lives not judged for a stall
+
+    void watchServerStalls(NetClient& c, int64_t now) {
+        if (c.gc->gamestates != stallGamestate) {  // a new level: its server time starts afresh
+            stallGamestate = c.gc->gamestates;
+            stallMsg = -1;
+            stallTime = -1;
+            stallRestart = -1;
+        }
+        for (const net::ClientSnapshot* sn : c.gc->snapshotsFrom(-1e18)) {
+            if (!sn->valid || sn->messageNum <= stallMsg) continue;
+            // The server's own cadence: every snapshot, not only the newest of a frame of this process (a busy machine runs
+            // these frames late, and the newest snapshots of two frames lie several snapshots apart).
+            if (stallMsg >= 0 && sn->messageNum == stallMsg + 1 && stallTime >= 0) obs[0].snapGaps.push_back(sn->serverTime - stallTime);
+            // Snapshots missed in between (the client keeps the last 32: a pause of this process longer than about half a
+            // second): whether the server stalled meanwhile is not known, so such a gap counts as one.
+            // A level restart in place (the snapshot flag 4 flips, an sd round) is the server's own long frame, not a
+            // stall of the machine: noted, not counted (its players are placed again anyway).
+            const int restart = sn->snapFlags & 4;
+            const bool restarted = stallRestart >= 0 && restart != stallRestart;
+            stallRestart = restart;
+            if (restarted && stallTime >= 0 && sn->serverTime - stallTime >= kServerStallMs) {
+                gReport.note("a level restart: the server sent no snapshot for " + std::to_string(sn->serverTime - stallTime) + " ms");
+            } else if (stallMsg >= 0 && stallTime >= 0 && sn->serverTime - stallTime >= kServerStallMs) {
+                serverStalls.push_back({now, sn->serverTime - stallTime});
+                char b[160];
+                std::snprintf(b, sizeof b, "the server sent no snapshot for %d ms (server time %d)%s", sn->serverTime - stallTime, sn->serverTime,
+                              sn->messageNum == stallMsg + 1 ? "" : ", snapshots missed: maybe a pause of this process only");
+                gReport.note(b);
+            }
+            stallMsg = sn->messageNum;
+            stallTime = sn->serverTime;
+        }
+    }
+    // The longest server stall client A saw that overlaps [fromMs, toMs] (0: none). A stall ends when its snapshot is
+    // read and began its length before.
+    int serverStallIn(int64_t fromMs, int64_t toMs) const {
+        int longest = 0;
+        for (const auto& [at, ms] : serverStalls)
+            if (at >= fromMs && at - ms <= toMs) longest = std::max(longest, ms);
+        return longest;
+    }
+    // Whether the checks of `group` are judged for this life: not after a server stall in one of the spans (counted).
+    // A measure over a span of wall time (`testToo`) is cut by a pause of this process as well.
+    bool judge(const std::string& group, const std::vector<std::pair<int64_t, int64_t>>& spans, bool testToo = false) {
+        int stall = 0;
+        for (const auto& [a, b] : spans) {
+            stall = std::max(stall, serverStallIn(a, b));
+            if (testToo)
+                for (const auto& [at, ms] : testPauses)
+                    if (at >= a && at - ms <= b) stall = std::max(stall, ms);
+        }
+        if (stall == 0) {
+            ++judged[group].first;
+            return true;
+        }
+        ++judged[group].second;
+        gReport.note(currentMapKey + " life " + std::to_string(life.number) + ": " + group + " not judged: a stall of " + std::to_string(stall) +
+                     " ms in the window");
+        return false;
+    }
 
     // A loop frame in which the process did not run for `offMs` (wall time less CPU time).
-    void notePause(int offMs) {
+    void notePause(int offMs, int64_t now) {
         maxOffMs = std::max(maxOffMs, offMs);
+        if (offMs >= kServerStallMs) testPauses.push_back({now, offMs});
         if (offMs < kPauseMs) return;
         ++pauses;
         char b[160];
@@ -605,6 +700,8 @@ struct Soak {
             } else if (letter == 'v' && tok.size() >= 3) {
                 c.cvars[tok[1]] = tok[2];
                 if (c.view) c.view->cvars[tok[1]] = tok[2];
+            } else if (letter == 'a') {
+                netgame::NetWeaponSelection::serverCommand(tok, c.gc->configstrings, c.weaponSelect);
             } else if (letter == 'C') {
                 ++c.offhandCommands;
             } else if (letter == 'b') {
@@ -676,16 +773,14 @@ struct Soak {
             }
             const script::Value w = pl.obj->get("$weapon");
             const std::string name = w.isString() && !w.asString().empty() && w.asString() != "none" ? w.asString() : std::string();
-            const bool netLag = !c.weaponSelect.empty() && name != c.weaponSelect && now < c.netSelectUntilMs;
-            if (name == c.weaponSelect) c.netSelectUntilMs = 0;
-            if (!netLag && game::takeScriptedWeapon(name, c.weaponWritten)) c.weaponSelect = name;
+            // The selection as iw2view keeps it (NetWeaponSelection, docs/spec/net.md section 10 "Weapon selection"): the
+            // player's presses, the server command `a` and the player state's weapon at a spawn only; a snapshot that still
+            // shows the older weapon never changes it, however late the server confirms the change.
+            if (last) c.netSelection.snapshot(netgame::readPs(last->ps).pmType, c.gc->gamestates, name, c.view->inventory(pl).owned, c.weaponSelect);
+            c.weaponWritten = name;
             if (!c.pweapon.equipped() && !c.pweapon.holstered())
                 if (const auto* def = c.view->weapon(c.weaponSelect)) c.pweapon.equip(c.weaponSelect, *def);
             if (!sc.select.empty()) c.weaponSelect = sc.select;
-            if (c.weaponSelect != c.prevSelect) {
-                if (!c.prevSelect.empty()) c.netSelectUntilMs = now + 2000;
-                c.prevSelect = c.weaponSelect;
-            }
             game::PlayerWeapon::Input wi;
             // The weapon sees what the command carries: an open menu withholds the buttons from the command (below), so
             // a client weapon that saw them would fire shots the server never gets.
@@ -794,6 +889,7 @@ struct Soak {
         gReport.map = c.map;
         gReport.gametype = c.gametype;
         currentMapKey = c.map + "/" + c.gametype;
+        mapStartMs = nowMs();
         std::cout << "--- map " << currentMapKey << " at t=" << runSeconds() << "\n";
         life = Life{};
         death = DeathWatch{};
@@ -884,7 +980,6 @@ struct Soak {
                         c.gc->lastCommand() ? unsigned(c.gc->lastCommand()->buttons) : 0u, c.view->player() ? c.view->inventory(*c.view->player()).offhand.c_str() : "-");
         }
         if (newSnap) {
-            if (o.lastSnapArrival) o.snapGaps.push_back(int(last->serverTime - o.lastSnapTime));
             o.lastSnapArrival = now;
             // Prediction: the predicted origin after the command the snapshot acknowledges.
             const auto it = c.predicted.find(f.commandTime);
@@ -1082,17 +1177,38 @@ struct Soak {
         auto phase = [&](double a, double b) { return t >= a && t < b; };
         // A step that runs once, in the first frame at or after `at` (and before `at` + 2 s).
         auto once = [&](int id, double at) { return t >= at && t < at + 2.0 && life.once.insert(id).second; };
-        const float vx = f.velocity[0], vy = f.velocity[1];
-        const float speed = std::sqrt(vx * vx + vy * vy);
+        // A press from the first frame at or after `at` (and before `at` + 2 s) for `len` seconds and at least `frames`
+        // frames: a press timed by the wall clock alone falls into a pause of this process and reaches no command.
+        auto press = [&](int id, double at, double len, int frames) {
+            Life::Press& p = life.presses[id];
+            if (p.start < 0) {
+                if (t < at || t >= at + 2.0) return false;
+                p.start = t;
+            }
+            if ((t >= p.start + len && p.frames >= frames) || t >= p.start + len + 2.0) return false;
+            ++p.frames;
+            return true;
+        };
         // walk straight (keep the yaw of the spawn; a wall stops the measure)
         if (phase(0.5, 2.6)) sc.forward = 1.0f;
+        if (phase(1.0, 2.5)) {
+            // The server's speed from every snapshot received, each once: a frame of this process that comes late sees
+            // the newest one only, and while the server stalls every frame sees the same one again.
+            if (life.walkMsg < 0) life.walkMsg = last->messageNum - 1;
+            for (const net::ClientSnapshot* sn : c.gc->snapshotsFrom(-1e18)) {
+                if (!sn->valid || sn->messageNum <= life.walkMsg) continue;
+                life.walkMsg = sn->messageNum;
+                const netgame::PsFields sf = netgame::readPs(sn->ps);
+                if (sf.pmType == 0 && !netgame::RemoteView::following(*sn) && std::fabs(sf.velocity[2]) < 20.0f)
+                    life.walkSpeeds.push_back(std::hypot(sf.velocity[0], sf.velocity[1]));
+            }
+        }
         if (phase(1.0, 2.5) && std::fabs(f.velocity[2]) < 20.0f) {
-            life.walkSpeeds.push_back(speed);
             const float pv = std::sqrt(c.ps.velocity[0] * c.ps.velocity[0] + c.ps.velocity[1] * c.ps.velocity[1]);
             life.walkSpeedsPredicted.push_back(pv);
             life.walkScale = c.pweapon.equipped() ? c.pweapon.number("moveSpeedScale") : 1.0f;
         }
-        if (once(1, 2.6) && !life.walkSpeeds.empty()) evaluateWalk(c);
+        if (once(1, 2.6) && !life.walkSpeeds.empty() && judge("walk", {{life.spawnMs + 500, now}}, true)) evaluateWalk(c);
         // three jumps on the spot. A press waits for a settled on-ground state, at the client's prediction and in the
         // newest snapshot alike: the walk before can end in the air (a step, a ledge) and a hit's knockback pushes the
         // player in a way no client can predict, and a press while the prediction is in the air starts no predicted
@@ -1117,6 +1233,8 @@ struct Soak {
                 life.openJump = k;
                 life.jumpBaseZ = f.origin[2];
                 life.jumpApex = f.origin[2];
+                life.apexMsg = last->messageNum;
+                life.apexGround = life.apexBased = false;
                 ++life.jumpPresses;
                 const auto up = c.view->collision().trace({f.origin[0], f.origin[1], f.origin[2]}, {f.origin[0], f.origin[1], f.origin[2] + 44},
                                                           {-15, -15, 0}, {15, 15, 70}, game::Contents::PlayerClipMask, -1);
@@ -1134,8 +1252,33 @@ struct Soak {
                 }
             }
             if (life.pressT[k] < 0) continue;  // not pressed: no button, no apex window
-            if (t >= life.pressT[k] && t < life.pressT[k] + 0.1) sc.buttons |= game::Button::Jump;
-            if (t >= life.pressT[k] + 0.1 && t < life.pressT[k] + 1.15) life.jumpApex = std::max(life.jumpApex, f.origin[2]);
+            // 100 ms and at least three frames: a pause of this process right after the press leaves it one command.
+            if (t >= life.pressT[k] && (t < life.pressT[k] + 0.1 || life.jumpFrames[k] < 3) && t < life.pressT[k] + 1.0) {
+                sc.buttons |= game::Button::Jump;
+                ++life.jumpFrames[k];
+            }
+            if (t >= life.pressT[k] + 0.1 && t < life.pressT[k] + 1.15) {
+                // Every snapshot received since the last frame, not only the newest: a frame of this process that comes late
+                // (a busy machine) skips the snapshots around the apex. Each rising one gives the apex itself (z + vz^2 / 2g:
+                // the move integrates the gravity exactly; at most the free height over the head, where a ceiling stops it).
+                const float g = game::multiplayerMoveParams().gravity;
+                for (const net::ClientSnapshot* sn : c.gc->snapshotsFrom(-1e18)) {
+                    if (!sn->valid || sn->messageNum <= life.apexMsg) continue;
+                    life.apexMsg = sn->messageNum;
+                    const netgame::PsFields sf = netgame::readPs(sn->ps);
+                    if (sf.pmType != 0 || netgame::RemoteView::following(*sn)) continue;
+                    // The jump starts where the last snapshot on the ground stood: the newest snapshot at the press can be an
+                    // older one (a stalled server) of a player still on the move.
+                    const bool ground = getI(sn->ps, 96) != kEntitynumNone;
+                    if (ground && !life.apexBased) life.apexGroundZ = sf.origin[2], life.apexGround = true;
+                    if (!ground && sf.velocity[2] > 0 && !life.apexBased) {
+                        life.apexBased = true;
+                        if (life.apexGround) life.jumpBaseZ = life.apexGroundZ;
+                    }
+                    const float vz = sf.velocity[2] > 0 ? sf.velocity[2] : 0.0f;
+                    life.jumpApex = std::max(life.jumpApex, std::min(sf.origin[2] + vz * vz / (2 * g), life.jumpBaseZ + life.freeHeight));
+                }
+            }
             if (t >= life.pressT[k] && t < life.pressT[k] + 1.15 && c.ps.mantling) life.mantled = true;
             if (t >= life.pressT[k] + 1.15 && life.openJump == k) {
                 life.openJump = -1;
@@ -1164,10 +1307,11 @@ struct Soak {
                 life.clipDrops = 0;
             }
             if (int((t - 11.0) / 0.1) % 4 != 3) sc.buttons |= game::Button::Attack;  // bursts of 0.3 s
+            life.fireEndMs = now;
             c.pitch = 10.0f;
         }
         if (once(4, 19.5)) evaluateFire(c);
-        if (phase(19.6, 19.8)) {
+        if (press(1, 19.6, 0.2, 8)) {
             sc.buttons |= game::Button::Reload;
             o.lastReloadMs = now;
         }
@@ -1190,7 +1334,7 @@ struct Soak {
         }
         if (once(7, 28.9)) evaluateWeaponChanges();
         // a frag grenade
-        if (phase(29.0, 29.4)) {
+        if (press(2, 29.0, 0.4, 20)) {
             sc.buttons |= game::Button::Frag;
             c.pitch = -20.0f;
             ++life.grenadePressFrames;
@@ -1230,7 +1374,7 @@ struct Soak {
         }
         if (once(8, 33.0)) evaluateGrenade(c);
         // use and the scoreboard
-        if (phase(33.5, 33.7)) sc.buttons |= game::Button::Activate;
+        if (press(3, 33.5, 0.2, 8)) sc.buttons |= game::Button::Activate;
         if (once(9, 34.0)) {
             c.gc->addReliableCommand("score");
             ++scoreRequests;
@@ -1256,8 +1400,10 @@ struct Soak {
             gReport.note(currentMapKey + " life " + std::to_string(life.number) + ": walk stopped by an obstacle, not measured");
             return;
         }
+        // The predicted speeds are per frame, the server's per snapshot: the same share of each is kept.
+        if (stop < life.walkSpeeds.size() && !life.walkSpeedsPredicted.empty())
+            life.walkSpeedsPredicted.resize(std::max<size_t>(1, life.walkSpeedsPredicted.size() * stop / life.walkSpeeds.size()));
         life.walkSpeeds.resize(stop);
-        if (life.walkSpeedsPredicted.size() > stop) life.walkSpeedsPredicted.resize(stop);
         std::vector<float> s = life.walkSpeeds;
         std::sort(s.begin(), s.end());
         const float med = s[s.size() / 2];
@@ -1305,6 +1451,11 @@ struct Soak {
         // The first jump of the three is the clean one (later ones may land in the slowdown).
         const float first = life.apexes.front();
         if (first > 2.0f && std::fabs(first - std::min(mp.jumpHeight, life.freeHeight)) > 4.0f) gReport.add("move.jumpheight", b);
+        // The presses (100 ms each, a little margin around them): a stall elsewhere loses no press.
+        std::vector<std::pair<int64_t, int64_t>> presses;
+        for (float p : life.pressT)
+            if (p >= 0) presses.push_back({life.spawnMs + int64_t(p * 1000) - 50, life.spawnMs + int64_t(p * 1000) + 150});
+        if (!judge("jump counts", presses)) return;
         if (jumps != life.jumpPresses) gReport.add("event.jump", b);
         if (lands != life.jumpPresses) gReport.add("event.land", b);
     }
@@ -1325,7 +1476,8 @@ struct Soak {
                       c.pweapon.name().c_str(), life.clipAtFireStart, life.clipDrops, life.shotsClient, obs[0].serverClip);
         gReport.note(currentMapKey + " life " + std::to_string(life.number) + ": " + b);
         if (life.clipAtFireStart <= 0) return;
-        if (life.clipDrops != life.shotsClient) gReport.add("event.fire", b);
+        if (judge("shot counts", {{life.spawnMs + 11000, life.fireEndMs ? life.fireEndMs : nowMs()}}) && life.clipDrops != life.shotsClient)
+            gReport.add("event.fire", b);
         if (!life.emptied) gReport.add("ammo.notempty", b);
     }
 
@@ -1370,7 +1522,10 @@ struct Soak {
         std::snprintf(b, sizeof b, "grenade seen %d, drawn steps %zu, frames without motion in flight %d of %d; %s, server clip after %d, trajectory kinds %zu, origin %.0f %.0f %.0f yaw %.0f", life.grenadeSeen ? 1 : 0,
                       life.grenadeSteps.size(), still, moving, life.grenadeDetail.c_str(), life.grenadeClipNow, life.grenadeKinds.size(), c.ps.origin[0], c.ps.origin[1], c.ps.origin[2], c.yaw);
         gReport.note(currentMapKey + " life " + std::to_string(life.number) + ": " + b);
-        if (!life.grenadeSeen) {
+        // The throw is one press: a stall of the server through it loses it as a jump press is lost.
+        const Life::Press& gp = life.presses[2];
+        const bool judged = gp.start < 0 || judge("grenade", {{life.spawnMs + int64_t(gp.start * 1000) - 50, life.spawnMs + int64_t(gp.start * 1000) + 600}});
+        if (!life.grenadeSeen && judged) {
             std::ostringstream d;
             d << b << "; press frames " << life.grenadePressFrames << ", snapshots in the window " << life.grenadeSnaps << ", lowest health "
               << life.grenadeMinHealth << ", weapon states";
@@ -1414,18 +1569,33 @@ struct Soak {
     void requestStatus() {
         statusLines.clear();
         statusPending = true;
+        statusRejoins = rejoins;
+        statusMaps = mapsPlayed;
         server.command("status");
         lastStatusMs = nowMs();
     }
     void serverOutput() {
+        bool complete = false;
         for (const std::string& l : server.take()) {
-            if (statusPending) statusLines.push_back(l);
+            if (statusPending && !complete) {
+                statusLines.push_back(l);
+                // The table ends with an empty line after its rows (svconsole.cpp formatStatus).
+                complete = l.empty() && std::find_if(statusLines.begin(), statusLines.end(), [](const std::string& x) { return x.rfind("---", 0) == 0; }) != statusLines.end();
+            }
             if (l.find("script error") != std::string::npos || l.find("Script error") != std::string::npos ||
                 l.find("ERROR") != std::string::npos)
                 gReport.add("server.scripterror", l.substr(0, 200));
         }
-        if (statusPending && nowMs() - lastStatusMs > 1500) {
+        // The whole table, read as the server wrote it; a busy machine can take seconds to answer, and a table read
+        // after a fixed time missed rows. An answer after a rejoin or a map change counts other connections than the
+        // ones asked about: not judged. No table within 10 s: not judged either (the server's console was not read).
+        if (statusPending && !complete && nowMs() - lastStatusMs > 10000) {
             statusPending = false;
+            gReport.note("status: no complete answer within 10 s, not judged");
+        }
+        if (statusPending && complete) {
+            statusPending = false;
+            if (rejoins != statusRejoins || mapsPlayed != statusMaps) return;
             int players = 0;
             bool inTable = false;
             for (const auto& l : statusLines) {
@@ -1446,7 +1616,12 @@ struct Soak {
             for (const auto& c : clients) connected += c->gc->state() == net::ClientState::Active;
             if (!statusLines.empty() && connected == int(clients.size()) && players != expectedBots + connected)
                 gReport.add("server.clientcount", "status lists " + std::to_string(players) + " clients, expected " +
-                                                      std::to_string(expectedBots) + " bots + " + std::to_string(connected) + " connected");
+                                                      std::to_string(expectedBots) + " bots + " + std::to_string(connected) + " connected; answer after " +
+                                                      std::to_string(nowMs() - lastStatusMs) + " ms:" + [&] {
+                                                          std::string t;
+                                                          for (const auto& l : statusLines) t += " | " + l.substr(0, 40);
+                                                          return t.substr(0, 600);
+                                                      }());
         }
     }
 };
@@ -1551,7 +1726,12 @@ int run(fs::Vfs& vfs, const std::string& mainDir) {
                                                                               {"scr_sd_graceperiod", "5"},
                                                                               {"scr_sd_roundlimit", "2"},
                                                                               {"scr_sd_timelimit", "0"},
-                                                                              {"scr_killcam", "1"}}) {
+                                                                              {"scr_killcam", "1"},
+                                                                              // the dedicated server's default is no automatic respawn
+                                                                              // (docs/spec/mp.md "Respawn"); the first client never presses
+                                                                              // to spawn, so without it its first death after a killcam ends
+                                                                              // its lives
+                                                                              {"scr_forcerespawn", "1"}}) {
         args.push_back("+set");
         args.push_back(k);
         args.push_back(v);
@@ -1608,15 +1788,18 @@ int run(fs::Vfs& vfs, const std::string& mainDir) {
         const int64_t now = nowMs();
         soak.frameDurations.push_back(int(now - lastFrame));
         const int64_t cpu = cpuMs();
-        soak.notePause(int(std::max<int64_t>(0, (now - lastFrame) - (cpu - lastCpu))));
+        soak.notePause(int(std::max<int64_t>(0, (now - lastFrame) - (cpu - lastCpu))), now);
         lastFrame = now;
         lastCpu = cpu;
         Scenario sa = soak.scenarioA(*soak.clients[0], soak.obs[0], now);
         soak.clientFrame(0, sa, now);
+        soak.watchServerStalls(*soak.clients[0], now);
         Scenario sb;  // B walks in circles
         sb.forward = 0.6f;
         soak.clients[1]->yaw += 1.0f;
-        soak.clientFrame(1, sb, now);
+        // The time of B's poll is read after A's frame (which may load a level): a poll given an older time dates the
+        // waiting snapshots too early and runs the client's clock ahead of them (tests/test_mpbodies.cpp, draw.item).
+        soak.clientFrame(1, sb, nowMs());
         soak.watchPlayers(*soak.clients[0]);
         soak.serverOutput();
         // Not in sd: a player leaving can end the round, which cuts the first client's scenario short.
@@ -1624,7 +1807,14 @@ int run(fs::Vfs& vfs, const std::string& mainDir) {
         // frame gap that swallows a 100 ms jump press and shifts a shot (seen as event.jump, event.fire).
         const double lifeTime = soak.life.spawnMs ? double(now - soak.life.spawnMs) / 1000.0 : 1000.0;
         const bool measuring = soak.obs[0].pmType == 0 && lifeTime < 35.0;
-        if (now - lastRejoin > 25000 && !measuring && gReport.gametype != "sd" && soak.clients[1]->gc->state() == net::ClientState::Active) {
+        // Nor in the level's last 15 s: a leave sent while the server changes the map carries the old server id, which
+        // the server does not read (docs/spec/net.md section 4 "Client to server operations"), so the old connection stays
+        // until it times out (an extra client in `status`) and the new one waits through the intermission and the next
+        // load (seen: five soaks next to a ctest -j6 pass, "soakB: connection timed out" 20 s after a rejoin at the end
+        // of the first map).
+        const bool levelEnding = now - soak.mapStartMs > mapMs - 15000;
+        if (now - lastRejoin > 25000 && !measuring && !levelEnding && !soak.statusPending && gReport.gametype != "sd" &&
+            soak.clients[1]->gc->state() == net::ClientState::Active) {
             lastRejoin = now;
             soak.rejoin(1, uint16_t(soak.server.port));
         }
@@ -1691,6 +1881,11 @@ int run(fs::Vfs& vfs, const std::string& mainDir) {
         gReport.note(b);
     }
     if (soak.scoreRequests > 0 && soak.scoreAnswers == 0) gReport.add("scoreboard.noanswer", std::to_string(soak.scoreRequests) + " score requests, no answer");
+    // The checks not judged for a stall (kServerStallMs): a run that judged none of a group has not tested it.
+    for (const auto& [group, n] : soak.judged) {
+        gReport.note(group + ": judged in " + std::to_string(n.first) + " lives, not judged for a stall in " + std::to_string(n.second));
+        if (n.first == 0 && n.second > 0) gReport.add("stall.unjudged", group + ": no life judged, " + std::to_string(n.second) + " not judged for a stall");
+    }
     // The test loop's own frames: the longest one and the longest time the process did not run (kPauseMs).
     if (!soak.frameDurations.empty()) {
         char b[200];
@@ -1708,12 +1903,21 @@ int run(fs::Vfs& vfs, const std::string& mainDir) {
             const size_t half = g.size() / 2;
             double m1 = 0, m2 = 0;
             for (size_t k = 0; k < g.size(); ++k) (k < half ? m1 : m2) += g[k] > 0 && g[k] < 1000 ? g[k] : 0;
-            char b[200];
-            std::snprintf(b, sizeof b, "snapshot server-time gap median %d ms, p99 %d ms, mean first half %.1f, second half %.1f", med, p99,
-                          half ? m1 / double(half) : 0.0, g.size() > half ? m2 / double(g.size() - half) : 0.0);
+            // The drift is judged on the medians of the two halves: a mean follows the few long gaps of a busy machine
+            // (each stall of the server is one gap of its length), a median the frames the server makes.
+            const auto median = [](std::vector<int> v) {
+                if (v.empty()) return 0;
+                std::nth_element(v.begin(), v.begin() + std::ptrdiff_t(v.size() / 2), v.end());
+                return v[v.size() / 2];
+            };
+            const int med1 = median({g.begin(), g.begin() + std::ptrdiff_t(half)}), med2 = median({g.begin() + std::ptrdiff_t(half), g.end()});
+            char b[260];
+            std::snprintf(b, sizeof b, "snapshot server-time gap median %d ms, p99 %d ms, first half median %d mean %.1f, second half median %d mean %.1f, server stalls %zu",
+                          med, p99, med1, half ? m1 / double(half) : 0.0, med2, g.size() > half ? m2 / double(g.size() - half) : 0.0,
+                          soak.serverStalls.size());
             gReport.note(b);
             if (med > 60) gReport.add("server.frametime", b);
-            if (half > 100 && m2 / double(g.size() - half) > 1.5 * (m1 / double(half)) + 5) gReport.add("server.frametimedrift", b);
+            if (half > 100 && med2 > 1.5 * med1 + 5) gReport.add("server.frametimedrift", b);
         }
     }
     // Server memory: no steady growth (the last third against the first third after the first map loaded).

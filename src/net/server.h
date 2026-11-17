@@ -110,6 +110,11 @@ public:
     int timeoutMs = 240000;      // sv_timeout 240 s (docs/spec/net.md section 4a)
     int zombieMs = 2000;         // sv_zombietime 2 s
     bool publicServer = false;   // dedicated 2: a LAN address does not lift the rate
+    // The most time one poll makes up in game frames (docs/spec/net.md section 10 "Command steps", 0x8062594: 5000 ms
+    // on a dedicated server); the rest of a longer gap is dropped. hitchWarning: print the dedicated server's line for a
+    // gap over 500 ms.
+    int maxFrameMsec = 5000;
+    bool hitchWarning = false;
     int maxRate = 0;             // sv_maxRate (0: no cap)
     bool floodProtect = true;    // sv_floodProtect
     // Commands of a client on a bursty path run on an even schedule (docs/spec/net.md section 10 "Commands on a bursty

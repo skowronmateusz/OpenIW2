@@ -4,7 +4,8 @@
 // running, jumping, landing and jumping again right after landing), each jump's event is handled exactly once, and the
 // walk speed and jump height are the same after a map_restart and after a new map (round 2) as in round 1, and in
 // every round a weapon change changes the weapon once, a clip fires down by one per shot to 0 and is reloaded, and
-// the weapon stays in hand for 5 s after a single shot.
+// the weapon stays in hand for 5 s after a single shot. The presses last a number of commands, not a wall time, and the
+// waits end on a condition, so a pause of this process (a busy machine) neither swallows a press nor cuts a measure.
 
 #include <atomic>
 #include <chrono>
@@ -155,7 +156,12 @@ int main() {
         const int64_t start = nowMs();
         int64_t lastSend = 0;
         bool wasOnGround = true;
-        float takeoff = 0, top = -1e9f;
+        float takeoff = 0, top = -1e9f, groundZ = 0;
+        bool haveGround = false, inJump = false;
+        // The height of a jump from any rising sample (z + vz^2 / 2g: the step integrates the gravity exactly) above the
+        // ground left, so a client frame that misses the apex or the take-off (a busy machine runs the frames late)
+        // measures the same height.
+        const float gravity = game::multiplayerMoveParams().gravity;
         while (nowMs() - start < ms) {
             const int64_t now = nowMs();
             client.poll(now, 1);
@@ -208,21 +214,56 @@ int main() {
                 // 0x5d..0x73 come right after them, and the sd spawn the round restart picks decides the ground's surface.
                 if (ev > 0x46 && ev <= 0x5c) ++r->jumpEvents;
             }
+            // Each jump on its own: a fall (a random sd spawn on a ledge, a run off one) neither starts a jump nor adds to one.
             if (wasOnGround && !ps.onGround && ps.velocity[2] > 100) {
                 ++r->jumps;
-                takeoff = ps.origin[2];
+                takeoff = groundZ;
+                top = takeoff;
+                inJump = haveGround; // the ground left must be known (a sample on it before the jump)
             }
-            if (!wasOnGround && ps.onGround) ++r->landings;
-            if (!ps.onGround) top = std::max(top, ps.origin[2]);
-            r->jumpRise = std::max(r->jumpRise, top - takeoff);
+            if (!wasOnGround && ps.onGround) ++r->landings, inJump = false;
+            if (ps.onGround) groundZ = ps.origin[2], haveGround = true;
+            if (inJump) {
+                top = std::max(top, ps.origin[2] + (ps.velocity[2] > 0 ? ps.velocity[2] * ps.velocity[2] / (2 * gravity) : 0.0f));
+                r->jumpRise = std::max(r->jumpRise, top - takeoff);
+            }
             wasOnGround = ps.onGround;
             r->speed = std::max(r->speed, std::hypot(f.velocity[0], f.velocity[1])); // the server's run speed
         }
     };
     auto idle = [](int) { return std::pair<uint32_t, float>{0u, 0.0f}; };
     auto runOnly = [](int) { return std::pair<uint32_t, float>{0u, 1.0f}; };
-    // Jump every 900 ms (the landing slowdown is still running at the next jump), standing still.
-    auto jumps = [](int t) { return std::pair<uint32_t, float>{(t % 900) < 100 ? uint32_t(game::Button::Jump) : 0u, 0.0f}; };
+    // Jump every 900 ms (the landing slowdown is still running at the next jump), standing still. A press lasts six
+    // commands (about 100 ms) whenever they are sent: a press timed by the wall clock alone falls into a pause of this
+    // process (a busy machine) and then reaches no command at all.
+    int jumpCmds = 0, jumpAt = 0;
+    auto jumps = [&](int t) {
+        const bool press = t >= jumpAt;
+        if (press && ++jumpCmds >= 6) jumpCmds = 0, jumpAt = t + 800;
+        return std::pair<uint32_t, float>{press ? uint32_t(game::Button::Jump) : 0u, 0.0f};
+    };
+    // Holds buttons for at least `commands` commands (the same reason).
+    auto hold = [&](uint32_t buttons, int commands) {
+        int sent = 0;
+        extraButtons = buttons;
+        for (const int64_t end = nowMs() + 10000; sent < commands && nowMs() < end;) run(16, nullptr, [&](int) {
+            ++sent;
+            return std::pair<uint32_t, float>{0u, 0.0f};
+        });
+        extraButtons = 0;
+    };
+    // Runs until the newest snapshot shows the client playing (pm_type 0) for half a second, at most 20 s.
+    auto settle = [&]() {
+        int64_t since = 0;
+        for (const int64_t end = nowMs() + 20000; nowMs() < end;) {
+            run(50, nullptr, idle);
+            const net::ClientSnapshot* snap = client.latest();
+            const bool playing = snap && netgame::readPs(snap->ps).pmType == 0;
+            if (!playing) since = 0;
+            else if (!since) since = nowMs();
+            else if (nowMs() - since >= 500) return;
+        }
+    };
 
     // Weapons (the same rounds): the current weapon (ps+212), the two weapon slots (ps+1364 bytes 1 and 2) and the
     // clips (ps+836, by clip slot).
@@ -249,6 +290,7 @@ int main() {
         };
         cmdWeapon = other;
         run(2500, nullptr, idle);
+        for (int k = 0; k < 8 && last != other; ++k) run(500, nullptr, idle); // a busy machine: more time, the count stays exact
         std::cout << name << ": weapon " << current << " -> " << last << " in " << changes << " change(s)\n";
         CHECK(changes == 1 && last == other);
         // Fire the clip out: each snapshot's clip of the weapon in hand goes down (by the shots since the last one)
@@ -274,17 +316,11 @@ int main() {
         };
         // Separate presses (a semi-automatic weapon fires once per press).
         for (int k = 0; k < 60 && minClip != 0; ++k) {
-            extraButtons = game::Button::Attack;
-            run(150, nullptr, idle);
-            extraButtons = 0;
+            hold(game::Button::Attack, 9);
             run(150, nullptr, idle);
         }
         run(200, nullptr, idle);
-        if (!reloaded) {
-            extraButtons = game::Button::Reload;
-            run(100, nullptr, idle);
-            extraButtons = 0;
-        }
+        if (!reloaded) hold(game::Button::Reload, 6);
         run(4000, nullptr, idle);
         std::cout << name << ": clip slot " << clipSlot << " lowest " << minClip << " reloaded " << reloaded
                   << " early rises " << ups << " weapon moves " << weaponMoves << "\n";
@@ -293,21 +329,37 @@ int main() {
         observe = [&](const std::vector<uint8_t>& ps) {
             if (psInt(ps, 212) != other) ++weaponMoves;
         };
-        extraButtons = game::Button::Attack;
-        run(60, nullptr, idle);
-        extraButtons = 0;
+        hold(game::Button::Attack, 4);
         run(5000, nullptr, idle);
         std::cout << name << ": after one shot, weapon moves " << weaponMoves << "\n";
         CHECK(weaponMoves == 0);
         observe = nullptr;
         (void)rises;
     };
+    // Until the predicted player has stood on the ground with no jump flag and no landing timer for 300 ms (at most 5 s):
+    // a jump in the landing slowdown after a fall (a run off a ledge, an sd spawn above the ground) is lower.
+    auto groundSettle = [&]() {
+        int64_t since = 0;
+        for (const int64_t end = nowMs() + 5000; nowMs() < end;) {
+            run(20, nullptr, idle);
+            const game::PlayerState& p = predictor.state();
+            const bool still = p.onGround && !p.jumping && p.pmTimeMs <= 0;
+            if (!still) since = 0;
+            else if (!since) since = nowMs();
+            else if (nowMs() - since >= 300) return;
+        }
+    };
     auto measureRound = [&](const char* name) {
         Round speedR, jumpR;
-        run(2500, nullptr, idle);  // join, spawn, settle
-        run(1500, &speedR, runOnly);
-        run(300, nullptr, idle);
+        run(1000, nullptr, idle);  // join, spawn, settle
+        settle();
+        // The jumps first, on the spawn point: the run can end anywhere (after an sd spawn's run, once, the first jump
+        // never landed in the 4 s: one jump, no landing).
+        groundSettle();
+        jumpCmds = 0, jumpAt = 300; // the first press after a few samples on the ground
         run(4000, &jumpR, jumps);
+        groundSettle();
+        run(1500, &speedR, runOnly);
         std::cout << name << ": speed " << speedR.speed << " jumps " << jumpR.jumps << " jump events " << jumpR.jumpEvents
                   << " landings " << jumpR.landings << " rise " << jumpR.jumpRise << " worst miss "
                   << std::max(speedR.worstMiss, jumpR.worstMiss) << " (" << speedR.compared + jumpR.compared << " corrections)\n";
@@ -325,7 +377,7 @@ int main() {
     const auto r3 = measureRound("after map");
     for (const auto* r : {&r2, &r3}) {
         CHECK(r1.first.speed > 100 && std::fabs(r->first.speed - r1.first.speed) < 0.1f * r1.first.speed);
-        CHECK(r1.second.jumpRise > 30 && std::fabs(r->second.jumpRise - r1.second.jumpRise) < 3.0f);
+        CHECK(r1.second.jumpRise > 30 && std::fabs(r->second.jumpRise - r1.second.jumpRise) < 1.0f);
     }
 
     // Search and destroy rounds: a round restart rebuilds the level in place (no new gamestate, the server's time goes
@@ -356,7 +408,7 @@ int main() {
     std::cout << "after sd round restart: command time ahead of the clock by " << worstAhead << " ms at most\n";
     CHECK(worstAhead <= 60);
     CHECK(r4.first.speed > 100); // the sd spawns differ (a wall can end the run early); the clock check above is the slow-motion one
-    CHECK(std::fabs(r4.second.jumpRise - r1.second.jumpRise) < 3.0f);
+    CHECK(std::fabs(r4.second.jumpRise - r1.second.jumpRise) < 1.0f);
 
     console.push("quit");
     server.join();

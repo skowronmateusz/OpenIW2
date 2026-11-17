@@ -681,9 +681,13 @@ openiw2 (src/net/clientclock.h; no 1.3 counterpart). The 1.3 rule above has thre
 
 The even clock keeps the 1.3 rule's reset and replaces the rest (`ClientClock`, window 1500 ms):
 - Arrival times. The socket asks the system for the time each datagram arrived (`SO_TIMESTAMP`; `UdpSocket::receive`
-  returns its age), and the clock is given `read time - age` for a snapshot, never earlier than the read before it. Without such a time (the in-memory
-  network of the tests) the read time is used, and snapshots read after a gap of more than 100 ms between two reads
-  (a long frame of the client) are left out, as they say nothing about the path.
+  returns its age), and the clock is given `read time - age` for a snapshot, never earlier than the read before it. The
+  read time is the time the caller passes to the poll, so it must be taken right before it (iw2view does): a time taken
+  before other work of the frame dates the waiting snapshots too early by that work's length, and the clock then runs
+  that much ahead of the snapshots for its window (seen in a test that polled three clients with one time taken before
+  the frames of the others: 150 to 320 ms ahead). Without such a time (the in-memory network of the tests) the read
+  time is used, and snapshots read after a gap of more than 100 ms between two reads (a long frame of the client) are
+  left out, as they say nothing about the path.
 - Target. Per snapshot the clock notes `offset = snapshot time - arrival time` and the interval to the snapshot before
   it. Over the snapshots of the last 1500 ms of real time: `best` is the largest offset (the least delayed snapshot),
   `interval` the second largest of the last five known intervals (one lost snapshot does not change it; another
@@ -1109,6 +1113,19 @@ VAs in the 1.3 Linux dedicated server unless marked MP (the patch 1.3 MP executa
   command runs against the old level time and the catch-up frames follow. `TODO(spec)`: 0x809b016 is taken to be the
   snapshot archive (it calls the player-state writer 0x806a200 for every client) and 0x809bcce the sending of the
   client messages; both are named by what they call, not read in full.
+- The time a common frame hands to the server frame is capped (0x8062594, called at 0x80627b4): the milliseconds since
+  the last common frame, at least 1, at most 5000 on a dedicated server (the `dedicated` dvar set; a frame over 500 ms
+  and under 500000 ms first prints `Hitch warning: %i msec frame time`), else at most 5000 while `sv_running` is 0 and
+  200 while it is 1 (a listen server). After a frame longer than the cap (a map load, a stall of the machine) the
+  server frame runs at most the cap's worth of missed game frames (100 at 20 a second); the rest of the time is not
+  made up, so the level time stays behind the real time by it. (The same routine first applies `fixedtime` or the
+  `timescale` dvars; not modelled.)
+  openiw2 (src/net/server.cpp, `Server::maxFrameMsec`, 5000; `hitchWarning` set by the dedicated server) made up every
+  missed frame at once before. Seen then: after a map change that took 40 s on a busy machine both clients of the
+  network soak were dropped with `EXE_SERVERCOMMANDOVERFLOW` as soon as they had the new level (5 runs of 5); that the
+  burst of made-up frames caused it is inferred, not shown, and why that map change took 40 s was not found. iw2view's
+  listen server uses the same Server and so the dedicated cap (`TODO(spec)`: 200 there, not yet tried with iw2view's
+  level loads).
 - The game's client think (0x80f5d2e) clamps the command's time to level time - 1000 .. + 200 (0x80f5d54..0x80f5d92)
   and takes the difference to the player state's `commandTime`. A difference below 1 ms ends the routine at once
   (0x80f5da6..0x80f5dcb, unless the client follows another one): nothing of that command runs, neither the movement
@@ -1128,6 +1145,11 @@ VAs in the 1.3 Linux dedicated server unless marked MP (the patch 1.3 MP executa
   whole gap with its own buttons. The client ran those commands one by one, so the two weapon timers can end a shot on
   different commands, and within the gap the number of shots can differ (the server steps 66 ms, the client its
   frames; a shot sets the weapon time to the fire time, SP 0x4ded30, so the cadence follows the step size).
+- A consequence of the skip: a press shorter than such a stall (a jump, a single shot) whose commands all fall among the
+  skipped ones never reaches the game, although the client ran it in its prediction; the next snapshot takes the
+  predicted jump or shot back. openiw2's server does the same (tests/test_mpperclient.cpp: a jump held 48..148 ms past
+  the level time jumps, one held 240..340 ms does not), so tests/test_mpnetsoak.cpp does not count presses against the
+  prediction for a life in which the server stalled during them.
 
 openiw2 (src/netgame/netmove.cpp): `usercmdMsec` is that difference (50 ms for the first command, at most 1000),
 `runUsercmd` moves in pieces of at most 66 ms, and the weapon runs the same pieces (`weaponStep`,

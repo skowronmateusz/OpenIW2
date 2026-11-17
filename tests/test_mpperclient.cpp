@@ -2,8 +2,11 @@
 // methods called on a bot or another client leave the local player alone (shell shock, view kick, teleports, view
 // angles, frozen controls, stance and lean permissions, reverb, player links, blur, input queries); the shell shock of a
 // network client travels in its snapshot to its own view; a client spawn restarts the movement state (a player who
-// died prone or crouched stands again), also in the network client's prediction. Needs the game files (IW2_MAIN).
+// died prone or crouched stands again), also in the network client's prediction; the commands a stalled server reads
+// beyond its level time + 200 ms do not run (a jump pressed only in them is lost, docs/spec/net.md "Command steps").
+// Needs the game files (IW2_MAIN).
 
+#include "game/clientinput.h"
 #include "game/mpbots.h"
 #include "game/world.h"
 #include "net/playerstate.h"
@@ -366,6 +369,42 @@ void network(const fs::Vfs& vfs) {
     }
     CHECK(cycles.size() > 5);
     CHECK(netgame::readPs(game.snapshot(1).ps).bobCycle == (getI(game.snapshot(1).ps, 8) & 0xff));
+
+    // A stall of the server (docs/spec/net.md section 10 "Command steps"): the commands that waited are read against the
+    // old level time, those beyond it + 200 ms all carry that time and only the first of them runs. A jump pressed within
+    // the first 200 ms jumps; one pressed only in the later commands never reaches the game.
+    {
+        auto settle = [&]() {
+            for (int i = 0; i < 40; ++i) {
+                host.frame();
+                net::UserCmd c;
+                c.serverTime = game.serverTime();
+                game.clientThink(1, c);
+            }
+        };
+        // Commands every 16 ms for 480 ms past the level time, the jump held from `from` to `to` ms; the highest upward
+        // speed of the server's player state.
+        auto stalledJump = [&](int from, int to) {
+            const int level = game.serverTime();
+            float vz = 0;
+            for (int ms = 16; ms <= 480; ms += 16) {
+                net::UserCmd c;
+                c.serverTime = level + ms;
+                if (ms >= from && ms < to) c.buttons = game::Button::Jump;
+                game.clientThink(1, c);
+                vz = std::max(vz, netgame::readPs(game.snapshot(1).ps).velocity[2]);
+            }
+            return vz;
+        };
+        settle();
+        const float early = stalledJump(48, 148);
+        settle();
+        const float late = stalledJump(240, 340);
+        settle();
+        std::cout << "stalled server: jump pressed 48..148 ms past the level time vz " << early << ", 240..340 ms vz " << late << "\n";
+        CHECK(early > 100.0f);
+        CHECK(late < 1.0f);
+    }
 }
 
 } // namespace

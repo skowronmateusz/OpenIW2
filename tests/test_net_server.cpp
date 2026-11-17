@@ -19,6 +19,8 @@
 #include "net/netfields.h"
 #include "net/server.h"
 
+#include <unistd.h>
+
 using namespace iw2::net;
 
 namespace {
@@ -404,8 +406,47 @@ void frameWaitTest() {
     CHECK(game.time > before);
 }
 
+// docs/spec/net.md section 10 "Command steps" (0x8062594): a poll makes up at most maxFrameMsec of missed game frames
+// (5000 ms, 100 frames of 50 ms) after a long gap such as a map load; the rest of the gap is not made up.
+void frameCapTest() {
+    StubGame game;
+    Server server(game, 7);
+    if (!server.open(0)) return;
+    int64_t now = 5000;
+    for (int i = 0; i < 10; ++i) server.poll(now += 10, 0);
+    const int before = game.time;
+    server.poll(now += 40000, 0); // a map load of 40 s
+    std::printf("frame cap: a 40 s gap made up %d ms of game frames\n", game.time - before);
+    CHECK(game.time - before <= 5000 && game.time - before >= 4950);
+    const int after = game.time;
+    for (int i = 0; i < 20; ++i) server.poll(now += 10, 0); // then the frames follow the real time again
+    CHECK(game.time - after >= 150 && game.time - after <= 250);
+    const int small = game.time;
+    server.poll(now += 3000, 0); // a gap under the cap is made up in full
+    CHECK(game.time - small >= 2950 && game.time - small <= 3050);
+    // The dedicated server's line for a gap over 500 ms (hitchWarning), on stdout: one for 800 ms, none for 300 ms.
+    server.hitchWarning = true;
+    std::fflush(stdout);
+    FILE* captured = std::tmpfile();
+    const int saved = dup(1);
+    if (!captured || saved < 0) return;
+    dup2(fileno(captured), 1);
+    server.poll(now += 300, 0);
+    server.poll(now += 800, 0);
+    std::fflush(stdout);
+    dup2(saved, 1);
+    close(saved);
+    std::rewind(captured);
+    std::string out;
+    for (int ch; (ch = std::fgetc(captured)) != EOF;) out += char(ch);
+    std::fclose(captured);
+    std::printf("frame cap: hitch lines \"%s\"\n", out.c_str());
+    CHECK(out == "Hitch warning: 800 msec frame time\n");
+}
+
 int main() {
     frameWaitTest();
+    frameCapTest();
     baselineOnceTest();
     playoutTests();
     snapshotRateTest();

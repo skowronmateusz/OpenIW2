@@ -12,7 +12,9 @@
 //   set.differs  two clients got a live snapshot of the same server time with other bodies or items;
 //   draw.body / draw.item   a body / item of the newest live snapshot has no drawn entity in the client World (model,
 //                place); draw.*.nomodel: nothing to draw it with;
-//   killcam.*    the same checks for the first live snapshot after a killcam against the last one before it.
+//   killcam.*    the same checks for the first live snapshot after a killcam against the last one before it;
+//   client.dropped  a client's connection ended other than by the test's own rejoin (the reason it got; the server's
+//                last output lines follow the result of a failed run).
 // Environment: IW2_MAIN (required), IW2_BODIES_SERVER (the iw2server binary, set by CMake), IW2_BODIES_SECONDS (default 60),
 // IW2_BODIES_LAG=<wan|wifiburst> (client C through an in-process relay with latency, jitter and loss),
 // IW2_BODIES_TRACE=1 (a line per change of a client's body / item set), IW2_BODIES_SERVERLOG=<file> (the server's output).
@@ -80,6 +82,7 @@ struct ServerProcess {
     std::string buffer;
     int port = 0;
     FILE* log = nullptr;
+    std::vector<std::string> tail;
     bool start(const std::string& exe, const std::vector<std::string>& args) {
         int pout[2], pin[2];
         if (pipe(pout) != 0 || pipe(pin) != 0) return false;
@@ -116,6 +119,8 @@ struct ServerProcess {
             const std::string l = buffer.substr(0, p);
             buffer.erase(0, p + 1);
             if (log) std::fprintf(log, "%s\n", l.c_str());
+            tail.push_back(l); // the newest lines, printed when the run fails
+            if (tail.size() > 40) tail.erase(tail.begin());
             const auto at = l.find(" on UDP ");
             if (!port && l.rfind("iw2server: ", 0) == 0 && at != std::string::npos) port = std::atoi(l.c_str() + at + 8);
         }
@@ -219,6 +224,8 @@ struct NetClient {
     };
     std::vector<Gone> goneItems;        // items that left the live snapshots, not yet explained
     int killcams = 0, deaths = 0, kills = 0, evictions = 0, absentBodies = 0, lostInFlight = 0, liveSnaps = 0, bodiesChecked = 0, itemsChecked = 0;
+    bool dropReported = false;
+    int drawnTime = 0;  // the time the client World's moving models were placed at in the last frame
     // checkDrawn's copy of each body's client and model ("" none), and the eFlags bit 2 of the bodies of the last snapshot.
     std::map<int, std::pair<int, std::string>> bodyModels;
     std::map<int, int> bodiesShown;
@@ -451,15 +458,22 @@ void checkDrawn(NetClient& c, const net::ClientSnapshot& s) {
             netgame::evaluateTrajectory(tr, s.serverTime, o);
         if (!drawn(*c.view, model, o, 64.0f))
             violation(type == netgame::kEtCorpse ? "draw.body" : "draw.item", c.name + " snap " + std::to_string(s.serverTime) + ": entity " + std::to_string(n) + " " + model +
-                                                                                  " at " + std::to_string(int(o[0])) + "," + std::to_string(int(o[1])) + "," + std::to_string(int(o[2])) + " not drawn; drawn there:" +
-                                                                                  modelsNear(*c.view, o, 64.0f));
+                                                                                  " at " + std::to_string(int(o[0])) + "," + std::to_string(int(o[1])) + "," + std::to_string(int(o[2])) + " not drawn (drawn time " +
+                                                                                  std::to_string(c.drawnTime) + "); drawn there:" + modelsNear(*c.view, o, 64.0f));
     }
 }
 
 void frame(NetClient& c, const std::map<std::string, game::Vec>& others, int64_t now) {
     const int64_t netNow = now - gStart;
     c.gc->poll(netNow, 0);
-    if (c.gc->state() == net::ClientState::Disconnected) return;
+    if (c.gc->state() == net::ClientState::Disconnected) {
+        // Only the test's own rejoin disconnects a client (and replaces it at once): any other end of the connection is a
+        // fault, reported with the reason the server or the connection gave.
+        if (!c.dropReported)
+            violation("client.dropped", c.name + ": " + (c.gc->dropFromServer ? "dropped by the server: " : "connection lost: ") + c.gc->error);
+        c.dropReported = true;
+        return;
+    }
     if (c.gc->state() >= net::ClientState::Primed &&
         (c.gc->gamestates != std::get<0>(c.loadedGamestate) || c.gc->serverId != std::get<1>(c.loadedGamestate))) {
         const bool newMap = c.gc->serverId != std::get<1>(c.loadedGamestate) || !c.view;
@@ -482,6 +496,7 @@ void frame(NetClient& c, const std::map<std::string, game::Vec>& others, int64_t
         if (a && b) {
             const int trajTime = c.gc->renderTime(netNow) - netgame::RemoteView::trajectoryDelayMs(c.gc->snapshotIntervalMs());
             netgame::RemoteView::placeTrajectories(*c.view, c.gc->snapshotsFrom(trajTime), trajTime);
+            c.drawnTime = trajTime;
         }
         c.rv.playerEvents(*c.view, *last, c.gc->configstrings, c.gc->clientNum);
         c.rv.followEvents(*c.view, *last, c.gc->configstrings, c.view->timeMs());
@@ -630,7 +645,10 @@ int main() {
                 const netgame::PsFields f = netgame::readPs(s->ps);
                 if (f.pmType == 0 && !netgame::RemoteView::following(*s)) places[c->name] = {f.origin[0], f.origin[1], f.origin[2]};
             }
-        for (const auto& c : clients) frame(*c, places, now);
+        // Each client reads the time right before its poll, as iw2view does: a poll given a time taken before the frames of
+        // the other clients (a level load, a pause of this process) dates the waiting snapshots too early, and the client's
+        // clock runs ahead of them for its window (seen 150 to 320 ms ahead, items drawn that far down their fall: draw.item).
+        for (const auto& c : clients) frame(*c, places, nowMs());
         // A player who leaves and joins again while bodies and dropped weapons lie around (as players do in a real game):
         // the new connection's gamestate is sent while the level is running.
         static int rejoins = 0;
@@ -673,6 +691,10 @@ int main() {
     for (const auto& [id, n] : gViolations) {
         std::printf("%s: %d\n", id.c_str(), n);
         ok = false;
+    }
+    if (!ok) {
+        std::printf("the server's last lines:\n");
+        for (const auto& l : server.tail) std::printf("  %s\n", l.c_str());
     }
     std::printf(ok ? "mpbodies: OK\n" : "mpbodies: FAILED\n");
     return ok ? 0 : 1;

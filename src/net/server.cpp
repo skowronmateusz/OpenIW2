@@ -187,6 +187,13 @@ void Server::poll(int64_t nowMs, int waitMs) {
         startMs_ = nowMs;
         nextFrameMs_ = nowMs;
     }
+    // The time since the last poll counts for at most maxFrameMsec (docs/spec/net.md section 10 "Command steps"): after a
+    // longer gap (a map load, a stall) the missed game frames are made up only that far, the rest is not.
+    if (lastNowMs_ > 0 && nowMs > lastNowMs_) {
+        const int64_t msec = nowMs - lastNowMs_;
+        if (hitchWarning && msec > 500 && msec < 500000) std::printf("Hitch warning: %i msec frame time\n", static_cast<int>(msec));
+        if (msec > maxFrameMsec) nextFrameMs_ += msec - maxFrameMsec;
+    }
     static uint8_t buf[kMaxPacketLen + 64];
     NetAddress from;
     // The wait for packets ends at the next frame: nowMs is the time before the wait, and the frame and its snapshots
