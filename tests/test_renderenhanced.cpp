@@ -137,6 +137,28 @@ int main() {
         chk(cubeFaceDepth(10.0f, 2.0f, 500.0f) < cubeFaceDepth(20.0f, 2.0f, 500.0f), __LINE__);
     }
 
+    // Atmosphere: the phase function integrates to 1 over the sphere and peaks towards the sun for g > 0; the film grade keeps black,
+    // white and grey, and adds contrast around grey.
+    {
+        for (float g : {0.0f, 0.4f, 0.8f}) {
+            double sum = 0.0;
+            const int n = 4000;
+            for (int i = 0; i < n; ++i) {
+                const float ct = -1.0f + 2.0f * (float(i) + 0.5f) / float(n);
+                sum += double(henyeyGreenstein(ct, g)) * 2.0 * 3.14159265 * (2.0 / n);
+            }
+            chk(std::fabs(sum - 1.0) < 2e-3, __LINE__);
+        }
+        chk(henyeyGreenstein(1.0f, 0.5f) > henyeyGreenstein(0.0f, 0.5f) && near(henyeyGreenstein(0.3f, 0.0f), 1.0f / (4.0f * 3.14159265f)), __LINE__);
+        const auto k0 = periodFilmGrade({0, 0, 0}), k1 = periodFilmGrade({1, 1, 1}), kg = periodFilmGrade({0.5f, 0.5f, 0.5f});
+        chk(near(k1[0], 1.0f) && near(k1[1], 1.0f) && near(k1[2], 1.0f) && near(kg[1], 0.5f), __LINE__);
+        chk(near(k0[1], 0.0f) && k0[0] > 0.0f, __LINE__); // warm lift in black
+        chk(periodFilmGrade({0.7f, 0.7f, 0.7f})[1] > 0.7f && periodFilmGrade({0.3f, 0.3f, 0.3f})[1] < 0.3f, __LINE__); // contrast
+        const auto sat = periodFilmGrade({0.9f, 0.3f, 0.3f});
+        chk(sat[0] - sat[1] < 0.6f, __LINE__); // desaturated
+        chk(periodFilmGrade({1.5f, 1.5f, 1.5f})[1] > 1.4f, __LINE__); // HDR values kept
+    }
+
     // Tone curve: identity up to the knee, continuous with slope 1 there, monotonic, below white, approaching white.
     for (float x = 0.0f; x <= kToneKnee; x += 0.01f) chk(toneShoulder(x, kToneKnee, 1.0f) == x, __LINE__);
     {

@@ -105,8 +105,8 @@ fragment float4 fs_enh_bloom_up(GlowVOut in [[stage_in]], constant BloomU& u [[b
 // ---- tone mapping: exposure and bloom on linear light, back to display encoding, highlight shoulder ----
 struct ToneU {
     float4 a; // x: 1 = shoulder (else clip at white), y: white (display encoding), z: bloom intensity, w: 1 = use the exposure texture
-    float4 b; // x: exposure bias EV, y: 1 = bloom present, z: knee, w: unused
-    float4 c; // xy: texel size, z: sharpening after TAA (0 = none)
+    float4 b; // x: exposure bias EV, y: 1 = bloom present, z: knee, w: frame counter (grain)
+    float4 c; // xy: texel size, z: sharpening after TAA (0 = none), w: grade (1 = period film)
 };
 fragment float4 fs_enh_tonemap(GlowVOut in [[stage_in]], constant ToneU& u [[buffer(0)]], texture2d<float> scene [[texture(0)]],
                                texture2d<float> bloom [[texture(1)]], texture2d<float> expo [[texture(2)]],
@@ -124,6 +124,17 @@ fragment float4 fs_enh_tonemap(GlowVOut in [[stage_in]], constant ToneU& u [[buf
         float3 lin = enh_srgb_to_linear(c) * exp2(ev);
         if (u.b.y > 0.5) lin += bloom.sample(bs, in.uv).rgb * u.a.z;
         g = enh_linear_to_srgb(lin);
+    }
+    if (u.c.w > 0.5) { // r_enhGrade 1, "period film" (game::periodFilmGrade): desaturate, S-curve, warm shadows, grain
+        const float l = dot(g, float3(0.299, 0.587, 0.114));
+        g = l + (g - l) * 0.8;
+        const float3 x = saturate(g);
+        const float3 sc = select(1.0 - 0.5 * pow(2.0 - 2.0 * x, 1.15), 0.5 * pow(2.0 * x, 1.15), x < 0.5);
+        g = sc + (g - x);
+        const float warm = 0.03 * (1.0 - saturate(l * 2.0));
+        g += float3(warm, 0.0, -warm);
+        const float n = fract(sin(dot(in.position.xy + fract(u.b.w * 0.618034) * 131.0, float2(12.9898, 78.233))) * 43758.5453); // b.w: frame
+        g += (n - 0.5) * 0.035 * (1.0 - l * 0.5);
     }
     const float white = u.a.y, knee = u.b.z;
     if (u.a.x > 0.5) {
@@ -390,6 +401,57 @@ fragment float4 fs_enh_taa(GlowVOut in [[stage_in]], constant TaaU& u [[buffer(0
     const float3 outW = enh_rgb(mix(c0, hc, 0.9));
     const float m = max(max(outW.r, outW.g), outW.b);
     return float4(max(outW / max(1.0 - m, 1e-3), 0.0), 1.0);
+}
+
+// ---- atmosphere: sun shafts (light scattered in the air), half size, added to the scene before TAA ----
+struct VolU {
+    float4x4 invViewProj;
+    float4 z;      // x, y: clip z line; z: $floatz sky threshold; w: frame index
+    float4 eye;    // xyz; w: maximum march distance
+    float4 sun;    // xyz towards the sun; w: strength
+    float4 color;  // rgb: sun colour times the map's fog tint; w: phase asymmetry g
+};
+fragment float4 fs_enh_volume(GlowVOut in [[stage_in]], constant EnhFragU& eu [[buffer(0)]], constant VolU& v [[buffer(1)]],
+                              texture2d<float> fz [[texture(0)]], depth2d<float> shadowMap [[texture(1)]], depth2d_array<float> worldShadow [[texture(2)]],
+                              sampler ps [[sampler(0)]], sampler ss [[sampler(1)]], sampler ws [[sampler(2)]]) {
+    const float cz = fz.sample(ps, in.uv).r;
+    const float2 ndc = float2(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
+    float w = cz >= v.z.z ? 1e6 : (cz - v.z.y) / v.z.x;
+    const float4 farP = v.invViewProj * float4(ndc * 1000.0, v.z.x * 1000.0 + v.z.y, 1000.0);
+    const float3 dir = normalize(farP.xyz / farP.w - v.eye.xyz);
+    // distance along the ray to the surface: w is the depth along the view axis; the ray reaches it at w / cos
+    const float4 midP = v.invViewProj * float4(ndc * 100.0, v.z.x * 100.0 + v.z.y, 100.0);
+    const float cosA = 100.0 / max(length(midP.xyz / midP.w - v.eye.xyz), 1e-3);
+    const float dist = min(w / max(cosA, 1e-3), v.eye.w);
+    const float noise = fract(52.9829189 * fract(dot(in.position.xy + 5.588238 * v.z.w, float2(0.06711056, 0.00583715))));
+    const int steps = 12;
+    float lit = 0.0;
+    for (int i = 0; i < steps; ++i) {
+        const float t = (float(i) + noise) / float(steps) * dist;
+        const float3 p = v.eye.xyz + dir * t;
+        const float2 wv = enh_world_sun(p, float3(0.0, 0.0, 1.0), eu, worldShadow, ws, 1); // one tap per step: the jitter and TAA blur it
+        float vis = mix(1.0, wv.x, wv.y);
+        if (vis > 0.0) vis *= enh_sun_shadow(p, float3(0.0, 0.0, 1.0), eu, shadowMap, ss, 1);
+        lit += vis;
+    }
+    lit *= dist / float(steps) / max(v.eye.w, 1.0); // fraction of the maximum path that is sunlit
+    const float g = v.color.w, ct = dot(dir, v.sun.xyz);
+    const float d = 1.0 + g * g - 2.0 * g * ct;
+    const float phase = (1.0 - g * g) / (4.0 * 3.14159265 * d * sqrt(d)) * 4.0 * 3.14159265; // 1 for isotropic
+    return float4(v.color.rgb * lit * phase * v.sun.w, 1.0);
+}
+// The volume image added to the scene (additive blend pipeline).
+fragment float4 fs_enh_volume_apply(GlowVOut in [[stage_in]], texture2d<float> vol [[texture(0)]], sampler s [[sampler(0)]]) {
+    return float4(vol.sample(s, in.uv).rgb, 1.0);
+}
+
+// ---- motion blur (r_enhMotionBlur): 8 taps along the motion vector, after TAA, before the tone curve ----
+fragment float4 fs_enh_motion_blur(GlowVOut in [[stage_in]], constant float4& u [[buffer(0)]], texture2d<float> scene [[texture(0)]],
+                                   texture2d<float> vel [[texture(1)]], sampler s [[sampler(0)]], sampler ps [[sampler(1)]]) {
+    const float2 v = vel.sample(ps, in.uv).rg * float2(0.5, -0.5) * u.x; // NDC -> uv, times the amount
+    float3 c = 0.0;
+    for (int i = 0; i < 8; ++i) c += scene.sample(s, in.uv - v * ((float(i) + 0.5) / 8.0 - 0.5)).rgb;
+    return float4(c / 8.0, 1.0);
 }
 
 // ---- final pass to the window: the r_gamma ramp on the SDR part, then extended linear sRGB for the EDR swapchain ----

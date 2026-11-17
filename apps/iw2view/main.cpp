@@ -2490,6 +2490,12 @@ struct Renderer {
     SDL_GPUTexture* frameHist = nullptr;   // the previous frame's resolved scene while reflections are on, else null
     SDL_GPUTexture* frameDepth = nullptr;  // $floatz once built this frame, else null
     void ensureEnvCube(SDL_GPUCommandBuffer* cmd, const Scene& scene);
+    // Atmosphere and grading (stage 4): sun shafts at half size, motion blur.
+    SDL_GPUGraphicsPipeline *enhVolumePipe = nullptr, *enhVolumeApplyPipe = nullptr, *enhMotionBlurPipe = nullptr;
+    SDL_GPUTexture* volTex = nullptr;
+    uint32_t volW = 0, volH = 0;
+    void enhVolume(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam);
+    void enhMotionBlur(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h);
     // Shadowed dynamic lights (docs/render-enhanced.md "Shadowed effect lights"): 6 faces of 256^2 per light, up to 4 lights.
     static constexpr int kLightShadowSize = 256, kLightShadowMax = 4;
     SDL_GPUTexture* lightShadowAtlas = nullptr;
@@ -2612,6 +2618,9 @@ struct Renderer {
         enhAoBlurPipe = mk("fs_enh_ao_blur", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhAoViewPipe = mk("fs_enh_ao_view", 1, 0, false, true);
         enhTaaPipe = mk("fs_enh_taa", 4, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhVolumePipe = mk("fs_enh_volume", 3, 2, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhVolumeApplyPipe = mk("fs_enh_volume_apply", 1, 0, true, false, true, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhMotionBlurPipe = mk("fs_enh_motion_blur", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         {   // $floatz + motion vectors (two targets); the previous position comes from a second vertex stream
             SDL_GPUShaderCreateInfo sv = vs;
             sv.entrypoint = "vs_floatz_vel";
@@ -4401,8 +4410,12 @@ struct Renderer {
         }
         if (nq && !post) drawOverlay(pass, cmd, scene, overlay, nq);
         SDL_EndGPURenderPass(pass);
-        if (taaOn && velocityFromFloatz) enhTaaResolve(cmd, w, h, scene, cam);
-        else taaHistValid = false;
+        if (enh.enabled && enh.volumetric > 0.0f && frameDepth && sceneFormat == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT)
+            enhVolume(cmd, w, h, scene, cam);
+        if (taaOn && velocityFromFloatz) {
+            enhTaaResolve(cmd, w, h, scene, cam);
+            if (enh.motionBlur > 0.0f) enhMotionBlur(cmd, w, h);
+        } else taaHistValid = false;
         if (enh.enabled) enhPost(cmd, w, h, cam, postSunWanted);
         if (post) {
             // Screen filter chain, docs/spec/effects.md "Glow and the blurred screen". Passes alternate between the pingpong images, the
@@ -4445,8 +4458,8 @@ struct Renderer {
             const SDL_GPUTextureSamplerBinding toneIn[3] = {{sceneTex, clampSampler}, {bloomOn ? bloomTex[0] : (expoTex[0] ? expoTex[0] : sceneTex), clampSampler},
                                                             {expoTex[expoCur] ? expoTex[expoCur] : sceneTex, pointClampSampler}};
             const float toneU[12] = {enh.tonemap ? 1.0f : 0.0f, captureMode ? 1.0f : edrWhite, enh.bloomIntensity, enh.autoExposure ? 1.0f : 0.0f,
-                                     enh.exposureBias, bloomOn ? 1.0f : 0.0f, game::kToneKnee, 0.0f,
-                                     1.0f / float(w), 1.0f / float(h), enh.enabled && enh.taa && taaHistValid ? 0.35f : 0.0f, 0.0f};
+                                     enh.exposureBias, bloomOn ? 1.0f : 0.0f, game::kToneKnee, float(taaFrame % 1024u),
+                                     1.0f / float(w), 1.0f / float(h), enh.enabled && enh.taa && taaHistValid ? 0.35f : 0.0f, float(enh.grade)};
             SDL_GPUTexture* enhToneSrc = nullptr;
             if (enh.enabled && blurA > 0.0f) {
                 if (!toneTex || toneW != w || toneH != h) {
@@ -5281,6 +5294,88 @@ void Renderer::renderLightShadows(SDL_GPUCommandBuffer* cmd, const Scene& scene,
     }
     SDL_EndGPURenderPass(sp);
     lightShadowsNow = n;
+}
+
+// Sun shafts (docs/render-enhanced.md "Atmosphere"): a 16-step march per half-size pixel through the sun's shadow (world cascades
+// and moving casters) up to the opaque depth, Henyey-Greenstein phase, added to the scene before TAA (which smooths the noise).
+void Renderer::enhVolume(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam) {
+    if (scene.sunColor.x + scene.sunColor.y + scene.sunColor.z <= 0.0f || (worldCascadesNow == 0 && shadowCascadesNow == 0)) return;
+    const uint32_t hw = std::max(w / 2, 1u), hh = std::max(h / 2, 1u);
+    if (!volTex || volW != hw || volH != hh) {
+        if (volTex) SDL_ReleaseGPUTexture(dev, volTex);
+        SDL_GPUTextureCreateInfo ti{};
+        ti.type = SDL_GPU_TEXTURETYPE_2D;
+        ti.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+        ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        ti.width = hw, ti.height = hh, ti.layer_count_or_depth = 1, ti.num_levels = 1;
+        volTex = SDL_CreateGPUTexture(dev, &ti);
+        if (!volTex) return;
+        volW = hw, volH = hh;
+    }
+    const Mat4 vp = cam.viewProj(float(w) / float(h));
+    game::Mat4c cur{}, inv{};
+    std::memcpy(cur.data(), vp.data(), sizeof(float) * 16);
+    if (!game::invertMat(cur, inv)) return;
+    const Vec3 fw = cam.forward();
+    const float eye[3] = {cam.pos.x, cam.pos.y, cam.pos.z}, fwd[3] = {fw.x, fw.y, fw.z};
+    const auto zl = game::clipDepthLine(cur, eye, fwd);
+    struct { float inv[16], z[4], eye[4], sun[4], color[4]; } v{};
+    std::memcpy(v.inv, inv.data(), sizeof v.inv);
+    v.z[0] = zl[0], v.z[1] = zl[1], v.z[2] = 262144.0f * 2.0f * 1.7f, v.z[3] = float(taaFrame % 64u);
+    v.eye[0] = eye[0], v.eye[1] = eye[1], v.eye[2] = eye[2], v.eye[3] = 1500.0f;
+    // the air scatters more on maps with fog (the level's own fog says the air is hazy there)
+    v.sun[0] = scene.sunDirection.x, v.sun[1] = scene.sunDirection.y, v.sun[2] = scene.sunDirection.z,
+    v.sun[3] = enh.volumetric * (fog.active ? 0.06f : 0.025f);
+    v.color[0] = scene.sunColor.x, v.color[1] = scene.sunColor.y, v.color[2] = scene.sunColor.z, v.color[3] = 0.6f;
+    SDL_GPUColorTargetInfo ct{};
+    ct.texture = volTex;
+    ct.load_op = SDL_GPU_LOADOP_DONT_CARE;
+    ct.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(p, enhVolumePipe);
+    const SDL_GPUTextureSamplerBinding tb[3] = {{frameDepth, pointClampSampler},
+                                                {shadowCascadesNow > 0 ? shadowTex : shadowDummy, shadowCmpSampler},
+                                                {worldCascadesNow > 0 ? worldShadowArray : shadowDummyArray, shadowCmpSampler}};
+    SDL_BindGPUFragmentSamplers(p, 0, tb, 3);
+    SDL_PushGPUFragmentUniformData(cmd, 0, &enhFragPending, sizeof enhFragPending);
+    SDL_PushGPUFragmentUniformData(cmd, 1, &v, sizeof v);
+    SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(p);
+    SDL_PushGPUFragmentUniformData(cmd, 1, &enhFragPending, sizeof enhFragPending); // slot 1 belongs to the scene shaders again
+    SDL_GPUColorTargetInfo at{};
+    at.texture = sceneTex;
+    at.load_op = SDL_GPU_LOADOP_LOAD;
+    at.store_op = SDL_GPU_STOREOP_STORE;
+    p = SDL_BeginGPURenderPass(cmd, &at, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(p, enhVolumeApplyPipe);
+    const SDL_GPUTextureSamplerBinding vb{volTex, clampSampler};
+    SDL_BindGPUFragmentSamplers(p, 0, &vb, 1);
+    SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(p);
+}
+
+// Motion blur along the TAA motion vectors, into the free history image, copied back into the scene image.
+void Renderer::enhMotionBlur(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h) {
+    SDL_GPUTexture* scratch = taaHist[1 - taaCur]; // the old history: free until the next resolve writes it
+    if (!scratch || !velocityTex) return;
+    SDL_GPUColorTargetInfo ct{};
+    ct.texture = scratch;
+    ct.load_op = SDL_GPU_LOADOP_DONT_CARE;
+    ct.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(p, enhMotionBlurPipe);
+    const SDL_GPUTextureSamplerBinding tb[2] = {{sceneTex, clampSampler}, {velocityTex, pointClampSampler}};
+    SDL_BindGPUFragmentSamplers(p, 0, tb, 2);
+    const float u[4] = {enh.motionBlur, 0, 0, 0};
+    SDL_PushGPUFragmentUniformData(cmd, 0, u, sizeof u);
+    SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(p);
+    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureLocation src{}, dst{};
+    src.texture = scratch;
+    dst.texture = sceneTex;
+    SDL_CopyGPUTextureToTexture(cp, &src, &dst, w, h, 1, false);
+    SDL_EndGPUCopyPass(cp);
 }
 
 // A copy of the sky cube with a mip chain (box-filtered), so rough surfaces reflect a blurred sky.

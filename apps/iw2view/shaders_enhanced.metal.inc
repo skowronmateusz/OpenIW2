@@ -51,7 +51,7 @@ constant float2 kEnhPoisson[12] = {
 
 // Dynamic sun visibility of a world point from the shadow map of the moving casters (1 = lit). Normal offset against acne, a small
 // rotated Poisson disk of hardware-filtered compare taps, the last cascade fades out towards its edge.
-static float enh_sun_shadow(float3 wp, float3 n, constant EnhFragU& eu, depth2d<float> sm, sampler ss) {
+static float enh_sun_shadow(float3 wp, float3 n, constant EnhFragU& eu, depth2d<float> sm, sampler ss, int tapsOverride = 0) {
     const int cascades = int(eu.shadowParams.x + 0.5);
     if (cascades <= 0) return 1.0;
     int c = 0;
@@ -69,7 +69,7 @@ static float enh_sun_shadow(float3 wp, float3 n, constant EnhFragU& eu, depth2d<
     if (any(uv < 0.0) || any(uv > 1.0) || sc.z >= 1.0) return 1.0;
     uv.x = (uv.x + float(c)) / float(cascades);
     const float ref = sc.z - eu.shadowBias.x;
-    const int taps = int(eu.shadowParams.w + 0.5);
+    const int taps = tapsOverride > 0 ? tapsOverride : int(eu.shadowParams.w + 0.5);
     float lit = 0.0;
     if (taps <= 1) {
         lit = sm.sample_compare(ss, uv, ref);
@@ -87,7 +87,7 @@ static float enh_sun_shadow(float3 wp, float3 n, constant EnhFragU& eu, depth2d<
 
 // Sun visibility from the cached world cascades (the world and static models): x = visibility, y = weight (0 outside the cascades,
 // fading over the outer 15 % of the last one). The callers combine it with the baked mask: min(mask, mix(1, x, y)).
-static float2 enh_world_sun(float3 wp, float3 n, constant EnhFragU& eu, depth2d_array<float> wsm, sampler ss) {
+static float2 enh_world_sun(float3 wp, float3 n, constant EnhFragU& eu, depth2d_array<float> wsm, sampler ss, int tapsOverride = 0) {
     const int cascades = int(eu.worldParams.x + 0.5);
     if (cascades <= 0) return float2(1.0, 0.0);
     int c = -1;
@@ -103,7 +103,7 @@ static float2 enh_world_sun(float3 wp, float3 n, constant EnhFragU& eu, depth2d_
     const float2 uv = sc.xy * float2(0.5, -0.5) + 0.5;
     if (any(uv < 0.0) || any(uv > 1.0) || sc.z >= 1.0 || sc.z <= 0.0) return float2(1.0, 0.0);
     const float ref = sc.z - eu.worldBias[c];
-    const int taps = int(eu.worldParams.w + 0.5);
+    const int taps = tapsOverride > 0 ? tapsOverride : int(eu.worldParams.w + 0.5);
     const float ang = fract(52.9829189 * fract(dot(wp.xy, float2(0.06711056, 0.00583715)))) * 6.2831853;
     const float2x2 rot = float2x2(float2(cos(ang), sin(ang)), float2(-sin(ang), cos(ang)));
     const float2 texel = float2(eu.worldParams.y * 1.5);

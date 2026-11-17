@@ -3,7 +3,7 @@
 An openiw2 addition with no counterpart in the original game. The default renderer keeps the original look (docs/spec);
 `r_enhanced 1` switches to a second set of pipelines with dynamic sun shadows of moving objects, cached sun shadow cascades of
 the world, ambient occlusion and contact shadows, temporal anti-aliasing, GGX specular with sky and screen-space reflections, shadows of
-the effect lights, a 16-bit float scene, a highlight tone curve, bloom of
+the effect lights, sun shafts, an optional film grade and motion blur, a 16-bit float scene, a highlight tone curve, bloom of
 the light above display white, mild auto exposure and extended dynamic range (EDR) output.
 Everything here is our own design from public techniques (references at the end). It is not derived from the shipped game
 shaders, and none of it is a specification of the original.
@@ -35,6 +35,9 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhEnvScale` | 0.35 | Reflection strength (0..2). |
 | `r_enhSSR` | preset | Screen-space reflections on water and the reflective surface classes (needs TAA). |
 | `r_enhLightShadows` | preset | Shadows of the dynamic (effect) lights, up to four lights. |
+| `r_enhVolumetric` | preset | Sun shafts: light scattered in the air through the sun's shadow (0 off .. 2; 0.35 in the high preset, else 0). |
+| `r_enhGrade` | 0 | Colour grade: 0 neutral, 1 "period film" (contrast, desaturation, warm shadows, grain). |
+| `r_enhMotionBlur` | 0 | Motion blur amount (0 off, 1 = one frame of motion; needs TAA). |
 | `r_enhMotionDebug` | 0 | Debug views instead of the frame: 1 the motion vectors, 2 AO (red) and contact shadow (green). |
 
 All are read once when the renderer starts, from the profile's config or `--cvar name=value` (case-insensitive). A per-feature
@@ -154,6 +157,19 @@ perspective faces per light in one depth atlas, with our own fixed face axes (`g
 world pieces and the models it reaches. The l_point pass picks the face by the major axis of the light-to-point vector and
 takes four compare taps, with a normal offset. The baked light and the light's falloff are unchanged.
 
+## Atmosphere, grade and motion blur
+
+- Sun shafts: per half-size pixel, 12 jittered steps along the view ray up to the opaque depth (at most 1500 units), each with
+  one shadow tap of the world cascades and the moving-caster map, give the sunlit fraction of the path. It is multiplied by the
+  Henyey-Greenstein phase (g 0.6, bright towards the sun) and the sun colour, and added to the scene before TAA, which smooths
+  the noise. The strength is larger on maps whose level script turns fog on (their air is meant to be hazy). The original fog
+  itself is unchanged.
+- Grade "period film" (off by default): in the tone pass, saturation 0.8, an S-curve around mid grey (black, grey and white stay
+  put, values above 1 keep their excess), warmer shadows and a fine animated grain (`game::periodFilmGrade` describes the
+  curve). No look-up tables: the game ships none, and a neutral default needs none.
+- Motion blur (off by default): eight taps along the TAA motion vector after the resolve, so the history stays sharp.
+- Not done: depth of field, shadows of the map's baked lights on moving objects.
+
 ## Per-pixel light grid
 
 The original lights an entity from one light-grid sample at its origin (docs/spec/lightgrid.md); a whole tank is in one light.
@@ -223,7 +239,9 @@ the duhoc_assault beach reference spot (docs/debug-flags.md `IW2_BENCH`), yaw 18
 | + TAA | 2.92 | +0.62 |
 | + GGX and sky reflections | 2.68 | +0.38 |
 | + GGX, TAA and screen-space reflections | 3.31 | +1.01 |
-| preset medium / high (stage 3) | 5.44 / 6.04 | |
+| + sun shafts (with the world cascades) | 3.14 | +0.28 over the cascades |
+| + grade and motion blur (with TAA) | 3.05 | +0.17 over TAA |
+| preset medium / high | 5.37 / 6.33 | |
 
 A shadowed effect light (toujane, one light of radius 350): +0.18 ms.
 
@@ -236,7 +254,7 @@ in a frame where a world cascade moves, its caster list and draw (about 1 ms CPU
 sRGB transfer, exposure target and frame-rate independent adaptation, bloom levels and threshold, the sun shadow fit (sphere
 inside the map, depth order towards the sun, texel-stable snapping, a vertical sun), the cascade fade, the world cascade centre
 snapping and caster reach, the GTAO slice integral, the TAA jitter sequence, the specular exponent to roughness conversion, the
-point light shadow faces, the probe lattice and the camera motion
+point light shadow faces, the phase function and the film grade, the probe lattice and the camera motion
 reconstruction.
 
 ## References
@@ -254,5 +272,8 @@ reconstruction.
 - B. Walter, S. Marschner, H. Li, K. Torrance, "Microfacet models for refraction through rough surfaces", EGSR 2007 (GGX).
 - E. Heitz, "Understanding the masking-shadowing function in microfacet-based BRDFs", JCGT 2014.
 - M. McGuire, M. Mara, "Efficient GPU screen-space ray tracing", JCGT 2014.
+- L. G. Henyey, J. L. Greenstein, "Diffuse radiation in the galaxy", Astrophysical Journal 93, 1941 (phase function).
+- B. Wronski, "Volumetric fog", SIGGRAPH 2014 Advances course; S. Hillaire, "Physically based and unified volumetric rendering
+  in Frostbite", SIGGRAPH 2015 (shadowed in-scattering).
 - E. Reinhard et al., "Photographic tone reproduction for digital images", SIGGRAPH 2002 (log-average luminance and key).
 - IEC 61966-2-1 (sRGB transfer function).

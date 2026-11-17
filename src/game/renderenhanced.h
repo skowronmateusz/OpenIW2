@@ -85,6 +85,9 @@ struct EnhancedSettings {
     float envScale = 0.35f;  // r_enhEnvScale: strength of the sky / screen-space reflections (0..2)
     bool ssr = true;         // r_enhSSR: screen-space reflections (needs TAA's history)
     bool lightShadows = true; // r_enhLightShadows: shadows of the dynamic (effect) lights, up to 4 lights
+    float volumetric = 0.0f; // r_enhVolumetric: strength of the sun shafts (light scattered in the air, 0 = off, up to 2)
+    int grade = 0;           // r_enhGrade: colour grade, 0 neutral, 1 period film (contrast, desaturation, warm shadows, grain)
+    float motionBlur = 0.0f; // r_enhMotionBlur: motion blur amount (0 = off, 1 = one frame of motion)
     bool gridPerPixel = true; // r_enhGridPerPixel: light-grid lattice per model instead of one sample
     int motionDebug = 0;     // r_enhMotionDebug: 1 shows the motion vectors, 2 the AO (red) / contact shadow (green) image
     float bloomIntensity = 0.06f; // r_enhBloomIntensity
@@ -105,8 +108,8 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     s.enabled = num("r_enhanced", f) && f != 0.0f;
     if (num("r_enhPreset", f)) s.preset = std::clamp(int(f), 0, 2);
     switch (s.preset) {
-        case 0: s.sunShadows = 1, s.worldShadows = 0, s.bloom = true, s.autoExposure = false, s.gridPerPixel = true, s.ao = false, s.contactShadows = false, s.taa = false, s.ssr = false, s.lightShadows = false; break;
-        case 2: s.sunShadows = 3, s.worldShadows = 2, s.bloom = true, s.autoExposure = true, s.gridPerPixel = true; break;
+        case 0: s.sunShadows = 1, s.worldShadows = 0, s.bloom = true, s.autoExposure = false, s.gridPerPixel = true, s.ao = false, s.contactShadows = false, s.taa = false, s.ssr = false, s.lightShadows = false, s.volumetric = 0.0f; break;
+        case 2: s.volumetric = 0.35f, s.sunShadows = 3, s.worldShadows = 2, s.bloom = true, s.autoExposure = true, s.gridPerPixel = true; break;
         default: break;
     }
     if (num("r_enhTonemap", f)) s.tonemap = f != 0.0f;
@@ -125,6 +128,9 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhEnvScale", f)) s.envScale = std::clamp(f, 0.0f, 2.0f);
     if (num("r_enhSSR", f)) s.ssr = f != 0.0f;
     if (num("r_enhLightShadows", f)) s.lightShadows = f != 0.0f;
+    if (num("r_enhVolumetric", f)) s.volumetric = std::clamp(f, 0.0f, 2.0f);
+    if (num("r_enhGrade", f)) s.grade = std::clamp(int(f), 0, 1);
+    if (num("r_enhMotionBlur", f)) s.motionBlur = std::clamp(f, 0.0f, 2.0f);
     if (num("r_enhMotionDebug", f)) s.motionDebug = std::clamp(int(f), 0, 2);
     if (num("r_enhBloomIntensity", f)) s.bloomIntensity = std::clamp(f, 0.0f, 1.0f);
     if (num("r_enhExposureBias", f)) s.exposureBias = std::clamp(f, -2.0f, 2.0f);
@@ -320,6 +326,32 @@ inline float phongPowerOfSpecAlpha(float a) {
     return std::log(0.1f) / std::log(std::cos((180.0f - 175.0f * t) * 3.14159265f / 720.0f));
 }
 inline float ggxAlphaOfPower(float p) { return std::clamp(std::sqrt(2.0f / (p + 2.0f)), 0.03f, 1.0f); }
+
+// ---- atmosphere and grading ------------------------------------------------------------------------------------------------------
+
+// Henyey-Greenstein phase function for scattering angle cos theta (between the view ray and the direction towards the light) and
+// asymmetry g (> 0: forward scattering, bright towards the sun). Normalised over the sphere.
+inline float henyeyGreenstein(float cosTheta, float g) {
+    const float d = 1.0f + g * g - 2.0f * g * cosTheta;
+    return (1.0f - g * g) / (4.0f * 3.14159265f * d * std::sqrt(d));
+}
+
+// The "period film" grade of display-encoded colour: an S-curve around mid grey (contrast k), saturation s, a warm lift of the
+// shadows. Neutral grey stays grey; 0 and 1 stay put.
+inline std::array<float, 3> periodFilmGrade(const std::array<float, 3>& c, float k = 1.15f, float s = 0.8f) {
+    std::array<float, 3> o{};
+    const float l = 0.299f * c[0] + 0.587f * c[1] + 0.114f * c[2];
+    for (int i = 0; i < 3; ++i) {
+        float v = l + (c[size_t(i)] - l) * s;
+        const float x = std::clamp(v, 0.0f, 1.0f);
+        const float sc = x < 0.5f ? 0.5f * std::pow(2.0f * x, k) : 1.0f - 0.5f * std::pow(2.0f - 2.0f * x, k);
+        v = sc + (v - x); // keep values above 1 (HDR / EDR) as they were beyond the curve
+        o[size_t(i)] = v;
+    }
+    const float warm = 0.03f * (1.0f - std::clamp(l * 2.0f, 0.0f, 1.0f)); // shadows a little warmer
+    o[0] += warm, o[2] -= warm;
+    return o;
+}
 
 // ---- point light shadows ---------------------------------------------------------------------------------------------------------
 
