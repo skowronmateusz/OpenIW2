@@ -905,6 +905,10 @@ public:
     PlayerUseHint vehicleUseHint(const std::string& turretWeapon);
     // A float dvar by name (cvars, case-insensitive) or `def` when it is unset or not a number.
     float cvarFloat(const std::string& name, float def) const;
+    // cg_fov (float, default 80, range 1..160, registered at 0x4a11a9): the base field of view of the player view. CG_CalcFov (0x4ae7b0) starts
+    // from it, the aim zoom moves from it towards the weapon's adsZoomFov, and the look sensitivity divides by it (0x4ae970). Scripts change it
+    // with setsavedcvar (duhoc_assault.gsc:1163 narrows it to 55 while the player lies shell-shocked on the beach). Clamped to the range.
+    float cgFov() const { return std::clamp(cvarFloat("cg_fov", 80.0f), 1.0f, 160.0f); }
     // The text of an iprintln / iprintlnbold call (the message builder 0x4eb9b0, in the 1.3 Linux dedicated server 0x8110720):
     // the arguments joined by buildHintString (a localized reference behind 0x14 unless it comes first, a plain value or a
     // player's name behind 0x15), so a localized argument such as &"WEAPON_MP40" is localized by the client too. Throws the
@@ -1077,6 +1081,11 @@ public:
 
     // Bounds of brush submodel "*N" (lump 35), used by triggers and brush models.
     bool submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const;
+    // Brush-model positions (docs/spec/entities.md "Brush-model positions"): what `getorigin` answers (0x4ee250: a brush model's linked box
+    // centre, any other entity its origin) and where the client plays the entity's loop sound (0x4aaf90: the origin plus, for a brush model,
+    // the unrotated centre of the submodel bounds; nullopt without an origin).
+    script::Value scriptGetOrigin(const script::ObjectPtr& o) const;
+    std::optional<Vec3> loopSoundOrigin(const script::ObjectPtr& o) const;
     // The bounds of the map's world model (model 0); false when the map has none.
     bool worldBounds(Vec3& mins, Vec3& maxs) const {
         if (submodels_.empty()) return false;

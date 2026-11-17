@@ -70,6 +70,16 @@ Implemented in `src/game/viewweapon.cpp` and `src/game/playerweapon.cpp`.
 - Field of view (0x4ae7d9): cg_fov (80, horizontal for 4:3) moves towards min(`adsZoomFov`, cg_fov):
   fully at aim 1; otherwise t = (adsFrac − (1 − frac)) / frac with frac = `adsZoomInFrac` while zooming in
   (flag set at aim 0, cleared at aim 1, 0x4b5ad0) or `adsZoomOutFrac`; when t > 0, fov −= (fov − zoom) · t.
+- cg_fov itself is a float dvar (default 80, range 1..160, flags 0x1400, registered at 0x4a11a9, pointer 0x1040c6c). CG_CalcFov reads its
+  current value every frame (0x4ae7d9) and the look sensitivity divides the final fov by it (0x4ae970 -> zoomSens 0xf791c8), so a script that
+  changes it changes the view: duhoc_assault narrows it to 55 with `setsavedcvar` while the player lies shell-shocked on the beach and puts
+  the saved value back 20.4 s later (duhoc_assault.gsc:1160-1170, called when its `duhoc_fov` and `duhoc_shellshock` dvars are set, which
+  the level sets to 1 when empty, :329-334). openiw2: `World::cgFov()` (the cvar clamped to 1..160, "80" registered at start) is the base of
+  the single-player view fov and of zoomSens; MP keeps 80 (no MP script sets it). Before, the base was a constant 80, so this scene was drawn
+  at 80 instead of 55. At rest (52-58 s) the only motionless drone still playing a run cycle in the 80 degree frame is the radio
+  man about 240 units from the eye, near the right edge (his rig has stopped; the stop handler is commented out at
+  duhoc_assault.gsc:2343-2356); with 55 degrees and the link roll (animscripted.md) he is outside the frame, and the drones that
+  remain in it play idle, aim or death animations (test `linkviewroll_world`).
 
 ### Aim on a turret (VAs in the patch 1.3 SP executable)
 

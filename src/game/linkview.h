@@ -13,31 +13,45 @@
 namespace iw2::game {
 
 struct LinkViewSmoother {
-    float pend[2] = {0, 0}; // pitch, yaw still owed
-    float done = 1.0f;      // the part of the current server interval already shown
+    float pend[3] = {0, 0, 0}; // pitch, yaw, roll still owed
+    float done = 1.0f;         // the part of the current server interval already shown
+    // The view roll shown. An absolute link's view angles are the tag's whole frame, roll included: with pm_flags 0x10000000 the client copies
+    // all three link angles (ps +0x56c) into the view angles (0x4af097..0x4af0b2) and the refdef angles take the roll (0x4af55e -> AnglesToAxis
+    // 0x4af621). A delta link and no link show no roll here. TODO(spec): [stays: the roll a delta link's turn (0x423680) may give was not read].
+    float roll = 0.0f;
 
-    // A server frame produced `target` (pitch, yaw) while the view shown was (pitch, yaw). A delta link owes the turn on top of what was
-    // not shown yet; an absolute link owes the way to the tag's angles.
-    void push(float targetPitch, float targetYaw, float pitch, float yaw, bool absolute) {
+    // A server frame produced `target` (pitch, yaw, roll) while the view shown was (pitch, yaw, roll). A delta link owes the turn on top of what
+    // was not shown yet; an absolute link owes the way to the tag's angles.
+    void push(float targetPitch, float targetYaw, float pitch, float yaw, bool absolute, float targetRoll = 0.0f) {
         const float dp = std::remainder(targetPitch - pitch, 360.0f), dy = std::remainder(targetYaw - yaw, 360.0f);
+        const float dr = std::remainder((absolute ? targetRoll : 0.0f) - roll, 360.0f);
         if (absolute) {
             pend[0] = dp, pend[1] = dy;
         } else {
             pend[0] += dp, pend[1] += dy;
         }
+        pend[2] = dr;
         done = 0.0f;
     }
 
-    void clear() { pend[0] = pend[1] = 0.0f; }
+    // Drops what is still owed; the shown roll stays (dontinterpolate during a link).
+    void clear() { pend[0] = pend[1] = pend[2] = 0.0f; }
+    // No link any more: nothing owed and no link roll.
+    void reset() {
+        clear();
+        roll = 0.0f;
+    }
 
     // The frame fraction is now `frac` (0..1 inside the server interval): shows the share of the owed turn that this advance releases.
     void step(float frac, float& pitch, float& yaw) {
-        if (pend[0] == 0.0f && pend[1] == 0.0f) return;
+        if (pend[0] == 0.0f && pend[1] == 0.0f && pend[2] == 0.0f) return;
         const float s = done < 1.0f ? std::clamp((frac - done) / (1.0f - done), 0.0f, 1.0f) : 1.0f;
         pitch = std::clamp(pitch + pend[0] * s, -89.0f, 89.0f);
         yaw += pend[1] * s;
+        roll += pend[2] * s;
         pend[0] -= pend[0] * s;
         pend[1] -= pend[1] * s;
+        pend[2] -= pend[2] * s;
         done = std::max(done, frac);
     }
 };

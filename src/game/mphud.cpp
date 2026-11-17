@@ -191,9 +191,11 @@ bool World::mpObjectiveVisible(const Objective& o) const {
 }
 
 void World::mpHudFrame() {
-    // objective_onEntity: the position follows the entity (0x8112e04). TODO(spec): [stays: which position of a
-    // brush-model entity the MP original follows was not read; here the raw origin field, (0, 0, 0) for an origin-less
-    // brush trigger, not the box centre of the SP getorigin rule (campaign.md); no shipped MP script passes one].
+    // objective_onEntity: the position follows the entity (0x8112e04 stores the entity number at objective +0x10; the per-frame copy
+    // into each client's player state, 0x8109da2..0x8109de0, carries the number, not a position). TODO(spec): [stays: the MP client side
+    // that resolves the number to a position is not specified, so which position of a brush-model entity it takes is unknown; here
+    // the raw origin field. The only shipped caller passes the flag carrier, a player (maps/mp/gametypes/ctf.gsc:1190);
+    // docs/spec/entities.md "Brush-model positions"].
     for (Objective& o : objectives_) {
         if (o.entity < 0) continue;
         Entity* e = entityByNumber(o.entity);

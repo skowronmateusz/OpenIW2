@@ -253,7 +253,7 @@ notify" script error and the early notify of a replaced request in 0x4d80b0.
   0x4acfb0). It reads cent word +0xa6 (loopSound configstring index), resolves it via 0x62072a / 0x8aed00 (+4 + idx*8), looks up
   (0x428320) and picks (0x428a20) the alias, then 0x4a3610 (play at an origin, owner = word +0xa8, arg9 = 1, sound length through
   0x4a3540) -> 0x4423d0. Origin = cent +0x148, or, when dword +0x120 == 0xffffff, +0x148 plus the brush model centre
-  0xf584a0[word +0xae * 12]. ET_SOUND_BLEND (eType 6) is 0x4ac8a0 via 0x442900 (two aliases at cent +0x12c / +0x12e).
+  0xf584a0[word +0xae * 12] (openiw2: `World::loopSoundOrigin`, entities.md "Brush-model positions"). ET_SOUND_BLEND (eType 6) is 0x4ac8a0 via 0x442900 (two aliases at cent +0x12c / +0x12e).
 - Not decoded (TODO(spec)): the other callers' owners; brass-delay gating (the bolt-action brass is in weapons.md) and the usercmd
   byte +0xd compared with +0x3d in the binocular cancel (0x4dfa8a).
 

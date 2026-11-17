@@ -90,3 +90,51 @@ baking static models into the level; that the entity is then dropped is *inferre
   threads run between passes. `downtown_assault` depends on this: its depot objective ends when an attacker enters `destroy_depot`
   (downtown_assault.gsc:491), which no player can fire.
 - TODO(spec): whether the records survive a save; here they do not, and an actor that still stands in the trigger records again next frame.
+
+## Brush-model positions
+
+VAs in the patch 1.3 SP executable. A map entity with a `*N` model (triggers, `script_brushmodel`, `info_volume`,
+`script_vehicle_collmap`) gets the brush-model flag (ent +0xa1) from SV_SetBrushModel (0x447780, flag at 0x447808), which takes the
+submodel bounds of its model index (state +0xe) and links the entity (0x44b2d0). Its origin is the map's `origin` key; the map
+compiler writes that key only for an entity with an origin brush, so most brush entities (5811 of the 6575 on the 54 shipped
+maps, none of them rotated at spawn) sit at (0, 0, 0) with their brushes in world coordinates. Which position each reader takes:
+
+- The `.origin` field: the field getter (0x4f9d86 -> 0x4f9da0, type 5 at 0x4f9dce) reads the table entry "origin" (0x56f4b8:
+  offset 0xdc, type vector) as a plain vector. An origin-less brush entity reads (0, 0, 0) in the original too, and every script
+  computation on it (distances, `moveto` targets, `linkto` offsets, objective positions given as `.origin`) is the original's.
+  The field setter (0x4f8d10) writes the trajectory base (+0x20), clears its type and delta and writes the current origin (+0xdc),
+  then relinks a linked entity. The header of the MP `sd` gametype asks mappers to give bombzones and bomb triggers an origin
+  brush for the same reason (maps/mp/gametypes/sd.gsc:37, :43); all 45 MP bombzone / bombtrigger brushes have the key.
+- `getorigin` (0x4ee250): the centre of the linked box for a brush model, the current origin otherwise (campaign.md). This is
+  the only script reader that answers the box.
+- Goal entity (`setgoalentity`): the working goal of mode 1 is the goal entity's current origin (0x506135), the zero vector for
+  an origin-less `info_volume`. animscripts/init.gsc:412 gives such a goal to every spawned actor whose `target` names a volume
+  (bergstein, crossroads, demolition, tankhunt, toujane, trainyard); maps/_spawner.gsc then sets a goal node and the volume
+  (:2080, :2089), so the zero goal lasts only until the spawner thread runs, in the original as here.
+- Sound events: `playsound` / `playsoundasmaster` are events on the entity, and the client plays them at the entity state's
+  trajectory base (cent +0xc0, the state at cent +0xa0 plus 0x20; 0x4bb608, 0x4bb63b, 0x4bb690), with no brush-model centre: an
+  origin-less brush entity sounds at (0, 0, 0). The one shipped case found: tankhunt plays `piano_crash` on the first `piano_d`
+  brush (maps/tankhunt.gsc:499), which has no origin key, so the original starts it at the map origin, about 640 units from the
+  falling piano, as openiw2 does. TODO(spec): that brush is still hidden then (`hide`, :478, sets entity flag 0x80 at +0x128,
+  0x4efd10; `exploder(50)` shows it after the sound); whether the client gets an event of a hidden entity was not read. During a
+  scripted move the base is the start of the move phase (movers.md); openiw2 uses the current origin.
+- Loop sounds (`playloopsound`): the entity-loop player (0x4aaf90, sound.md) uses the lerped origin (cent +0x148) and, when the
+  state's solid is 0xffffff (a brush model), adds the centre of the submodel's own bounds (table 0xf584a0, mins + (maxs - mins) / 2
+  of each inline model, filled at 0x4a2b15), not turned by the angles. An origin-less brush entity's loop therefore plays at its
+  box centre.
+- Touch and contact (`istouching`, triggers, `setgoalvolume`, use triggers): SV_EntityContact against the brush at its origin and
+  angles (see "Trigger touch"); radius damage measures to the box (grenades.md, mp-pmove.md).
+- MP `objective_onentity` (1.3 Linux dedicated server 0x8112e04) stores the entity number and marks the entity for broadcast; the
+  only shipped caller passes the flag carrier, a player (maps/mp/gametypes/ctf.gsc:1190).
+
+openiw2: `World::scriptGetOrigin` and `World::loopSoundOrigin` implement the two box rules; before, `playloopsound` played at the
+origin field. Audit: `tests/test_brushorigin.cpp` (`brushorigin_maps`) loads all 54 maps and checks, for every brush entity, the
+origin field against the key, `getorigin` against the linked box (zero only when the box holds the map origin) and the loop-sound
+position against origin + submodel centre (about 50 s). Twelve centres lie outside the world box by design: the vehicle collision
+templates built around the map origin (`script_vehicle_collmap`) and demolition's two `plane_trigger` brushes. `iw2game --report`
+lists, under `[brush_calls]`, every built-in call that got an origin-less brush entity as self or argument (built-in, role,
+script site, count). In a full campaign sweep (plain and autoplay runs of the 39 SP maps) these were `isdefined`, `istouching`, `hide` /
+`show`, `delete`, `getorigin`, `solid` / `notsolid`, `connectpaths` / `disconnectpaths`, `sethintstring`, `linkto` / `unlink`,
+`setgoalvolume`, `setgoalentity`, `moveto`, `getentnum`, `isalive` and one `playsound` (tankhunt, above): apart from `getorigin`, the
+goal entity and that sound, none reads a position; getorigin and the goal entity behave as in the original, and the sound does
+up to the hidden-entity question above.

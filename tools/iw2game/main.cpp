@@ -912,6 +912,29 @@ int main(int argc, char** argv) {
         // (0, 0, 0) shows no compass star (docs/spec/campaign.md), so each such change is logged for the report.
         std::array<std::array<std::array<float, 3>, 8>, 16> objPositions{};
         std::vector<std::string> zeroPositionLines;
+        // Built-in calls that get an origin-less brush-model entity (a "*N" model whose origin field is (0, 0, 0)) as self or as an
+        // argument, by built-in and script site: the candidates of the zero-position class (docs/spec/entities.md "Brush-model positions").
+        std::map<std::string, int> brushCalls;
+        std::map<std::string, int> objectiveZeroCalls;
+        if (!reportFile.empty()) world.vm().builtinHook = [&](const std::string& name, const iw2::script::Value& self, const std::vector<iw2::script::Value>& args,
+                                     const std::string& file, int line) {
+            auto originless = [](const iw2::script::Value& v) {
+                if (!v.isObject()) return false;
+                const iw2::script::Value m = v.asObject()->get("model"), o = v.asObject()->get("origin");
+                return m.isString() && !m.asString().empty() && m.asString()[0] == '*' && o.isVector() &&
+                       o.asVector() == iw2::script::Vec3{0, 0, 0};
+            };
+            std::string role;
+            if (originless(self)) role = "self";
+            for (size_t i = 0; i < args.size(); ++i)
+                if (originless(args[i])) role += (role.empty() ? "arg" : ",arg") + std::to_string(i);
+            if (!role.empty()) ++brushCalls[name + " " + role + " " + file + ":" + std::to_string(line)];
+            // objective built-ins given the zero vector: the script sites behind the `zero` lines (a literal (0, 0, 0) removes a star on purpose)
+            if (name.rfind("objective_", 0) == 0)
+                for (size_t i = 0; i < args.size(); ++i)
+                    if (args[i].isVector() && args[i].asVector() == iw2::script::Vec3{0, 0, 0})
+                        ++objectiveZeroCalls[name + " arg" + std::to_string(i) + " " + file + ":" + std::to_string(line)];
+        };
         world.vm().notifyHook = [&](const iw2::script::ObjectPtr& o, const std::string& ev) {
             if (o->kind != "level") return;
             if (ev == "artillery shell impact") ++strikeImpacts;
@@ -2724,6 +2747,10 @@ int main(int argc, char** argv) {
                 }
             // A visible objective at (0, 0, 0) shows no star (the compass skips a zero position): every such change during the run.
             for (const auto& l : zeroPositionLines) r << "zero " << l << "\n";
+            r << "[brush_calls]\n";
+            for (const auto& [k, n] : brushCalls) r << k << " x" << n << "\n";
+            r << "[objective_zero_calls]\n";
+            for (const auto& [k, n] : objectiveZeroCalls) r << k << " x" << n << "\n";
             r << "[notifies]\n";
             for (const auto& l : notifyTimeline) r << l << "\n";
             r << "[autoplay]\n";

@@ -139,5 +139,16 @@ and unlinks again (:730). The player thus leaves the carrier's collision hull on
 
 Client side: the view origin and view angles of a linked player are interpolated between the last two snapshots by the frame fraction
 (0x4ab740, CG_InterpolatePlayerState 0x4b9940), unless the snapshots' toggle bits (eFlags bit 2, flipped by `dontinterpolate`, 0x4edf90) differ.
+The view angles of an absolute link keep the roll: AxisToAngles (0x424b70) writes pitch, yaw and roll to ps +0x56c; the client's linked-view
+step (0x4aeef0, run from 0x4af51f for pm_type 1) copies all three into the view angles when pm_flags has 0x10000000 (0x4af097..0x4af0b2), the
+refdef angles take them (0x4af552..0x4af56a) and AnglesToAxis builds the view axis from them (0x4af621), with the camera bob added in between
+(0x4ae290). So a tag that lies on its side tilts the picture. duhoc_assault links the player absolutely to the viewcam rig's `tag_guy_feet`
+(duhoc_assault.gsc:1050-1052); during the flip the tag rolls by up to about 140 degrees and it comes to rest at pitch -10, yaw 178, roll 14.
+openiw2: `takePlayerLinkView` carries the roll, `LinkViewSmoother` spreads it over the server interval like pitch and yaw and iw2view shows it
+as the camera roll (the dead view keeps its own roll); a delta link and no link show none. Before, the roll was dropped and the scene was
+drawn level. `iw2view --shot` of a linked player now also takes the absolute link's angles (it kept --yaw / --pitch before). After the copy
+the absolute branch turns the player state's delta angles (ps +0x54 / +0x58 / +0x5c, shorts scaled by 0x591f10) through 0x423fd0 into
+0x621584..0x62158c (0x4af0d7..0x4af128); what reads those is not decoded. The delta-link branch (0x4aef22..) builds the view from the
+link angles and a stored axis (0xf79a64, set once per link at 0x4aef49) and is not decoded either (TODO(spec), linkview.h).
 The port draws the origin from the previous and the current server frame by the fraction and spreads the link's view turn over the interval
 (`LinkViewSmoother`, linkview.h); `dontinterpolate` on the player makes the front end take the new origin at once.

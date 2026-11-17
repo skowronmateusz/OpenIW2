@@ -9364,6 +9364,12 @@ int main(int argc, char** argv) {
                 if (world->playerLinked() && !std::getenv("IW2_SHOT_FREE_CAM")) {
                     const script::Vec3 po = world->player()->obj->get("origin").asVector();
                     cam.pos = {po[0], po[1], po[2] + 60.0f};
+                    // an absolute link also sets the view: the tag's angles, roll included (0x4af097)
+                    if (const auto lv = world->takePlayerLinkView(); lv && lv->absolute) {
+                        cam.pitch = std::clamp(std::remainder(lv->angles[0], 360.0f), -89.0f, 89.0f);
+                        cam.yaw = lv->angles[1];
+                        cam.roll = lv->angles[2];
+                    }
                 }
                 // A following MP spectator (docs/spec/mp-spectate.md) sees the target's view.
                 if (world->multiplayer()) {
@@ -9553,7 +9559,7 @@ int main(int argc, char** argv) {
                 const game::Vec lo = game::leanOffset(cam.yaw, shotLean);
                 cam.pos = cam.pos + Vec3{lo[0], lo[1], lo[2]};
             }
-            cam.fovX43 = game::playerViewFov(game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
+            cam.fovX43 = game::playerViewFov(game::adsFov(world && !world->multiplayer() ? world->cgFov() : 80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
                                       pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(), pweapon.adsZoomingIn()),
                                              world && world->playerOnTurret());
             const auto killcamView = killcamCamera(cam, 1.0f); // killcam: the killer's archived view
@@ -10480,11 +10486,11 @@ int main(int argc, char** argv) {
                 mousePrevX = mouseAccX, mousePrevY = mouseAccY;
                 mouseAccX = mouseAccY = 0.0f;
                 if ((mx != 0.0f || my != 0.0f) && world) {
-                    // CG_CalcFov 0x4ae8c0: look sensitivity is scaled by zoomSens = fovX / cg_fov (80), linear in degrees (0xf791c8, applied in
+                    // CG_CalcFov 0x4ae8c0: look sensitivity is scaled by zoomSens = fovX / cg_fov (World::cgFov in single player), linear in degrees (0xf791c8, applied in
                     // CL_MouseMove 0x409720). The base 0.15 deg per SDL count is kept on purpose: the exe turns raw counts into degrees as
                     // count · sensitivity · m_yaw (default 5 · 0.022 = 0.11), but SDL's xrel is in window points, not raw device counts, so the
                     // constant is a feel calibration for the macOS port rather than a spec value.
-                    const float zoomSens = std::clamp(cam.fovX43 / 80.0f, 0.01f, 1.0f);
+                    const float zoomSens = std::clamp(cam.fovX43 / (world->multiplayer() ? 80.0f : world->cgFov()), 0.01f, 1.0f);
                     // CL_MouseMove: the pitch change is dy * m_pitch (cvar, default 0.022; negative = inverted, set by the invert menus);
                     // the base 0.15 stands for the default.
                     // The base 0.15 deg/count stands for the default sensitivity 5 (cvar sensitivity 1..30 from the options menu).
@@ -11300,7 +11306,7 @@ int main(int argc, char** argv) {
                               << gunBobAngles[2] << " move " << vmMotion.move()[1] << "," << vmMotion.move()[2] << " anim " << pweapon.anim() << " dt " << simDt << "\n";
                 recoil.update([&](const char* k) { return pweapon.number(k); }, int(std::min(simDt, 0.1f) * 1000.0f), true, pweapon.adsFrac());
                 // On a turret the view fov is 55 (0x4ae8a8); the aim fraction is kept for after getting off.
-                cam.fovX43 = game::playerViewFov(game::adsFov(80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
+                cam.fovX43 = game::playerViewFov(game::adsFov(world && !world->multiplayer() ? world->cgFov() : 80.0f, pweapon.number("adsZoomFov") > 0 ? pweapon.number("adsZoomFov") : 80.0f,
                                           pweapon.number("adsZoomInFrac"), pweapon.number("adsZoomOutFrac"), pweapon.adsFrac(),
                                           pweapon.adsZoomingIn()),
                                                  onTurret);
@@ -11439,9 +11445,14 @@ int main(int argc, char** argv) {
                     cam.pitch = std::remainder((*va)[0], 360.0f); // axisAngles gives [0,360): 355 would clamp to 89 (looking down)
                     cam.yaw = (*va)[1];
                 }
-                if (const auto lv = world->takePlayerLinkView()) linkView.push(lv->angles[0], lv->angles[1], cam.pitch, cam.yaw, lv->absolute);
-                if (!world->playerHasLinkParent()) linkView.clear();
-                else linkView.step(lerpFrac, cam.pitch, cam.yaw);
+                if (const auto lv = world->takePlayerLinkView())
+                    linkView.push(lv->angles[0], lv->angles[1], cam.pitch, cam.yaw, lv->absolute, lv->angles[2]);
+                if (!world->playerHasLinkParent()) {
+                    linkView.reset();
+                } else {
+                    linkView.step(lerpFrac, cam.pitch, cam.yaw);
+                    if (!playerDead) cam.roll += linkView.roll; // an absolute link shows the tag's roll (0x4af097), the dead view keeps its own
+                }
                 if (const auto rel = world->takeTurretRelease()) {
                     // Off the turret (0x51b3d0): back where the player got on, in the stance it had (events 0x8c–0x8e).
                     ps.origin = {rel->origin[0], rel->origin[1], rel->origin[2]};

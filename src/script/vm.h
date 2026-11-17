@@ -204,6 +204,8 @@ public:
     // Engine field setters: called before a script stores to a field of an object (object, lower-case field, value); throwing
     // makes the store a script error. Empty by default.
     std::function<void(const ObjectPtr&, const std::string&, const Value&)> fieldStoreHook;
+    // Debug hook: called before every built-in call (name, self, arguments, script file, line). Empty by default.
+    std::function<void(const std::string&, const Value&, const std::vector<Value>&, const std::string&, int)> builtinHook;
     // Debug: with n > 0 the "potential infinite loop" guard kills a script after n backward jumps without suspending instead
     // of after 2500 ms of wall time (0x46aae9, the exe behaviour), so headless runs are deterministic (iw2game sets it).
     void setLoopGuardIterations(size_t n) { loopGuardIterations_ = n; }

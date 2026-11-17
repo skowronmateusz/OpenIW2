@@ -120,6 +120,8 @@ World::World(const fs::Vfs& vfs, std::string mapName, bool multiplayer, std::sha
     // (docs/spec/gsc.md "Developer-only built-ins"). developer_script is read whenever a script file is compiled.
     cvars.emplace("developer", "0");
     cvars.emplace("developer_script", "0");
+    // cg_fov (float 80, 1..160, 0x4a11a9); see cgFov().
+    cvars.emplace("cg_fov", "80");
     vm_.setDeveloperScript([this] {
         const auto it = cvars.find("developer_script");
         return it != cvars.end() && std::atoi(it->second.c_str()) != 0;
@@ -1428,6 +1430,35 @@ void World::setPlayerOrigin(const Vec3& origin, const Vec3& angles) {
     if (mp_ && !mpRemote_ && mp_->localClient >= 0) mpLinkClient(mp_->localClient);
 }
 
+// getorigin (0x4ee250): an entity with the brush-model flag (ent +0xa1, set by SV_SetBrushModel 0x447808, read by SV_LinkEntity 0x44b2d0)
+// answers the centre of its linked world box (absmin +0xc4 / absmax +0xd0, each half-summed); every other entity its currentOrigin (+0xdc).
+// A brush model's box is its model bounds moved by the origin (rotated ones: brushLinkBounds), so a trigger or script_brushmodel without
+// an "origin" key answers its centre, not (0, 0, 0).
+Value World::scriptGetOrigin(const ObjectPtr& o) const {
+    const Value ov = o->get("origin");
+    const Value m = o->get("model");
+    Vec3 mn, mx;
+    if (!m.isString() || !submodelBounds(m.asString(), mn, mx)) return ov;
+    const Vec3 org = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
+    const Value av = o->get("angles");
+    brushLinkBounds(av.isVector() ? av.asVector() : Vec3{0, 0, 0}, mn, mx);
+    return Value(Vec3{org[0] + (mn[0] + mx[0]) * 0.5f, org[1] + (mn[1] + mx[1]) * 0.5f, org[2] + (mn[2] + mx[2]) * 0.5f});
+}
+
+// The client plays an entity's loop sound (0x4aaf90) at its lerped origin (cent +0x148); for a brush model (entity state solid 0xffffff,
+// cent +0x120) it adds the centre of the submodel's own bounds (table 0xf584a0, filled per inline model at 0x4a2b15 as mins + (maxs - mins)
+// / 2), not turned by the entity's angles. So an origin-less brush model's loop plays at its box centre.
+std::optional<Vec3> World::loopSoundOrigin(const ObjectPtr& o) const {
+    const Value ov = o->get("origin");
+    if (!ov.isVector()) return std::nullopt;
+    Vec3 p = ov.asVector();
+    const Value m = o->get("model");
+    Vec3 mn, mx;
+    if (m.isString() && submodelBounds(m.asString(), mn, mx))
+        for (size_t i = 0; i < 3; ++i) p[i] += mn[i] + (mx[i] - mn[i]) * 0.5f;
+    return p;
+}
+
 bool World::submodelBounds(const std::string& model, Vec3& mins, Vec3& maxs) const {
     if (model.size() < 2 || model[0] != '*') return false;
     const int i = std::atoi(model.c_str() + 1);
@@ -2089,24 +2120,10 @@ void World::registerBuiltins() {
     });
     vm_.registerBuiltin("hide", [](CallContext& c) { c.self.asObject()->set("$hidden", Value(true)); return Value(); });
     vm_.registerBuiltin("show", [](CallContext& c) { c.self.asObject()->set("$hidden", Value()); return Value(); });
-    // getorigin (0x4ee250): an entity with the brush-model flag (ent +0xa1, set by SV_SetBrushModel 0x447808, read by SV_LinkEntity
-    // 0x44b2d0) answers the centre of its linked world box (absmin +0xc4 / absmax +0xd0, each half-summed); every other entity its
-    // currentOrigin (+0xdc). A brush model's box is its model bounds moved by the origin (rotated ones: brushLinkBounds), so a
-    // trigger or script_brushmodel without an "origin" key answers its centre, not (0, 0, 0).
-    vm_.registerBuiltin("getorigin", [this](CallContext& c) {
-        const auto o = c.self.asObject();
-        const Value ov = o->get("origin");
-        const Value m = o->get("model");
-        Vec3 mn, mx;
-        if (!m.isString() || !submodelBounds(m.asString(), mn, mx)) return ov;
-        const Vec3 org = ov.isVector() ? ov.asVector() : Vec3{0, 0, 0};
-        const Value av = o->get("angles");
-        brushLinkBounds(av.isVector() ? av.asVector() : Vec3{0, 0, 0}, mn, mx);
-        return Value(Vec3{org[0] + (mn[0] + mx[0]) * 0.5f, org[1] + (mn[1] + mx[1]) * 0.5f, org[2] + (mn[2] + mx[2]) * 0.5f});
-    });
-    // The `.origin` field itself is the raw entity origin (spawnEntity's (0, 0, 0) unless the map ent has an "origin" key); the
-    // brush box rule above is getorigin-only. TODO(spec): [stays: the original's "origin" field getter was not read; the spec
-    // (campaign.md) only says the entity origin stays zero for an origin-less brush model, so the field could differ].
+    // getorigin (0x4ee250): scriptGetOrigin. The `.origin` field is the raw entity origin: the field getter (0x4f9d86 -> 0x4f9da0) reads the
+    // table entry "origin" (0x56f4b8: offset 0xdc, type 5) as a plain vector, so an origin-less brush model reads (0, 0, 0) there in the
+    // original too (docs/spec/entities.md "Brush-model positions").
+    vm_.registerBuiltin("getorigin", [this](CallContext& c) { return scriptGetOrigin(c.self.asObject()); });
     vm_.registerBuiltin("isalive", [this](CallContext& c) {
         Entity* e = entityOf(c.arg(0));
         return Value(e && !e->obj->removed && e->obj->get("health").isDefined() && e->obj->get("health").asInt() > 0);

@@ -18,13 +18,14 @@ int World::startSound(const std::string& alias, const Vec3* origin, ObjectPtr no
 }
 
 void World::registerSoundBuiltins() {
+    // The position of a sound event on self: the client plays playsound / playsoundasmaster at the entity state's trajectory base
+    // (cent +0xc0 = state +0x20, 0x4bb608 / 0x4bb690; the origin field setter 0x4f8d10 writes the same base), with no brush-model centre.
+    // An origin-less brush model therefore sounds at (0, 0, 0) in the original too (docs/spec/entities.md "Brush-model positions").
+    // TODO(spec): [stays: during a scripted move the base is the start of the move phase (movers.md); here the current origin].
     auto originOf = [](const CallContext& c) -> std::optional<Vec3> {
         if (!c.self.isObject()) return std::nullopt;
         const Value o = c.self.asObject()->get("origin");
         if (!o.isVector()) return std::nullopt;
-        // TODO(spec): [stays: the spec says playsound "plays at the entity" but not which position the client takes
-        // for a brush-model entity (its currentOrigin stays (0, 0, 0)); here the origin field, without the getorigin
-        // box rule (campaign.md)].
         return o.asVector();
     };
     // setblur(amount, time) (0x4f3340): sends "scr_blur <time*1000> <amount> 0 1" to the client.
@@ -158,7 +159,7 @@ void World::registerSoundBuiltins() {
         startSound(c.arg(0).toString(), nullptr);
         return Value();
     });
-    vm_.registerBuiltin("playloopsound", [this, originOf](CallContext& c) {
+    vm_.registerBuiltin("playloopsound", [this](CallContext& c) {
         if (c.argc() > 0) noteSound(c.arg(0).toString());
         if (!c.self.isObject()) return Value();
         const auto obj = c.self.asObject();
@@ -169,7 +170,7 @@ void World::registerSoundBuiltins() {
             if (obj->get("$loopalias").toString() == alias) return Value();
             stopSound(h.asInt());
         }
-        const auto o = originOf(c);
+        const auto o = loopSoundOrigin(obj); // the origin, plus the submodel centre for a brush model (0x4aaf90)
         obj->set("$loopsound", Value(int32_t(startSound(alias, o ? &*o : nullptr))));
         obj->set("$loopalias", Value(alias));
         return Value();

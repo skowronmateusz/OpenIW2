@@ -1030,6 +1030,7 @@ void VM::step(Thread& t, bool& suspended) {
                 for (size_t i = 0; i < args.size(); ++i) line += (i ? ", " : "") + args[i].toString();
                 print(line + ") at " + f.file + ":" + std::to_string(in.line));
             }
+            if (builtinHook) builtinHook(builtinNames_[size_t(target)], self, args, f.file, int(in.line));
             CallContext ctx{*this, t, self, args};
             push(builtins_[size_t(target)](ctx));
         } else if (in.flags & CallFlags::Thread) {
