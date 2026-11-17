@@ -23,6 +23,10 @@ Implementation: `src/game/navgen.{h,cpp}` (graph), `src/game/mpbots.{h,cpp}` (co
 - MP maps carry no path nodes: the shipped `maps/mp/*.d3dbsp` have no `node_*` entities and an empty lump 38 (the
   path data of docs/spec/ai.md "Path data"), so the SP planner has no graph there.
 
+## Bot limit
+
+Bots are capped at 31 on a server (`kMaxBots`, `src/game/mpbots.h`) although `sv_maxclients` goes to 64 as in the original. `World::mpAddBot` refuses the 32nd, which covers `--bots` (0..31), the console's `addtestclient [N]` (it prints a message at the cap), the script builtin (returns undefined), the create-server list (up to 31) and the listen server. Bots also need free slots (`sv_maxclients` - 1 for the host). Tests: test_serveroptions, test_svconsole, test_mpui, test_mp64.
+
 ## Client side of a bot
 
 A bot is an ordinary client slot (docs/spec/mp.md "Local clients") connected by `World::mpAddBot` (also the

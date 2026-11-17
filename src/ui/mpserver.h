@@ -136,7 +136,7 @@ std::string weaponList(const MpServerSetup::GetCvar& get);
 void applyWeaponClasses(const MpServerSetup::GetCvar& get, const MpServerSetup::SetCvar& set);
 // Defaults of the extension cvars that are still unset (classes on, 0 bots, skill 1).
 void initDefaults(const MpServerSetup::GetCvar& get, const MpServerSetup::SetCvar& set);
-// Bot count for the listen server: ui_iw2_bots clamped to [0, sv_maxclients - 1] (no clamp when sv_maxclients is unset).
+// Bot count for the listen server: ui_iw2_bots clamped to [0, min(31, sv_maxclients - 1)] (no clamp when sv_maxclients is unset).
 int botCount(const MpServerSetup::GetCvar& get);
 int botSkill(const MpServerSetup::GetCvar& get); // ui_iw2_botskill clamped to 0..3
 // Source of the extension menu "iw2_createserver_ext" (openiw2's own menu text, parsed with MenuLibrary::parseSource).

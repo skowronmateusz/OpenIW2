@@ -487,8 +487,14 @@ void ServerConsole::command(const std::vector<std::string>& a, const std::string
             return;
         }
         const int count = a.size() >= 2 ? std::max(1, std::atoi(a[1].c_str())) : 1;
-        for (int i = 0; i < count; ++i)
+        for (int i = 0; i < count; ++i) {
+            if (host_.botCount() >= host_.botCap()) {
+                out("addtestclient: the server already has " + std::to_string(host_.botCount()) + " bots, the most it takes (" +
+                    std::to_string(host_.botCap()) + ")\n");
+                break;
+            }
             if (!host_.addTestClient()) break;
+        }
     } else if (a.size() == 1 && cvars.count(a[0])) {
         out("\"" + a[0] + "\" is:\"" + cvar(a[0]) + "^7\"\n");
     } else if (a.size() >= 2 && cvars.count(a[0])) {

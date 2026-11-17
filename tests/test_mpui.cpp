@@ -271,6 +271,12 @@ void synthetic() {
     CHECK(ui::mpext::botCount(eg) == 15);
     ec["sv_maxclients"] = "8";
     CHECK(ui::mpext::botCount(eg) == 7);
+    ec.erase("sv_maxclients");
+    ec["ui_iw2_bots"] = "63"; // a stale value from before the cap: no more than 31 bots
+    CHECK(ui::mpext::botCount(eg) == 31);
+    ec["sv_maxclients"] = "64";
+    CHECK(ui::mpext::botCount(eg) == 31);
+    ec["sv_maxclients"] = "8";
     ec["ui_iw2_botskill"] = "9";
     CHECK(ui::mpext::botSkill(eg) == 3);
     // One dvar store: the world's values (set by the gametype) come back to the menu cvars.

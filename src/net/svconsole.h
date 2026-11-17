@@ -42,6 +42,9 @@ public:
     virtual bool readFile(const std::string& name, std::string& out) = 0;
     virtual void quit() = 0;
     virtual bool addTestClient() { return false; }
+    // Bots on the server now and the most it takes (OpenIW2 limit, docs/dedicated-server.md "Bots").
+    virtual int botCount() { return 0; }
+    virtual int botCap() { return 31; }
     // Debug (env IW2_DEBUG_DAMAGE=1, docs/debug-flags.md): damages client victim through the MP damage path.
     virtual bool debugDamage(int victim, int attacker, int amount) { (void)victim, (void)attacker, (void)amount; return false; }
     virtual void cvarChanged(const std::string& name, const std::string& value) { (void)name, (void)value; }

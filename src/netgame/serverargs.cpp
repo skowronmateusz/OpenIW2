@@ -114,7 +114,7 @@ bool parseServerArgs(const std::vector<std::string>& args, ServerArgs& out) {
             if (!value("--seconds", v) || !parseInt("--seconds", v, 0, 31536000, n, out.error)) return false;
             s.seconds = int(n);
         } else if (a == "--bots") {
-            if (!value("--bots", v) || !parseInt("--bots", v, 0, 63, n, out.error)) return false;
+            if (!value("--bots", v) || !parseInt("--bots", v, 0, game::kMaxBots, n, out.error)) return false;
             s.bots = int(n);
         } else if (a == "--bot-skill") {
             if (!value("--bot-skill", v) || !parseInt("--bot-skill", v, 0, 3, n, out.error)) return false;
@@ -192,7 +192,7 @@ std::string serverUsage() {
         "  --port N             UDP port 0..65535 (default 28960; 0 picks a free one)\n"
         "  --maxclients N       player slots 1..64 including bots (default 8); also +set sv_maxclients N.\n"
         "                       A change while the server runs (set sv_maxclients) waits for the next map\n"
-        "  --bots N             add N bots on every map, 0..63, as many as the slots allow (default 0)\n"
+        "  --bots N             add N bots on every map, 0..31, as many as the slots allow (default 0)\n"
         "  --bot-skill N        bot skill 0..3: recruit, regular, hardened, veteran (default 3)\n"
         "  --weapons LIST       allowed weapon classes, comma separated: rifle, bolt, sniper, smg, mg, shotgun,\n"
         "                       grenades, or all (default: all). At least one weapon class is needed and every\n"

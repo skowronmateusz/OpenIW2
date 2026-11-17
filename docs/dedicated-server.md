@@ -31,7 +31,7 @@ code 2, so nothing starts half configured.
 | `<gametype>` | name | `dm` | `dm`, `tdm`, `sd`, `ctf`, `hq`. Only after a map |
 | `--port N` | whole number | 28960 | 0..65535 (0 picks a free port). Also `+set net_port N` |
 | `--maxclients N` | whole number | 8 | 1..64, as in the original game. Players and bots share these slots. Also `+set sv_maxclients N`; a change while a map runs waits for the next map, see [Player slots](#player-slots) |
-| `--bots N` | whole number | 0 | 0..63. Added on every map, as many as the slots allow |
+| `--bots N` | whole number | 0 | 0..31. Added on every map, as many as the slots allow |
 | `--bot-skill N` | whole number | 3 | 0..3, see [Bots](#bots) |
 | `--weapons LIST` | list | everything allowed | `rifle`, `bolt`, `sniper`, `smg`, `mg`, `shotgun`, `grenades`, `all`, comma separated. See [Weapon classes](#weapon-classes) |
 | `--scorelimit N` | whole number | 50 dm, 300 tdm, 10 sd, 5 ctf, 600 hq | 0..100000, 0 = no limit. See [Score and time limits](#score-and-time-limits) |
@@ -103,8 +103,9 @@ rotation). `0` switches that limit off for every gametype.
 
 ## Bots
 
-Bots are an OpenIW2 addition: the original game has none. They count against `--maxclients`; a human who joins
-needs a free slot, so keep a few free (`--maxclients 20 --bots 6`, or `--maxclients 64 --bots 56` for a big game). Bots obey the weapon list, play the objectives of
+Bots are an OpenIW2 addition: the original game has none. At most 31 bots are on a server at once, whatever
+`--maxclients` is (1..64 as in the original). They count against `--maxclients`; a human who joins
+needs a free slot, so keep a few free (`--maxclients 20 --bots 6`, or `--maxclients 64 --bots 31` for a big game). Bots obey the weapon list, play the objectives of
 the gametype and use the navigation graph of the map.
 
 | `--bot-skill` | Name | Reaction | Aim | Sight |
@@ -215,7 +216,7 @@ them, and in the team gametypes a team can have at most half of them. A value ou
 - A smaller number never removes a connected player: the new number is raised to the highest slot in use + 1. The
   bots are added again after the players, as many as fit.
 
-What 64 players cost, measured with OpenIW2 on an Apple Silicon Mac (mp_toujane, 63 bots, one player):
+What 64 players cost, measured with OpenIW2 on an Apple Silicon Mac (mp_toujane, 63 bots, one player; measured before the 31-bot limit, so a server today reaches 64 slots only with players):
 
 - Server CPU: about 7 ms per server frame (20 frames a second), 14 % of one core; with 19 bots about 2.5 ms. Memory
   about 260 MB.
@@ -254,7 +255,7 @@ and from rcon.
 | `tell <number> <text>` | message to one player |
 | `serverinfo` | the cvars the server publishes in its status |
 | `dumpuser <name>` | the connection details a player sent |
-| `addtestclient [N]` | adds N bots (up to the free slots) |
+| `addtestclient [N]` | adds N bots (up to the free slots and 31 bots in all; past that it prints a message) |
 | `set <cvar> <value>` (also `seta`, `sets`) | sets a cvar, for example `set sv_hostname "New name"` |
 | `<cvar>` | prints the cvar's value; `<cvar> <value>` sets it |
 | `exec <file>` | runs a config file from the main folder |

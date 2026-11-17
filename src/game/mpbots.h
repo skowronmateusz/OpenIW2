@@ -16,6 +16,10 @@
 
 namespace iw2::game {
 
+// OpenIW2 limit on bots (the original has none and 64 client slots): at most this many bots on a server at once. World::mpAddBot
+// refuses the next one, which covers the console, the scripts, --bots, the menu and the listen server.
+constexpr int kMaxBots = 31;
+
 // Difficulty preset (docs/spec/mp-bots.md, "Skill presets").
 struct BotSkill {
     const char* name;

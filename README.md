@@ -70,7 +70,7 @@ quality, sound card, the console, and the multiplayer connection speed.
 **Multiplayer** in the main menu switches to the multiplayer menus.
 
 - **Start new server**: choose gametype (Deathmatch, Team Deathmatch, Search and Destroy, Capture the Flag,
-  Headquarters) and map. The **Bots & weapons** page (an OpenIW2 addition) sets up to 15 bots, their skill, and which
+  Headquarters) and map. The **Bots & weapons** page (an OpenIW2 addition) sets up to 31 bots, their skill, and which
   weapon classes are allowed.
 - **Join game** lists servers on your local network and joins the one you pick. To join another server, add it to
   **Favorites** by IP address or DNS name (default port 28960).
@@ -104,7 +104,7 @@ iw2server <main-dir> [<map> [<gametype>]] [options] [+command args ...]
 | `<gametype>` | `dm` | `dm`, `tdm`, `sd`, `ctf`, `hq` |
 | `--port N` | 28960 | 0-65535 (0 = free port) |
 | `--maxclients N` | 8 | 1-64, players and bots together; a change waits for the next map |
-| `--bots N` | 0 | 0-63 |
+| `--bots N` | 0 | 0-31, as many as the free slots allow |
 | `--bot-skill N` | 3 | 0 recruit ... 3 veteran |
 | `--weapons LIST` | all | `rifle`, `bolt`, `sniper`, `smg`, `mg`, `shotgun`, `grenades` |
 | `--scorelimit N`, `--timelimit MIN`, `--roundlimit N` | per gametype | 0 = no limit |

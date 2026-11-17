@@ -4,7 +4,7 @@
 // map runs waits, a fast_restart keeps the slots, the next map load applies it, a smaller count never takes the slot
 // of a connected client, and the bots get what is left.
 //
-// `soak`: a dedicated World with sv_maxclients 64, 63 bots and one network client over loopback, in simulated time.
+// `soak`: a dedicated World with sv_maxclients 64, 31 bots, 32 idle clients and one network client over loopback, in simulated time.
 // The client gets the last client number (63), its snapshots carry the client states of all 64, the scores command
 // lists 64 rows, a 65th client is refused, and the game goes on (kills, no script errors); a bot kills client 63.
 // Prints the measurements: server CPU per frame, snapshot sizes at 60 snapshots a second, the rate they need, peak
@@ -206,11 +206,18 @@ void soak(const char* mainDir, int seconds) {
     server.info().gametype = "dm";
     CHECK(server.open(0));
     int bots = 0;
-    for (int i = 0; i < 63; ++i) {
+    // Bots are capped at game::kMaxBots (31); plain connected clients (no controller, they stay in the connecting state)
+    // take the other slots up to client 62, so the network client gets the last number, 63.
+    for (int i = 0; i < 40; ++i) {
         if (w.mpAddBot() >= 0) ++bots;
         w.frame();
     }
-    CHECK(bots == 63);
+    CHECK(bots == game::kMaxBots && w.mpBotCount() == game::kMaxBots);
+    CHECK(w.mpAddBot() < 0); // the cap, not the slots, refuses it
+    for (int i = bots; i < 63; ++i) {
+        CHECK(w.mpConnect("idle" + std::to_string(i)) >= 0);
+        w.frame();
+    }
     size_t inUse = 0;
     for (const auto& e : w.entities()) inUse += e && !e->obj->removed;
     std::printf("mp64 soak: %d bots, %zu entities in use\n", bots, inUse);
@@ -350,7 +357,7 @@ void soak(const char* mainDir, int seconds) {
     // At the server's rate cap a remote client gets the next snapshot after (min(bytes,1500) * 1000 + 48000) / rate
     // ms (docs/spec/net.md section 4a); 60 a second needs a rate of at least this.
     const double rateFor60 = (std::min(meanBytes, 1500.0) * 1000.0 + 48000.0) / (1000.0 / 60.0);
-    std::printf("mp64 soak: %.0f s simulated in %.1f s wall, %.1f s CPU: %.2f ms CPU per 50 ms server frame (server, 63 bots, "
+    std::printf("mp64 soak: %.0f s simulated in %.1f s wall, %.1f s CPU: %.2f ms CPU per 50 ms server frame (server, 31 bots, "
                 "one client's decode)\n", simSeconds, wall, cpu, cpu * 1000.0 / (simSeconds * 20.0));
     std::printf("mp64 soak: snapshots %lld (%.1f/s), mean %.0f bytes, p95 %d, max %d, %zu of %zu samples over 1400 bytes;"
                 " a remote client needs rate %.0f for 60/s (cap 90000: %.1f/s at the mean)\n",

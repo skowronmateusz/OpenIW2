@@ -162,9 +162,11 @@ void commandLine() {
     // The original's sv_maxclients range 1..64 (docs/spec/mp.md "sv_maxclients"); bots fill at most all but one slot.
     {
         netgame::ServerArgs m;
-        CHECK(parse({"/main", "mp_toujane", "dm", "--maxclients", "64", "--bots", "63"}, m) && m.settings.maxClients == 64 &&
-              m.settings.bots == 63);
-        CHECK(netgame::serverUsage().find("1..64") != std::string::npos && netgame::serverUsage().find("0..63") != std::string::npos);
+        CHECK(parse({"/main", "mp_toujane", "dm", "--maxclients", "64", "--bots", "31"}, m) && m.settings.maxClients == 64 &&
+              m.settings.bots == 31);
+        netgame::ServerArgs z;
+        CHECK(parse({"/main", "mp_toujane", "dm", "--bots", "0"}, z) && z.settings.bots == 0);
+        CHECK(netgame::serverUsage().find("1..64") != std::string::npos && netgame::serverUsage().find("0..31") != std::string::npos);
     }
     netgame::ServerArgs h;
     CHECK(parse({"--help"}, h) && h.help);
@@ -177,7 +179,9 @@ void commandLine() {
         {{"/m", "mp_toujane", "tdm", "--bogus"}, "unknown option --bogus"},
         {{"/m", "mp_toujane", "tdm", "--bots"}, "needs a value"},
         {{"/m", "mp_toujane", "tdm", "--bots", "x"}, "whole number"},
-        {{"/m", "mp_toujane", "tdm", "--bots", "64"}, "0..63"},
+        {{"/m", "mp_toujane", "tdm", "--bots", "32"}, "0..31"},
+        {{"/m", "mp_toujane", "tdm", "--bots", "63"}, "0..31"},
+        {{"/m", "mp_toujane", "tdm", "--bots", "-1"}, "0..31"},
         {{"/m", "mp_toujane", "tdm", "--bot-skill", "4"}, "0..3"},
         {{"/m", "mp_toujane", "tdm", "--maxclients", "0"}, "1..64"},
         {{"/m", "mp_toujane", "tdm", "--maxclients", "65"}, "1..64"},

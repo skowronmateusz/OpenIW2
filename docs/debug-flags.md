@@ -366,8 +366,8 @@ the key shows the localized "cheats not enabled" message. TODO(spec): the origin
   `+set sv_maxclients` work. Console commands (stdin and rcon): `map`, `map_restart`, `fast_restart`, `map_rotate`,
   `status`, `serverinfo`, `kick <name>|all`, `clientkick <n>`, `say`, `tell <n>`, `set`/`seta`, `exec`, `quit`,
   `addtestclient [n]`, `<cvar> [value]`. Cvars: `rcon_password`, `g_password`, `sv_privateClients`,
-  `sv_privatePassword`, `sv_mapRotation`, `sv_mapRotationCurrent`, `sv_hostname`. `--bots N` adds N bots on every
-  map; bots take slots of `sv_maxclients` (1..64; a `set` while a map runs waits for the next map load,
+  `sv_privatePassword`, `sv_mapRotation`, `sv_mapRotationCurrent`, `sv_hostname`. `--bots N` (0..31) adds N bots on every
+  map; at most 31 bots in all (`addtestclient` prints a message at the cap); bots take slots of `sv_maxclients` (1..64; a `set` while a map runs waits for the next map load,
   docs/spec/mp.md "sv_maxclients"). `--weapons LIST` (rifle, bolt, sniper, smg, mg, shotgun, grenades, all) sets
   `iw2_weaponclasses` and the two grenade cvars after the `+exec` lines, so it wins over `server.cfg`; `--scorelimit`,
   `--timelimit` (minutes, decimals allowed) and `--roundlimit` (sd only) set `scr_<gametype>_scorelimit` /

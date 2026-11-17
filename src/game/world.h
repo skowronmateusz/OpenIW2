@@ -536,6 +536,7 @@ public:
     // (addtestclient) driven by the bot controller; it begins, joins and plays through the gametype callbacks by itself.
     // mpNav is the map's generated navigation graph (loaded from the cache or generated on first use).
     int mpAddBot(const std::string& name = std::string());
+    int mpBotCount() const; // bots on the server now (at most kMaxBots, src/game/mpbots.h)
     bool mpIsBot(int client) const;
     void mpKickBot(int client);                          // disconnects a bot and removes it from the controller
     const NavGraph& mpNav();

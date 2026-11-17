@@ -603,16 +603,16 @@ instead of the shared rings, so their size does not depend on sv_maxclients. A l
 sv_maxclients from its World at each map load and resizes its network slots the same way; its menu value takes effect
 at the next map.
 
-openiw2 with 64 clients (tests/test_mp64.cpp `soak`, mp_toujane dm, 63 bots and one network client that plays,
+openiw2 with 64 clients (tests/test_mp64.cpp `soak`, mp_toujane dm, 31 bots, 32 idle clients and one network client that plays,
 standing still, asking for 60 snapshots a second over loopback, Apple Silicon, Release; it gets 60 a second while it
 plays and the 20 of the frames in its killcams): every one of the 64 client states is in each snapshot (the
 6-bit client numbers of the wire, docs/spec/net.md section 11), the network client gets client number 63, about 230
 entities are in use, and the snapshots average about 950 to 980 bytes (95th percentile about 1400 to 1500, the largest about 3.7 KB),
 so a remote client needs a `rate` of about 60000 for 60 a second (the delay of docs/spec/net.md section 4a). The
-server needs about 7 ms of CPU per 50 ms frame with 63 bots and no network client (about 2.4 ms with 19 bots), so the
+server needs about 7 ms of CPU per 50 ms frame with 63 bots and no network client, measured before the bot cap of 31 (about 2.4 ms with 19 bots), so the
 bots' cost grows about linearly; peak memory about 260 MB.
 Tests: tests/test_svconsole.cpp (range, latch, apply), tests/test_net_server.cpp (the slot floor),
-tests/test_serveroptions.cpp (`--maxclients` 1..64, `--bots` 0..63), tests/test_mp64.cpp (64 clients).
+tests/test_serveroptions.cpp (`--maxclients` 1..64, `--bots` 0..31, the bot cap), tests/test_mp64.cpp (64 clients).
 
 ## End of the map
 

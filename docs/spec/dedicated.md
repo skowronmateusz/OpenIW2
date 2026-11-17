@@ -169,7 +169,7 @@ A connectionless packet `rcon <password> <command…>`:
 
 openiw2: test clients (bots) occupy slots of `sv_maxclients` too, so a network client is refused as full when
 network clients plus bots reach it. `sv_maxclients` is 1..64 as in the original and a change waits for the next map
-load (docs/spec/mp.md "sv_maxclients"); the bots of `--bots` are added again at each map after the network clients.
+load (docs/spec/mp.md "sv_maxclients"); the bots of `--bots` (at most 31) are added again at each map after the network clients.
 
 ## 6. Server queries and LAN
 

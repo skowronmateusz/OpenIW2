@@ -1,6 +1,7 @@
 // Dedicated-server console (docs/spec/dedicated.md): map rotation, console commands, status, rcon, and the server
 // hooks for rcon, live getstatus, private slots and the game password over UDP loopback. Headless, no game data.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -64,6 +65,8 @@ struct FakeHost : ConsoleHost {
     }
     void quit() override { quitCalled = true; }
     bool addTestClient() override { return ++bots <= 2; }
+    int botCount() override { return std::min(bots, 2); }
+    int botCap() override { return 2; }
     std::vector<std::string> damages;
     bool debugDamage(int victim, int attacker, int amount) override {
         damages.push_back(std::to_string(victim) + " " + std::to_string(attacker) + " " + std::to_string(amount));
@@ -205,8 +208,14 @@ void testConsole() {
     CHECK(has(con.capture("map missing"), "Can't find map maps/mp/missing.d3dbsp"));
     CHECK(has(con.capture("dumpuser"), "Usage: info <userid>"));
 
-    con.execute("addtestclient 5");  // stops at the first one that fails
-    CHECK(host.bots == 3);
+    {
+        // The bot cap (31 on a real server; 2 in this host) stops the command with a message.
+        const std::string o = con.capture("addtestclient 5");
+        CHECK(host.bots == 2);
+        CHECK(has(o, "the most it takes (2)"));
+        CHECK(has(con.capture("addtestclient"), "the most it takes (2)"));
+        CHECK(host.bots == 2);
+    }
 
     host.run = false;
     CHECK(con.capture("status") == "Server is not running.\n");

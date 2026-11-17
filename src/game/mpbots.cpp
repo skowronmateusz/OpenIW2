@@ -142,6 +142,7 @@ void World::mpSetBotSkill(int skill) {
 int World::mpAddBot(const std::string& name) {
     if (!mp_) return -1;
     if (!bots_) bots_ = std::make_shared<BotSystem>();
+    if (int(bots_->bots.size()) >= kMaxBots) return -1; // the bot cap (kMaxBots)
     const std::string n = name.empty() ? "bot" + std::to_string(bots_->counter) : name;
     const int slot = mpConnect(n);
     if (slot < 0) return -1;
@@ -153,6 +154,8 @@ int World::mpAddBot(const std::string& name) {
     bots_->bots.push_back(b);
     return slot;
 }
+
+int World::mpBotCount() const { return bots_ ? int(bots_->bots.size()) : 0; }
 
 void World::mpKickBot(int client) {
     if (!bots_ || !mpIsBot(client)) return;

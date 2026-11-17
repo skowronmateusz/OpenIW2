@@ -1263,7 +1263,7 @@ if(IW2_TEST_MAIN)
 endif()
 
 # 64 clients (tests/test_mp64.cpp, docs/spec/mp.md "sv_maxclients"): the latched sv_maxclients through the dedicated
-# server loop, and a soak with 63 bots and one network client that prints the CPU, snapshot and memory measurements.
+# server loop, and a soak with 31 bots, idle clients and one network client that prints the CPU, snapshot and memory measurements.
 add_executable(test_mp64 tests/test_mp64.cpp)
 target_link_libraries(test_mp64 PRIVATE iw2_dedicated iw2_netgame)
 if(IW2_TEST_MAIN)

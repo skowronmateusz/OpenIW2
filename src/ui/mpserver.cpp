@@ -1,6 +1,8 @@
 // Multiplayer create-server front end, implemented from the spec (docs/spec/mp-ui.md).
 #include "ui/mpserver.h"
 
+#include "game/mpbots.h" // kMaxBots
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -353,7 +355,7 @@ void initDefaults(const MpServerSetup::GetCvar& get, const MpServerSetup::SetCva
 }
 
 int botCount(const MpServerSetup::GetCvar& get) {
-    int n = std::max(0, std::atoi(get("ui_iw2_bots").c_str()));
+    int n = std::clamp(std::atoi(get("ui_iw2_bots").c_str()), 0, game::kMaxBots);
     const std::string mc = get("sv_maxclients");
     if (!mc.empty()) n = std::min(n, std::max(0, std::atoi(mc.c_str()) - 1));
     return n;
@@ -432,7 +434,7 @@ const char* menuSource() {
 			text " "
 			type 12
 			dvar "ui_iw2_bots"
-			dvarFloatList { "0" 0 "1" 1 "2" 2 "3" 3 "4" 4 "5" 5 "6" 6 "7" 7 "8" 8 "10" 10 "12" 12 "15" 15 "19" 19 "23" 23 "31" 31 "39" 39 "47" 47 "63" 63 }
+			dvarFloatList { "0" 0 "1" 1 "2" 2 "3" 3 "4" 4 "5" 5 "6" 6 "7" 7 "8" 8 "10" 10 "12" 12 "15" 15 "19" 19 "23" 23 "31" 31 }
 			rect 50 120 320 13
 			textalignx 170
 			textaligny 11
