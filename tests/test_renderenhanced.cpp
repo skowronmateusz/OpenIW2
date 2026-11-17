@@ -44,6 +44,70 @@ int main() {
     chk(sunShadowQuality(1).resolution == 1024 && sunShadowQuality(1).cascades == 1, __LINE__);
     chk(sunShadowQuality(3).cascades == 2 && sunShadowQuality(3).radius[0] < sunShadowQuality(3).radius[1], __LINE__);
 
+    // World shadow cascades: quality levels, cached centre snapping, caster reach.
+    chk(worldShadowQuality(0).cascades == 0 && worldShadowQuality(1).cascades == 2 && worldShadowQuality(2).cascades == 3, __LINE__);
+    chk(worldShadowQuality(2).radius[0] < worldShadowQuality(2).radius[1] && worldShadowQuality(2).radius[1] < worldShadowQuality(2).radius[2], __LINE__);
+    {
+        const float c0[3] = {1010.0f, -490.0f, 30.0f}, c1[3] = {1040.0f, -470.0f, 30.0f}, c2[3] = {1400.0f, -490.0f, 30.0f};
+        const auto a = cascadeCentre(c0, 1000.0f), b = cascadeCentre(c1, 1000.0f), d = cascadeCentre(c2, 1000.0f);
+        chk(a == b && a != d && a[0] == 1000.0f && a[1] == -500.0f, __LINE__); // small moves keep the cascade, a quarter radius moves it
+        const float dx = c0[0] - a[0], dy = c0[1] - a[1];
+        chk(std::sqrt(dx * dx + dy * dy) <= 1000.0f * 0.25f * 0.71f, __LINE__); // the camera stays near the centre
+        const float up[3] = {0.0f, 0.0f, 1.0f}, ctr[3] = {0, 0, 100}, mn[3] = {-500, -500, -200}, mx[3] = {500, 500, 3000};
+        chk(casterReachForBounds(up, ctr, mn, mx, 100.0f) == 2900.0f && casterReachForBounds(up, ctr, mn, mx, 5000.0f) == 5000.0f, __LINE__);
+    }
+    {
+        std::map<std::string, std::string> cv{{"r_enhanced", "1"}};
+        auto get = [&](const char* n) { const auto it = cv.find(n); return it == cv.end() ? std::string() : it->second; };
+        chk(enhancedSettings(get).worldShadows == 1, __LINE__);
+        cv["r_enhPreset"] = "0";
+        chk(enhancedSettings(get).worldShadows == 0, __LINE__);
+        cv["r_enhPreset"] = "2";
+        chk(enhancedSettings(get).worldShadows == 2, __LINE__);
+        cv["r_enhWorldShadows"] = "0";
+        chk(enhancedSettings(get).worldShadows == 0, __LINE__);
+    }
+
+    // GTAO slice integral: an open slice gives cos n + n sin n (1 for a normal along the view vector; the slices projected-normal weights
+    // make the sum over slices 1), a slice closed at the view vector 0, horizons past the hemisphere clamp to it, monotonic in each horizon.
+    for (float n : {-1.0f, -0.4f, 0.0f, 0.3f, 1.1f}) {
+        chk(near(gtaoSliceVisibility(n, n - 1.5707963f, n + 1.5707963f), std::cos(n) + n * std::sin(n), 1e-4f), __LINE__);
+        chk(near(gtaoSliceVisibility(n, 0.0f, 0.0f), 0.0f, 1e-4f), __LINE__); // horizons are h0 <= 0 <= h1 (view-vector relative)
+        chk(near(gtaoSliceVisibility(n, -9.0f, 9.0f), gtaoSliceVisibility(n, n - 1.5707963f, n + 1.5707963f), 1e-5f), __LINE__);
+    }
+    chk(near(gtaoSliceVisibility(0.0f, -1.5707963f, 1.5707963f), 1.0f, 1e-5f), __LINE__);
+    chk(near(gtaoSliceVisibility(0.0f, -1.5707963f, 0.0f), 0.5f, 1e-4f), __LINE__);
+    {
+        float prev = -1.0f;
+        for (float h1 = 0.0f; h1 <= 1.5707963f; h1 += 0.05f) {
+            const float v = gtaoSliceVisibility(0.0f, -1.5707963f, h1);
+            chk(v >= prev - 1e-6f, __LINE__);
+            prev = v;
+        }
+    }
+    {
+        std::map<std::string, std::string> cv{{"r_enhanced", "1"}, {"r_enhPreset", "0"}};
+        auto get = [&](const char* n) { const auto it = cv.find(n); return it == cv.end() ? std::string() : it->second; };
+        chk(!enhancedSettings(get).ao && !enhancedSettings(get).contactShadows, __LINE__);
+        cv["r_enhPreset"] = "1";
+        cv["r_enhAOStrength"] = "3";
+        chk(enhancedSettings(get).ao && enhancedSettings(get).contactShadows && enhancedSettings(get).aoStrength == 1.0f, __LINE__);
+    }
+
+    // TAA jitter: Halton values, within half a pixel, distinct over the 8-frame cycle, zero mean-ish.
+    chk(near(halton(1, 2), 0.5f) && near(halton(2, 2), 0.25f) && near(halton(3, 2), 0.75f) && near(halton(1, 3), 1.0f / 3.0f), __LINE__);
+    {
+        float sx = 0, sy = 0;
+        for (uint32_t f = 0; f < 8; ++f) {
+            const auto j = taaJitter(f, 1920, 1080);
+            chk(std::fabs(j[0]) <= 1.0f / 1920.0f + 1e-7f && std::fabs(j[1]) <= 1.0f / 1080.0f + 1e-7f, __LINE__);
+            for (uint32_t g = 0; g < f; ++g) chk(taaJitter(g, 1920, 1080) != j, __LINE__);
+            sx += j[0] * 1920.0f, sy += j[1] * 1080.0f;
+        }
+        chk(std::fabs(sx / 8.0f) < 0.15f && std::fabs(sy / 8.0f) < 0.15f, __LINE__);
+        chk(taaJitter(3, 100, 100) == taaJitter(11, 100, 100), __LINE__);
+    }
+
     // Tone curve: identity up to the knee, continuous with slope 1 there, monotonic, below white, approaching white.
     for (float x = 0.0f; x <= kToneKnee; x += 0.01f) chk(toneShoulder(x, kToneKnee, 1.0f) == x, __LINE__);
     {

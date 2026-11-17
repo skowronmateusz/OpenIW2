@@ -194,8 +194,12 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
         float sunE = u.ambient.w;
         float3 amb = u.sunDirection.w > 0.5 ? probe_lighting(normalize(in.normal), u) : u.ambient.rgb;
         if (du.lattice.w > 0.5) amb = enh_lattice_probe(wpE, normalize(in.normal), du, lattice, sunE);
-        if (sunE * ndl > 0.0 && du.step.w < 0.5) sunE *= enh_sun_shadow(wpE, normalize(in.normal), eu, shadowMap, shadowSampler);
-        light = amb + sunE * ndl * u.sunColor.rgb;
+        if (sunE * ndl > 0.0 && du.step.w < 0.5) {
+            const float2 wv = enh_world_sun(wpE, normalize(in.normal), ENH_WORLD_SHADOWS);
+            sunE = min(sunE, mix(1.0, wv.x, wv.y)) * enh_sun_shadow(wpE, normalize(in.normal), eu, shadowMap, shadowSampler);
+        }
+        const float2 aoE = ENH_AO(in.position);
+        light = amb * aoE.x + sunE * aoE.y * ndl * u.sunColor.rgb;
 #else
         const float3 amb = u.sunDirection.w > 0.5 ? probe_lighting(normalize(in.normal), u) : u.ambient.rgb;
         light = amb + u.ambient.w * ndl * u.sunColor.rgb;
@@ -206,9 +210,17 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
         // Static models: the baked light holds sunVis * N.L * sun (lmUv.x = the model's sun visibility); the dynamic shadow takes
         // its share of that term away.
         const float ndlS = max(dot(normalize(in.normal), u.sunDirection.xyz), 0.0);
-        if (ndlS * in.lmUv.x > 0.0) {
-            const float shS = enh_sun_shadow(in.eyeVec + eu.eye.xyz, normalize(in.normal), eu, shadowMap, shadowSampler);
-            light -= (1.0 - shS) * in.lmUv.x * ndlS * u.sunColor.rgb;
+        if (ndlS > 0.0) { // the world cascades replace the model's one baked sun bit where they reach; moving casters multiply
+            const float3 wpS = in.eyeVec + eu.eye.xyz;
+            const float2 wv = enh_world_sun(wpS, normalize(in.normal), ENH_WORLD_SHADOWS);
+            float visS = mix(in.lmUv.x, wv.x, wv.y);
+            if (visS > 0.0) visS *= enh_sun_shadow(wpS, normalize(in.normal), eu, shadowMap, shadowSampler);
+            light += (visS - in.lmUv.x) * ndlS * u.sunColor.rgb;
+            const float2 aoS = ENH_AO(in.position); // AO on the baked probe part, the contact shadow on the sun part
+            const float3 sunPart = min(light, float3(visS * ndlS) * u.sunColor.rgb);
+            light = (light - sunPart) * aoS.x + sunPart * aoS.y;
+        } else {
+            light *= ENH_AO(in.position).x;
         }
 #endif
     } else if (u.params.y > 0.5) {
@@ -219,7 +231,14 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
         float sunVis = lmSun.sample(sunSampler, in.lmUv).r;
         float ndl = max(dot(normalize(in.normal), u.sunDirection.xyz), 0.0);
 #ifdef IW2_ENHANCED
-        if (sunVis > 0.0 && ndl > 0.0) sunVis *= enh_sun_shadow(in.eyeVec + eu.eye.xyz, normalize(in.normal), eu, shadowMap, shadowSampler);
+        if (sunVis > 0.0 && ndl > 0.0) {
+            const float3 wpW = in.eyeVec + eu.eye.xyz;
+            const float2 wv = enh_world_sun(wpW, normalize(in.normal), ENH_WORLD_SHADOWS);
+            sunVis = min(sunVis, mix(1.0, wv.x, wv.y)) * enh_sun_shadow(wpW, normalize(in.normal), eu, shadowMap, shadowSampler);
+        }
+        const float2 aoW = ENH_AO(in.position);
+        lm *= aoW.x;
+        sunVis *= aoW.y;
 #endif
         light = lm + sunVis * ndl * u.sunColor.rgb;
     } else {
@@ -376,10 +395,21 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
     float4 b = lmCoeffs.sample(lmSampler, in.lmUv, 2);
     // The three lightmap coefficient weights come from sampling the lightmap-weights texture ($lightmapweights, gfx 0x1000ff10) with the normal-map sample
     const float4 cw = lmWeightMap.sample(lmWeightSampler, float2(ns.a, ns.g));
+#ifdef IW2_ENHANCED
+    float3 lm = float3(dot(r, cw), dot(g, cw), dot(b, cw)) * u.params.z;
+#else
     const float3 lm = float3(dot(r, cw), dot(g, cw), dot(b, cw)) * u.params.z;
+#endif
 #ifdef IW2_ENHANCED
     float vis = lmSun.sample(sunSampler, in.lmUv).r;
-    if (vis > 0.0) vis *= enh_sun_shadow(in.eyeVec + eu.eye.xyz, normalize(in.normal), eu, shadowMap, shadowSampler);
+    if (vis > 0.0 && dot(u.sunDirection.xyz, n) > 0.0) {
+        const float3 wpW = in.eyeVec + eu.eye.xyz;
+        const float2 wv = enh_world_sun(wpW, n, ENH_WORLD_SHADOWS);
+        vis = min(vis, mix(1.0, wv.x, wv.y)) * enh_sun_shadow(wpW, n, eu, shadowMap, shadowSampler);
+    }
+    const float2 aoW = ENH_AO(in.position);
+    lm *= aoW.x;
+    vis *= aoW.y;
 #else
     const float vis = lmSun.sample(sunSampler, in.lmUv).r; // * dynamicShadowSampler (no dynamic shadows: 1)
 #endif
@@ -463,7 +493,13 @@ fragment float4 fs_probe(ProbeVertexOut in [[stage_in]],
 #ifdef IW2_ENHANCED
     const float3 wpE = in.eyeVec + eu.eye.xyz;
     if (du.lattice.w > 0.5) probe = enh_lattice_probe(wpE, n, du, lattice, vis);
-    if (vis > 0.0 && dot(u.sunDirection.xyz, n) > 0.0) vis *= enh_sun_shadow(wpE, n, eu, shadowMap, shadowSampler);
+    if (vis > 0.0 && dot(u.sunDirection.xyz, n) > 0.0) {
+        const float2 wv = enh_world_sun(wpE, n, ENH_WORLD_SHADOWS);
+        vis = min(vis, mix(1.0, wv.x, wv.y)) * enh_sun_shadow(wpE, n, eu, shadowMap, shadowSampler);
+    }
+    const float2 aoP = ENH_AO(in.position);
+    probe *= aoP.x;
+    vis *= aoP.y;
 #endif
     const float3 sunDiffuse = vis * max(dot(u.sunDirection.xyz, n), 0.0) * u.sunColor.rgb;
     float3 spec = float3(0.0);

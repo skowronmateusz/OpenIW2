@@ -1,8 +1,9 @@
 # Enhanced rendering mode
 
 An openiw2 addition with no counterpart in the original game. The default renderer keeps the original look (docs/spec);
-`r_enhanced 1` switches to a second set of pipelines with dynamic sun shadows of moving objects, a 16-bit float scene, a
-highlight tone curve, bloom of the light above display white, mild auto exposure and extended dynamic range (EDR) output.
+`r_enhanced 1` switches to a second set of pipelines with dynamic sun shadows of moving objects, cached sun shadow cascades of
+the world, ambient occlusion and contact shadows, temporal anti-aliasing, a 16-bit float scene, a highlight tone curve, bloom of
+the light above display white, mild auto exposure and extended dynamic range (EDR) output.
 Everything here is our own design from public techniques (references at the end). It is not derived from the shipped game
 shaders, and none of it is a specification of the original.
 
@@ -23,11 +24,17 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhAutoExposure` | preset | Mild auto exposure (off in the low preset). |
 | `r_enhExposureBias` | 0 | Exposure offset in EV (-2..2). |
 | `r_enhEdr` | 1 | EDR output on displays that offer it (Liquid Retina XDR, HDR monitors). |
-| `r_enhMotionDebug` | 0 | 1 shows the motion vectors instead of the frame (debug). |
+| `r_enhWorldShadows` | preset | Sun shadow cascades of the world and static models: 0 off, 1 two cascades (1100 / 4500 units), 2 three (700 / 2400 / 8000). |
+| `r_enhAO` | preset | Ground-truth ambient occlusion on the baked and probe light. |
+| `r_enhAOStrength` | 0.7 | AO strength (0..1). |
+| `r_enhContactShadows` | preset | Short screen-space rays towards the sun (thin and near contact). |
+| `r_enhTAA` | preset | Temporal anti-aliasing. |
+| `r_enhMotionDebug` | 0 | Debug views instead of the frame: 1 the motion vectors, 2 AO (red) and contact shadow (green). |
 
 All are read once when the renderer starts, from the profile's config or `--cvar name=value` (case-insensitive). A per-feature
-cvar that is set overrides the preset. Presets: low = shadows 1, no auto exposure; medium = shadows 2; high = shadows 3. The
-other features are on in every preset. Gameplay, the server and the network are not affected; it is render-only.
+cvar that is set overrides the preset. Presets: low = moving-caster shadows 1, no world cascades, no auto exposure, AO, contact
+shadows or TAA; medium = shadows 2, two world cascades; high = shadows 3, three world cascades. The other features are on in
+every preset. Gameplay, the server and the network are not affected; it is render-only.
 
 ## How it stays apart from the default look
 
@@ -66,6 +73,52 @@ enhanced mode fills that factor with a real-time shadow map of the objects the b
 Limitations: casters are the entities the view already gathers, so an actor behind the camera that is not gathered casts
 nothing into view. A brush mover's baked shadow stays where the bake put it when it moves. The view model (arms and gun)
 receives shadows but does not cast. Effect sprites neither cast nor receive.
+
+## World sun shadows (cached cascades)
+
+The world and the static models cast into two or three sun shadow cascades around the camera (`r_enhWorldShadows`). The world
+does not move, so each cascade is rendered only when its centre, the camera position snapped to a quarter of the cascade's
+radius (`game::cascadeCentre`), changes, or the map changes; otherwise the depth texture of the previous frames is reused. The
+casters are the world soups and static models (LOD 0) whose box projects into the cascade, opaque and alpha-tested surfaces.
+The depth range reaches the top of the world box (`game::casterReachForBounds`).
+
+Combination with the original data:
+- lightmapped world: `sun visibility = min(baked mask, cascade)`. The bake already holds every static shadow, including those of
+  the invisible sun blockers (`caulk_shadow` brushes, which are not drawn and so not in the cascades); the minimum keeps them and
+  adds what the coarse mask (8-16 units per texel) blurs away: sharp edges near the camera.
+- static models: the cascade replaces the one baked sun bit per model (docs/spec/lightgrid.md "Implementation"), so a house or
+  a crate is lit and shaded per pixel.
+- entities: `min(lattice sun bit, cascade)`.
+- moving casters multiply on top (above).
+Beyond the last cascade the original mask alone remains (fade over its outer 15 %).
+
+## Ambient occlusion and contact shadows
+
+From `$floatz` (built every frame in this mode, static models included, unlike the default path where `r_depthPrepassModels 0`
+keeps them out), at half size:
+- ambient occlusion: ground-truth AO (Jimenez et al. 2016), two slices per pixel rotated by interleaved gradient noise, six
+  horizon steps per side within 40 units, normals reconstructed from the depth; samples on or under the tangent plane do not
+  occlude, so flat surfaces stay open (`game::gtaoSliceVisibility` holds the slice integral).
+- contact shadows: twelve steps of a ray from the surface towards the sun over 18 units in `$floatz`; an occluder up to 10
+  units thick shadows the sun term. Only within about 1200 units of the camera.
+A 5 × 5 depth-aware blur follows. AO scales the baked lightmap, the light-grid probe and the static models' baked light, at
+`r_enhAOStrength`; the contact shadow scales the sun term only. Blended surfaces, effect sprites and the view model take
+neither (they are not in the opaque depth).
+
+## Temporal anti-aliasing
+
+- Jitter: every scene pass of a frame uses the same sub-pixel offset of the projection, Halton (2, 3) over 8 frames
+  (`game::taaJitter`).
+- Motion vectors: the `$floatz` pass writes a second target, the difference of the unjittered current and previous clip
+  positions per pixel. A model's previous position uses its previous transform, and for skinned models its previous skinned
+  vertices (the previous frame's skin arena is kept in a copy). Items are matched across frames by their model (skinned models
+  have one per entity) and order. The view model, which moves with the camera, gets none. The sky takes the camera motion of a
+  far point.
+- Resolve (Karis 2014), before exposure, bloom and the tone curve: the history at the pixel's previous position, sampled with a
+  5-tap Catmull-Rom filter, clipped to the variance box of the current 3 × 3 neighbourhood in YCoCg (values compressed by
+  `c / (1 + max(c))`), the velocity taken at the nearest depth of that neighbourhood, blended 90 % history. The history
+  restarts after a map change or a resize. A light unsharp mask in the tone pass offsets the softening.
+- Limitations: blended effects have no motion vectors of their own (the clip keeps their ghosting short); MSAA stays on.
 
 ## Per-pixel light grid
 
@@ -113,36 +166,39 @@ usual (HUD included) in display encoding, then a final pass applies the `r_gamma
 linear with the sRGB transfer function extended past 1. The tone curve's white follows the window's HDR headroom every frame.
 Screenshots stay 8-bit SDR images with white 1.
 
-## Motion vectors
+## Motion vectors without TAA
 
-The camera motion of the static scene: from `$floatz` (clip z of the opaque surfaces, built at the start of the frame) and this
-frame's inverse view-projection, each pixel's world position is projected with the previous frame's view-projection; the
-vector is the NDC difference (RG16F, `game::cameraMotion`). Only the debug view consumes it so far (`r_enhMotionDebug 1`,
-which also turns on the `$floatz` build). Object motion (rigid entities' previous transforms and the previous frame's skinned
-vertices) comes with temporal anti-aliasing in a later stage.
+With TAA off, the debug view (`r_enhMotionDebug 1`) shows the camera motion of the static scene reconstructed from `$floatz`
+and the two frames' view-projections (`game::cameraMotion`). With TAA on it shows the motion vectors of the TAA pass.
 
 ## Cost
 
 GPU-bound frame time with `IW2_BENCH_GPU` (frames submitted back to back), 1920 × 1080, 4x MSAA, Apple M4 Pro (20-core GPU),
 the duhoc_assault beach reference spot (docs/debug-flags.md `IW2_BENCH`), yaw 180 (483 shadow casters):
 
-| Configuration | GPU-bound ms | vs default |
+| Configuration | GPU-bound ms | vs enhanced off |
 |---|---|---|
-| default | 2.15 | |
-| enhanced, every feature off (16F scene) | 2.29 | +0.14 |
-| + sun shadows medium (receivers: world, models) | 2.90 | +0.61 |
-| + light grid per pixel | 2.49 | +0.20 |
-| + tone curve and bloom | 2.57 | +0.28 |
-| + auto exposure | 2.58 | +0.29 |
+| default | 2.06 | |
+| enhanced, every feature off (16F scene) | 2.28 | |
+| + moving-caster sun shadows low / medium / high | 2.64 / 2.99 / 3.26 | +0.36 / +0.71 / +0.98 |
+| + world cascades, two / three | 2.94 / 3.16 | +0.66 / +0.88 |
+| + light grid per pixel | 2.40 | +0.12 |
+| + tone curve and bloom | 2.45 | +0.17 |
+| + auto exposure | 2.46 | +0.18 |
+| + AO / contact shadows / both | 2.79 / 2.44 / 2.70 | +0.51 / +0.16 / +0.42 |
+| + TAA | 2.87 | +0.59 |
+| preset low / medium / high | 3.00 / 4.89 / 5.46 | |
 
-The CPU cost is the shadow pass encode (about +0.2 ms for 483 casters) and the lattice lookups (under 0.1 ms with the cache).
+The CPU cost is the shadow pass encode (about +0.2 ms for 483 casters), the lattice lookups (under 0.1 ms with the cache) and,
+in a frame where a world cascade moves, its caster list and draw (about 1 ms CPU and 0.5 ms GPU, `IW2_ENH_CASCADE_REDRAW`).
 
 ## Tests
 
 `tests/test_renderenhanced.cpp`: settings and presets, the tone curve (identity below the knee, C1, monotonic, bounded), the
 sRGB transfer, exposure target and frame-rate independent adaptation, bloom levels and threshold, the sun shadow fit (sphere
-inside the map, depth order towards the sun, texel-stable snapping, a vertical sun), the cascade fade, the probe lattice and
-the camera motion reconstruction.
+inside the map, depth order towards the sun, texel-stable snapping, a vertical sun), the cascade fade, the world cascade centre
+snapping and caster reach, the GTAO slice integral, the TAA jitter sequence, the probe lattice and the camera motion
+reconstruction.
 
 ## References
 
@@ -152,5 +208,9 @@ the camera motion reconstruction.
 - D. Holbert, "Normal offset shadows", GDC 2011.
 - J. Jimenez, "Next generation post processing in Call of Duty: Advanced Warfare", SIGGRAPH 2014 Advances course
   (13-tap downsample and tent upsample bloom, interleaved gradient noise).
+- J. Jimenez, X. Wu, A. Pesce, A. Jarabo, "Practical real-time strategies for accurate indirect occlusion", SIGGRAPH 2016
+  course (GTAO).
+- B. Karis, "High quality temporal supersampling", SIGGRAPH 2014 Advances course (TAA); M. Salvi, "An excursion in temporal
+  supersampling", GDC 2016 (variance clipping).
 - E. Reinhard et al., "Photographic tone reproduction for digital images", SIGGRAPH 2002 (log-average luminance and key).
 - IEC 61966-2-1 (sRGB transfer function).

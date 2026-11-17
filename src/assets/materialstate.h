@@ -89,12 +89,18 @@ constexpr bool surfaceDrawsBefore(const SurfaceKey& a, const SurfaceKey& b) {
     return a.entity < b.entity;
 }
 // Technique slots of a technique set (1.3 DLL name table filled at 0x1001c0d1; docs/spec/material.md "Model lighting techniques").
-inline constexpr int kTechBuildFloatz = 2, kTechLightmap = 6, kTechLightProbe = 9, kTechLightProbeSModel = 12, kTechLightProbeSModelCached = 15;
+inline constexpr int kTechDepthPrepass = 0, kTechBuildFloatz = 2, kTechLightmap = 6, kTechLightProbe = 9, kTechLightProbeSModel = 12, kTechLightProbeSModelCached = 15;
 // The technique slot the lit walk (or any walk) uses for a list surface, without the fog offset (0x1002f730): a surface without a
 // lightmap (layer 31) in the lightmap walk takes a light-probe slot by its entity: a world surface (entity 0x800 and up, clamped to
 // 0x7fe by the walker) the light probe, a static model list entity (0x7ff) the cached static-model probe, a scene entity record of
 // type 2 (a static model turned into a record by 0x10023fe0) the static-model probe, any other scene entity the light probe.
-constexpr int litTechniqueSlot(int walkType, int layer, int entity, int recordType) {
+// While r_depthPrepassModels is off (its default), the depth prepass and build floatz walks skip (-1) a static model list entity and
+// a scene entity record of type <= 2 without record flag 0x100.
+constexpr int litTechniqueSlot(int walkType, int layer, int entity, int recordType, int recordFlags = 0, bool depthPrepassModels = false) {
+    if (!depthPrepassModels && (walkType == kTechDepthPrepass || walkType == kTechBuildFloatz)) {
+        if (entity == kStaticModelEntity) return -1;
+        if (entity < 0x7fe && recordType <= 2 && !(recordFlags & 0x100)) return -1;
+    }
     if (walkType != kTechLightmap || layer != 31) return walkType;
     if (entity >= 0x7fe && entity != kStaticModelEntity) return kTechLightProbe;
     if (entity == kStaticModelEntity) return kTechLightProbeSModelCached;

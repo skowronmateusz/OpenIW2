@@ -183,6 +183,7 @@ struct Camera {
     float yaw = 0, pitch = 0; // degrees; yaw 0 looks along +X, pitch positive looks down (game convention)
     float roll = 0;           // degrees; positive tilts the right vector down (AngleVectors)
     float fovX43 = 80.0f;     // cg_fov: horizontal field of view of a 4:3 screen (default 80, 0x4a10f0)
+    float jitterX = 0, jitterY = 0; // enhanced TAA: sub-pixel offset of the projection in NDC (0 = none; docs/render-enhanced.md)
 
     Vec3 forward() const {
         const float cy = std::cos(yaw * float(M_PI) / 180), sy = std::sin(yaw * float(M_PI) / 180);
@@ -200,7 +201,10 @@ struct Camera {
         const float fovY = 2.0f * std::atan(std::tan(fovX43 * float(M_PI) / 360.0f) * 0.75f);
         const float t = 1.0f / std::tan(fovY / 2);
         const Mat4 proj = depthHack ? game::depthHackProjection(t / aspect, t, zNear) : game::sceneProjection(t / aspect, t, zNear);
-        return mul(proj, view);
+        Mat4 m = mul(proj, view);
+        if (jitterX != 0.0f || jitterY != 0.0f) // clip.xy += jitter * clip.w
+            for (int c = 0; c < 4; ++c) m[size_t(c * 4)] += jitterX * m[size_t(c * 4 + 3)], m[size_t(c * 4 + 1)] += jitterY * m[size_t(c * 4 + 3)];
+        return m;
     }
 };
 
@@ -502,6 +506,7 @@ struct GpuModel {
     SDL_GPUBuffer* vertices = nullptr;
     uint32_t vertexOffset = 0; // byte offset of the model's vertices in `vertices` (the skinned entities share Scene::skinArena)
     bool arenaVertices = false; // `vertices` is (or was, before it grew) Scene::skinArena, not a buffer of this model
+    uint32_t arenaBytes = 0;    // the size of its vertices in the arena (last skinning)
     SDL_GPUBuffer* indices = nullptr;
     std::vector<Batch> batches;
     // Model-space box of the drawn vertices (for skinned models: of the last skinning), for the dynamic light surface test.
@@ -1112,6 +1117,7 @@ public:
             if (j.gm) {
                 if (j.gm->vertices && !j.gm->arenaVertices) SDL_ReleaseGPUBuffer(dev_, j.gm->vertices);
                 j.gm->vertices = scene_.skinArena, j.gm->vertexOffset = j.offset, j.gm->arenaVertices = true;
+                j.gm->arenaBytes = uint32_t(j.skin->base.size() * sizeof(GpuVertex));
             }
         up_.flush();
         jobs_.clear();
@@ -2456,7 +2462,70 @@ struct Renderer {
     bool edrOut = false;          // the window swapchain is extended linear (RGBA16F); the frame is presented by fs_enh_present
     float edrWhite = 1.0f;        // tone curve white (display encoding) for the current EDR headroom; 1 for SDR
     bool captureMode = false;     // captureRgba: an 8-bit SDR image even when the window is EDR
-    struct EnhFragUC { float shadowVP[2][16]; float shadowParams[4]; float shadowSphere[2][4]; float eye[4]; float shadowBias[4]; };
+    struct EnhFragUC {
+        float shadowVP[2][16]; float shadowParams[4]; float shadowSphere[2][4]; float eye[4]; float shadowBias[4];
+        float worldVP[3][16]; float worldSphere[3][4]; float worldParams[4]; float worldBias[4];
+        float aoParams[4];
+    };
+    SDL_GPUGraphicsPipeline *enhAoPipe = nullptr, *enhAoBlurPipe = nullptr, *enhAoViewPipe = nullptr;
+    // TAA: motion vectors from the $floatz pass, the history, the previous frame's skinned vertices and item transforms.
+    SDL_GPUGraphicsPipeline* enhFloatzVelPipes[3][3] = {};
+    SDL_GPUGraphicsPipeline* enhTaaPipe = nullptr;
+    SDL_GPUTexture* taaHist[2] = {nullptr, nullptr};
+    uint32_t taaW = 0, taaH = 0;
+    int taaCur = 0;
+    bool taaHistValid = false;
+    uint64_t taaScene = 0;
+    uint32_t taaFrame = 0;
+    Mat4 taaPrevVP{};
+    bool taaPrevVPValid = false;
+    bool velocityFromFloatz = false; // this frame's velocityTex came from the $floatz pass
+    struct PrevItem { Mat4 transform{}; uint32_t arenaOffset = 0, arenaBytes = 0; bool arena = false; };
+    std::unordered_map<uint64_t, PrevItem> prevItems, curItems;
+    std::vector<uint64_t> itemKeys;
+    SDL_GPUBuffer* prevArena = nullptr;
+    uint32_t prevArenaCap = 0;
+    bool prevArenaValid = false;
+    void ensureVelocity(uint32_t w, uint32_t h) {
+        if (velocityTex && velocityW == w && velocityH == h) return;
+        if (velocityTex) SDL_ReleaseGPUTexture(dev, velocityTex);
+        SDL_GPUTextureCreateInfo ti{};
+        ti.type = SDL_GPU_TEXTURETYPE_2D;
+        ti.format = SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
+        ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        ti.width = w, ti.height = h, ti.layer_count_or_depth = 1, ti.num_levels = 1;
+        velocityTex = SDL_CreateGPUTexture(dev, &ti);
+        if (!velocityTex) sdlFail("velocity texture");
+        velocityW = w, velocityH = h;
+    }
+    void enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam);
+    void enhFloatzVelocity(SDL_GPUCommandBuffer* cmd, const SDL_GPUColorTargetInfo& fz, const SDL_GPUDepthStencilTargetInfo& fds, const Scene& scene,
+                           const Camera& cam, const Camera& camIn, const std::vector<DrawItem>& items, uint32_t w, uint32_t h);
+    void enhTaaEndFrame(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& camIn, uint32_t w, uint32_t h, const std::vector<DrawItem>& items);
+    SDL_GPUTexture* aoTex[2] = {nullptr, nullptr}; // half size: x AO, y contact shadow, z view depth
+    uint32_t aoW = 0, aoH = 0;
+    SDL_GPUTexture* aoWhite = nullptr;              // 1 x 1 (1, 1) while AO is off or not built
+    bool aoReady = false;
+    uint32_t aoFrame = 0;
+    void enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam);
+    // Cached world sun cascades (docs/render-enhanced.md "World sun shadows"): one depth texture each, re-rendered when the snapped
+    // centre or the scene changes.
+    struct WorldCascade {
+        SDL_GPUTexture* tex = nullptr;
+        SDL_GPUBuffer* indices = nullptr;
+        uint32_t indexCap = 0;
+        std::vector<Batch> batches; // ranges into `indices`
+        std::array<float, 3> centre{};
+        uint64_t sceneSerial = 0;
+        bool valid = false;
+        float vp[16] = {};
+        float depthBias = 0.0f;
+    } worldCascades[3];
+    int worldCascadesNow = 0;
+    EnhFragUC enhFragPending{}; // the frame's slot-1 uniforms (aoParams.xy completed once the frame size is known)
+    uint64_t worldBoundsOf = 0;
+    float worldMins[3] = {0, 0, 0}, worldMaxs[3] = {0, 0, 0};
+    void renderWorldCascade(SDL_GPUCommandBuffer* cmd, const Scene& scene, int c, const game::WorldShadowQuality& q, const float sun[3]);
     struct EnhDrawUC { float lattice[4], origin[4], step[4]; };
     SDL_GPUGraphicsPipeline *enhTonemapPipe = nullptr, *enhLumPipe = nullptr, *enhExpoPipe = nullptr, *enhBloomPrePipe = nullptr,
                             *enhBloomDownPipe = nullptr, *enhBloomUpPipe = nullptr, *enhPresentPipe = nullptr, *enhPresentSdrPipe = nullptr,
@@ -2485,9 +2554,10 @@ struct Renderer {
     uint32_t latticeCap = 0; // bytes
     std::vector<float> latticeData;
     std::vector<EnhDrawUC> itemLattice; // parallel to the frame's items
+    float sunDirForAO[3] = {0, 0, 1};
     std::unordered_map<int64_t, std::array<float, 28>> gridCache; // light-grid node -> 6 coefficient vectors + sun (e[27] < 0: no node)
     uint64_t gridCacheOf = 0; // Scene::serial of the cached samples
-    struct EnhStats { int casters = 0; uint32_t casterTriangles = 0; int latticeItems = 0; int latticePoints = 0; } enhStats;
+    struct EnhStats { int casters = 0; uint32_t casterTriangles = 0; int latticeItems = 0; int latticePoints = 0; int cascadeRenders = 0; } enhStats;
 
     template <class Mk>
     void initEnhanced(Mk& mk, const SDL_GPUShaderCreateInfo& vs, const SDL_GPUVertexBufferDescription& vbd, const SDL_GPUVertexAttribute* attrs) {
@@ -2502,6 +2572,54 @@ struct Renderer {
         enhPresentSdrPipe = mk("fs_enh_present", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
         enhVelocityPipe = mk("fs_enh_velocity", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT);
         enhMotionViewPipe = mk("fs_enh_motion_view", 1, 0, false, true);
+        enhAoPipe = mk("fs_enh_ao", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhAoBlurPipe = mk("fs_enh_ao_blur", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhAoViewPipe = mk("fs_enh_ao_view", 1, 0, false, true);
+        enhTaaPipe = mk("fs_enh_taa", 4, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        {   // $floatz + motion vectors (two targets); the previous position comes from a second vertex stream
+            SDL_GPUShaderCreateInfo sv = vs;
+            sv.entrypoint = "vs_floatz_vel";
+            sv.num_uniform_buffers = 1;
+            SDL_GPUShaderCreateInfo sf = vs;
+            sf.entrypoint = "fs_floatz_vel";
+            sf.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+            sf.num_samplers = 1;
+            sf.num_uniform_buffers = 1;
+            SDL_GPUShader* svs = SDL_CreateGPUShader(dev, &sv);
+            SDL_GPUShader* sfs = SDL_CreateGPUShader(dev, &sf);
+            if (!svs || !sfs) sdlFail("floatz velocity shaders");
+            const SDL_GPUVertexBufferDescription vb2[2] = {vbd, {1, sizeof(GpuVertex), SDL_GPU_VERTEXINPUTRATE_VERTEX, 0}};
+            const SDL_GPUVertexAttribute va[4] = {attrs[0], attrs[2], attrs[3], {9, 1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, pos)}};
+            SDL_GPUColorTargetDescription ct[2]{};
+            ct[0].format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+            ct[1].format = SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
+            SDL_GPUGraphicsPipelineCreateInfo pi{};
+            pi.vertex_shader = svs;
+            pi.fragment_shader = sfs;
+            pi.vertex_input_state.vertex_buffer_descriptions = vb2;
+            pi.vertex_input_state.num_vertex_buffers = 2;
+            pi.vertex_input_state.vertex_attributes = va;
+            pi.vertex_input_state.num_vertex_attributes = 4;
+            pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+            pi.rasterizer_state.front_face = kFrontFace;
+            pi.depth_stencil_state.enable_depth_test = true;
+            pi.depth_stencil_state.enable_depth_write = true;
+            pi.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+            pi.target_info.color_target_descriptions = ct;
+            pi.target_info.num_color_targets = 2;
+            pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+            pi.target_info.has_depth_stencil_target = true;
+            for (int lvl = 0; lvl < 3; ++lvl)
+                for (int c = 0; c < 3; ++c) {
+                    pi.rasterizer_state.cull_mode = c == 0 ? SDL_GPU_CULLMODE_NONE : c == 1 ? SDL_GPU_CULLMODE_BACK : SDL_GPU_CULLMODE_FRONT;
+                    pi.rasterizer_state.enable_depth_bias = lvl > 0;
+                    pi.rasterizer_state.depth_bias_slope_factor = float(lvl) * kPolygonOffsetScale;
+                    enhFloatzVelPipes[lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+                    if (!enhFloatzVelPipes[lvl][c]) sdlFail("floatz velocity pipeline");
+                }
+            SDL_ReleaseGPUShader(dev, svs);
+            SDL_ReleaseGPUShader(dev, sfs);
+        }
         {   // sun shadow casters: depth only
             SDL_GPUShaderCreateInfo sv = vs;
             sv.entrypoint = "vs_shadow";
@@ -2558,10 +2676,22 @@ struct Renderer {
             return t;
         };
         shadowDummy = tex(SDL_GPU_TEXTUREFORMAT_D32_FLOAT, 1, 1, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
+        aoWhite = tex(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 1, 1, SDL_GPU_TEXTUREUSAGE_SAMPLER);
+        {
+            const uint8_t white[4] = {255, 255, 255, 255};
+            Uploader up(dev);
+            up.texture(aoWhite, 0, 0, 1, 1, white, 4);
+        }
         const game::SunShadowQuality q = game::sunShadowQuality(enh.sunShadows);
         if (q.resolution > 0)
             shadowTex = tex(SDL_GPU_TEXTUREFORMAT_D32_FLOAT, uint32_t(q.resolution * q.cascades), uint32_t(q.resolution),
                             SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
+        {
+            const game::WorldShadowQuality wq = game::worldShadowQuality(enh.worldShadows);
+            for (int c = 0; c < wq.cascades; ++c)
+                worldCascades[c].tex = tex(SDL_GPU_TEXTUREFORMAT_D32_FLOAT, uint32_t(wq.resolution), uint32_t(wq.resolution),
+                                           SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
+        }
         lumLevels = 9; // 256 .. 1
         lumTex = tex(SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT, 256, 256, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, uint32_t(lumLevels));
         for (SDL_GPUTexture*& e : expoTex) e = tex(SDL_GPU_TEXTUREFORMAT_R32_FLOAT, 1, 1, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
@@ -2602,14 +2732,23 @@ struct Renderer {
     }
 
     // Binds the enhanced resources of fs_main / fs_spec (shadow map at `shadowSlot`, the lattice buffer) and pushes the draw's lattice.
-    void enhBind(SDL_GPURenderPass* pass, SDL_GPUCommandBuffer* cmd, uint32_t shadowSlot, const DrawItem* it, const std::vector<DrawItem>& items) {
+    void enhBind(SDL_GPURenderPass* pass, SDL_GPUCommandBuffer* cmd, uint32_t shadowSlot, const DrawItem* it, const std::vector<DrawItem>& items,
+                 bool noScreenSpace = false) {
         if (!enh.enabled) return;
-        const SDL_GPUTextureSamplerBinding sb{shadowCascadesNow > 0 ? shadowTex : shadowDummy, shadowCmpSampler};
-        SDL_BindGPUFragmentSamplers(pass, shadowSlot, &sb, 1);
+        const SDL_GPUTextureSamplerBinding sb[4] = {
+            {shadowCascadesNow > 0 ? shadowTex : shadowDummy, shadowCmpSampler},
+            {worldCascadesNow > 0 ? worldCascades[0].tex : shadowDummy, shadowCmpSampler},
+            {worldCascadesNow > 1 ? worldCascades[1].tex : shadowDummy, shadowCmpSampler},
+            {worldCascadesNow > 2 ? worldCascades[2].tex : shadowDummy, shadowCmpSampler}};
+        SDL_BindGPUFragmentSamplers(pass, shadowSlot, sb, 4);
+        const SDL_GPUTextureSamplerBinding ab{aoReady ? aoTex[0] : aoWhite, clampSampler};
+        SDL_BindGPUFragmentSamplers(pass, shadowSlot + 4, &ab, 1);
         SDL_BindGPUFragmentStorageBuffers(pass, 0, &latticeBuf, 1);
         EnhDrawUC d{};
         if (it && size_t(it - items.data()) < itemLattice.size()) d = itemLattice[size_t(it - items.data())];
         if (it && it->effects) d.step[3] = 1.0f; // sprites and clouds take no dynamic sun shadow
+        // AO / contact shadows come from the opaque depth: not for blended surfaces, sprites or the view model
+        if (noScreenSpace || (it && (it->effects || it->depthMax < 1.0f))) d.origin[3] = 1.0f;
         SDL_PushGPUFragmentUniformData(cmd, 2, &d, sizeof d);
     }
 
@@ -2651,7 +2790,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo fmain = fs;
         SDL_GPUShader* overlayFsh = nullptr; // enhanced: the HUD keeps the default fs_main (no shadow / lattice resources)
         if (enh.enabled) {
-            fmain.num_samplers = 5;        // + the sun shadow map (texture 4)
+            fmain.num_samplers = 9;        // + the moving-caster sun shadow map (texture 4), three world cascades, the AO image
             fmain.num_uniform_buffers = 3; // + EnhFragU (slot 1) and EnhDrawU (slot 2)
             fmain.num_storage_buffers = 1; // the light-grid lattices
             SDL_GPUShaderCreateInfo plain = fs;
@@ -2688,7 +2827,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo sfsi = fs;
         sfsi.entrypoint = "fs_spec";
         sfsi.num_samplers = 8;
-        if (enh.enabled) sfsi.num_samplers = 9, sfsi.num_uniform_buffers = 3, sfsi.num_storage_buffers = 1;
+        if (enh.enabled) sfsi.num_samplers = 13, sfsi.num_uniform_buffers = 3, sfsi.num_storage_buffers = 1;
         SDL_GPUShaderCreateInfo dfsi = fs;
         dfsi.entrypoint = "fs_dlight";
         dfsi.num_samplers = 3;
@@ -2707,7 +2846,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo pfsi = fs;
         pfsi.entrypoint = "fs_probe";
         pfsi.num_samplers = 5;
-        if (enh.enabled) pfsi.num_samplers = 6, pfsi.num_uniform_buffers = 3, pfsi.num_storage_buffers = 1;
+        if (enh.enabled) pfsi.num_samplers = 10, pfsi.num_uniform_buffers = 3, pfsi.num_storage_buffers = 1;
         SDL_GPUShader* probeVsh = SDL_CreateGPUShader(dev, &pvsi);
         SDL_GPUShader* probeFsh = SDL_CreateGPUShader(dev, &pfsi);
         if (!probeVsh || !probeFsh) sdlFail("probe shaders");
@@ -3421,8 +3560,15 @@ struct Renderer {
         SDL_EndGPURenderPass(p);
     }
 
-    void drawFrame(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam,
+    void drawFrame(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& camIn,
                    const std::vector<DrawItem>& items, const std::vector<Quad2D>& overlay, float blur) {
+        // Enhanced TAA (docs/render-enhanced.md "Temporal anti-aliasing"): every scene pass of the frame uses the jittered camera.
+        Camera cam = camIn;
+        const bool taaOn = enh.enabled && enh.taa;
+        if (taaOn) {
+            const auto j = game::taaJitter(taaFrame, int(w), int(h));
+            cam.jitterX = j[0], cam.jitterY = j[1];
+        }
         ensureDepth(w, h);
         cullWorld(cmd, scene, cam, cam.viewProj(float(w) / float(h)));
         if (enh.enabled) enhPrepare(cmd, scene, cam, items);
@@ -3533,7 +3679,7 @@ struct Renderer {
             for (const DrawItem& it : items)
                 if (it.model)
                     for (const Batch& b : it.model->batches) postSunWanted = postSunWanted || b.fxKind != 0;
-        if (post && !noPostSun && enh.enabled && enh.motionDebug) postSunWanted = true; // the motion vectors read $floatz
+        if (post && !noPostSun && enh.enabled && (enh.motionDebug || enh.ao || enh.contactShadows || enh.taa)) postSunWanted = true; // read $floatz
         bool postSunReady = false;
         if (postSunWanted && scene.outdoor.valid() && outdoorFor != &scene.outdoor) {
             if (outdoorTex) SDL_ReleaseGPUTexture(dev, outdoorTex);
@@ -3571,6 +3717,9 @@ struct Renderer {
             SDL_GPUDepthStencilTargetInfo fds = ds;
             fds.store_op = SDL_GPU_STOREOP_DONT_CARE;
             fds.texture = depth; // $floatz is single-sampled
+            velocityFromFloatz = false;
+            if (taaOn) enhFloatzVelocity(cmd, fz, fds, scene, cam, camIn, items, w, h); // enhanced TAA: $floatz + motion vectors
+            else {
             SDL_GPURenderPass* fp = SDL_BeginGPURenderPass(cmd, &fz, 1, &fds);
             stats.phase = 1;
             auto drawFz = [&](const Batch& b, VU u) {
@@ -3589,8 +3738,13 @@ struct Renderer {
             if (culledIndexBuf) { // the static world after the cull (cullWorld)
                 SDL_GPUBufferBinding cib{culledIndexBuf, 0};
                 SDL_BindGPUIndexBuffer(fp, &cib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                // r_depthPrepassModels (dvar 0x101ce750, default 0): the build floatz walk gets no technique for static models
+                // (0x1002f730; docs/spec/material.md "Model lighting techniques"), so their batches (lightmap -2) stay out of $floatz.
+                // (Enhanced keeps them: its AO and motion vectors read $floatz; docs/render-enhanced.md.)
                 for (const Batch& b : culledBatches)
-                    if (b.indexCount) drawFz(b, vu);
+                    if (b.indexCount && (enh.enabled || b.lightmap != -2 ||
+                                         assets::litTechniqueSlot(assets::kTechBuildFloatz, 31, assets::kStaticModelEntity, 2) >= 0))
+                        drawFz(b, vu);
             }
             SDL_GPUBufferBinding fib{scene.indices, 0};
             SDL_BindGPUIndexBuffer(fp, &fib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -3616,6 +3770,8 @@ struct Renderer {
             }
             SDL_EndGPURenderPass(fp);
             stats.phase = 0;
+            }
+            if (enh.enabled && (enh.ao || enh.contactShadows)) enhAO(cmd, w, h, cam);
         }
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &ds);
 
@@ -3763,7 +3919,7 @@ struct Renderer {
                     {scene.specularity, clampSampler},
                     detailBinding(b.detail)};
                 SDL_BindGPUFragmentSamplers(pass, 0, tex, 5);
-                enhBind(pass, cmd, 5, &it, items);
+                enhBind(pass, cmd, 5, &it, items, p == Pass::Blend || p == Pass::Additive || p == Pass::Multiply);
                 FragmentUniforms fu = {
                     {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
                     {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, specColorScaleDvar()},
@@ -3785,7 +3941,7 @@ struct Renderer {
             SDL_GPUTextureSamplerBinding tex[4] = {
                 {scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {elm.coeffs, clampSampler}, {elm.sun, clampSampler}, detailBinding(b.detail)};
             SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
-            enhBind(pass, cmd, 4, &it, items);
+            enhBind(pass, cmd, 4, &it, items, p == Pass::Blend || p == Pass::Additive || p == Pass::Multiply);
             FragmentUniforms fu = {
                 {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
                 {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -3881,7 +4037,7 @@ struct Renderer {
                                                            {scene.textures[b.detail >= 0 ? size_t(scene.details[size_t(b.detail)].tex) : 0],
                                                             matSampler(b.detail >= 0 ? scene.details[size_t(b.detail)].state : uint8_t(0))}};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 8);
-                    enhBind(pass, cmd, 8, nullptr, items);
+                    enhBind(pass, cmd, 8, nullptr, items, p == Pass::Blend);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, specColorScale},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -3900,7 +4056,7 @@ struct Renderer {
                     SDL_GPUTextureSamplerBinding tex[4] = {
                         {scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {lm.coeffs, clampSampler}, {lm.sun, clampSampler}, detailBinding(b.detail)};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
-                    enhBind(pass, cmd, 4, nullptr, items);
+                    enhBind(pass, cmd, 4, nullptr, items, p == Pass::Blend || p == Pass::Additive || p == Pass::Multiply);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -4079,7 +4235,7 @@ struct Renderer {
                     SDL_GPUTextureSamplerBinding tex[4] = {
                         {scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {elm.coeffs, clampSampler}, {elm.sun, clampSampler}, detailBinding(b.detail)};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
-                    enhBind(pass, cmd, 4, &it, items);
+                    enhBind(pass, cmd, 4, &it, items, true);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -4175,6 +4331,8 @@ struct Renderer {
         }
         if (nq && !post) drawOverlay(pass, cmd, scene, overlay, nq);
         SDL_EndGPURenderPass(pass);
+        if (taaOn && velocityFromFloatz) enhTaaResolve(cmd, w, h, scene, cam);
+        else taaHistValid = false;
         if (enh.enabled) enhPost(cmd, w, h, cam, postSunWanted);
         if (post) {
             // Screen filter chain, docs/spec/effects.md "Glow and the blurred screen". Passes alternate between the pingpong images, the
@@ -4216,8 +4374,9 @@ struct Renderer {
             const bool bloomOn = enh.enabled && enh.bloom && !bloomTex.empty();
             const SDL_GPUTextureSamplerBinding toneIn[3] = {{sceneTex, clampSampler}, {bloomOn ? bloomTex[0] : (expoTex[0] ? expoTex[0] : sceneTex), clampSampler},
                                                             {expoTex[expoCur] ? expoTex[expoCur] : sceneTex, pointClampSampler}};
-            const float toneU[8] = {enh.tonemap ? 1.0f : 0.0f, captureMode ? 1.0f : edrWhite, enh.bloomIntensity, enh.autoExposure ? 1.0f : 0.0f,
-                                    enh.exposureBias, bloomOn ? 1.0f : 0.0f, game::kToneKnee, 0.0f};
+            const float toneU[12] = {enh.tonemap ? 1.0f : 0.0f, captureMode ? 1.0f : edrWhite, enh.bloomIntensity, enh.autoExposure ? 1.0f : 0.0f,
+                                     enh.exposureBias, bloomOn ? 1.0f : 0.0f, game::kToneKnee, 0.0f,
+                                     1.0f / float(w), 1.0f / float(h), enh.enabled && enh.taa && taaHistValid ? 0.35f : 0.0f, 0.0f};
             SDL_GPUTexture* enhToneSrc = nullptr;
             if (enh.enabled && blurA > 0.0f) {
                 if (!toneTex || toneW != w || toneH != h) {
@@ -4274,7 +4433,13 @@ struct Renderer {
                     SDL_PushGPUFragmentUniformData(cmd, 0, toneU, sizeof toneU);
                 }
                 SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
-                if (enh.motionDebug && velocityTex && postSunWanted) {
+                if (enh.motionDebug == 2 && aoReady) {
+                    SDL_BindGPUGraphicsPipeline(p2, enhAoViewPipe);
+                    const SDL_GPUTextureSamplerBinding ab{aoTex[0], clampSampler};
+                    SDL_BindGPUFragmentSamplers(p2, 0, &ab, 1);
+                    SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
+                }
+                if (enh.motionDebug == 1 && velocityTex && (postSunWanted || velocityFromFloatz)) {
                     SDL_BindGPUGraphicsPipeline(p2, enhMotionViewPipe);
                     const SDL_GPUTextureSamplerBinding vb{velocityTex, pointClampSampler};
                     SDL_BindGPUFragmentSamplers(p2, 0, &vb, 1);
@@ -4357,6 +4522,7 @@ struct Renderer {
             if (nq) drawOverlay(p2, cmd, scene, overlay, nq);
             SDL_EndGPURenderPass(p2);
         }
+        if (taaOn) enhTaaEndFrame(cmd, scene, camIn, w, h, items);
     }
 
     SDL_GPUBuffer* ensureOverlayIndices() {
@@ -4407,10 +4573,44 @@ struct Renderer {
 void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& cam, const std::vector<DrawItem>& items) {
     enhStats = {};
     EnhFragUC f{};
+    sunDirForAO[0] = scene.sunDirection.x, sunDirForAO[1] = scene.sunDirection.y, sunDirForAO[2] = scene.sunDirection.z;
     f.eye[0] = cam.pos.x, f.eye[1] = cam.pos.y, f.eye[2] = cam.pos.z;
     shadowCascadesNow = 0;
     const game::SunShadowQuality q = game::sunShadowQuality(enh.sunShadows);
     const bool sunLit = scene.sunColor.x + scene.sunColor.y + scene.sunColor.z > 0.0f;
+    worldCascadesNow = 0;
+    const game::WorldShadowQuality wq = game::worldShadowQuality(enh.worldShadows);
+    if (wq.cascades > 0 && sunLit && !scene.batches.empty()) {
+        if (worldBoundsOf != scene.serial) { // the world's box: every soup and static model
+            worldBoundsOf = scene.serial;
+            for (int a = 0; a < 3; ++a) worldMins[a] = 1e30f, worldMaxs[a] = -1e30f;
+            for (const auto& b : scene.soupBoxes)
+                for (int a = 0; a < 3; ++a) worldMins[a] = std::min(worldMins[a], b[size_t(a)]), worldMaxs[a] = std::max(worldMaxs[a], b[size_t(a + 3)]);
+            for (const StaticModelInstance& m : scene.staticModels)
+                for (int a = 0; a < 3; ++a) worldMins[a] = std::min(worldMins[a], m.mins[a]), worldMaxs[a] = std::max(worldMaxs[a], m.maxs[a]);
+        }
+        const float sun[3] = {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z};
+        const float camP[3] = {cam.pos.x, cam.pos.y, cam.pos.z};
+        for (int c = 0; c < wq.cascades; ++c) {
+            WorldCascade& wc = worldCascades[c];
+            const auto centre = game::cascadeCentre(camP, wq.radius[c]);
+            static const bool forceCascades = std::getenv("IW2_ENH_CASCADE_REDRAW") != nullptr; // debug: re-render every frame (cost of a move)
+            if (!wc.valid || wc.sceneSerial != scene.serial || wc.centre != centre || forceCascades) {
+                wc.centre = centre;
+                wc.sceneSerial = scene.serial;
+                renderWorldCascade(cmd, scene, c, wq, sun);
+                wc.valid = true;
+            }
+            std::memcpy(f.worldVP[c], wc.vp, sizeof(f.worldVP[c]));
+            f.worldSphere[c][0] = wc.centre[0], f.worldSphere[c][1] = wc.centre[1], f.worldSphere[c][2] = wc.centre[2], f.worldSphere[c][3] = wq.radius[c];
+            f.worldBias[c] = wc.depthBias;
+        }
+        worldCascadesNow = wq.cascades;
+        f.worldParams[0] = float(wq.cascades);
+        f.worldParams[1] = 1.0f / float(wq.resolution);
+        f.worldParams[2] = 1.5f;
+        f.worldParams[3] = float(wq.pcfTaps);
+    }
     if (shadowTex && q.resolution > 0 && sunLit) {
         // Sun shadow map of the moving casters (docs/render-enhanced.md "Sun shadows"): actors, vehicles, script models and brush
         // movers. Static models and the world are in the baked sun mask already; the receivers multiply both.
@@ -4575,7 +4775,337 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
             SDL_EndGPUCopyPass(cp);
         }
     }
+    aoReady = false;
+    if (enh.ao || enh.contactShadows) {
+        f.aoParams[2] = enh.ao ? enh.aoStrength : 0.0f;
+        f.aoParams[3] = enh.contactShadows ? 1.0f : 0.0f;
+    }
+    enhFragPending = f;
     SDL_PushGPUFragmentUniformData(cmd, 1, &f, sizeof f);
+}
+
+// One cached world cascade (docs/render-enhanced.md "World sun shadows"): the static world and the static models (LOD 0) whose box
+// reaches the cascade's square in the light plane, opaque and alpha-tested surfaces, into its own depth texture.
+void Renderer::renderWorldCascade(SDL_GPUCommandBuffer* cmd, const Scene& scene, int c, const game::WorldShadowQuality& q, const float sun[3]) {
+    WorldCascade& wc = worldCascades[c];
+    const float centre[3] = {wc.centre[0], wc.centre[1], wc.centre[2]};
+    const float R = q.radius[c];
+    const float reach = game::casterReachForBounds(sun, centre, worldMins, worldMaxs, R);
+    const game::SunShadowFit fit = game::fitSunShadow(sun, centre, R, reach, q.resolution);
+    std::memcpy(wc.vp, fit.viewProj.data(), sizeof wc.vp);
+    wc.depthBias = 2.0f * fit.texelWorld / fit.depthRange;
+    // Caster ranges: pieces whose box projects into the cascade square.
+    auto boxIn = [&](const float* mn, const float* mx) {
+        float lo[2] = {1e30f, 1e30f}, hi[2] = {-1e30f, -1e30f};
+        for (int k = 0; k < 8; ++k) {
+            const float p[3] = {(k & 1) ? mx[0] : mn[0], (k & 2) ? mx[1] : mn[1], (k & 4) ? mx[2] : mn[2]};
+            const auto cl = game::mulPoint(fit.viewProj, p);
+            for (int a = 0; a < 2; ++a) lo[a] = std::min(lo[a], cl[size_t(a)]), hi[a] = std::max(hi[a], cl[size_t(a)]);
+        }
+        return hi[0] >= -1.0f && lo[0] <= 1.0f && hi[1] >= -1.0f && lo[1] <= 1.0f;
+    };
+    std::vector<uint32_t> idx;
+    wc.batches.clear();
+    for (const Batch& src : scene.batches) {
+        if ((src.pass != Pass::Opaque && src.pass != Pass::AlphaTest) || src.fxKind != 0) continue;
+        Batch b = src;
+        b.firstIndex = uint32_t(idx.size());
+        for (uint32_t k = 0; k < src.pieceCount; ++k) {
+            const CullPiece& pc = scene.cullPieces[src.pieceFirst + k];
+            const float *mn, *mx;
+            if (pc.owner >= 0) {
+                if (pc.lod != 0) continue;
+                mn = scene.staticModels[size_t(pc.owner)].mins, mx = scene.staticModels[size_t(pc.owner)].maxs;
+            } else {
+                mn = &scene.soupBoxes[size_t(-pc.owner - 1)][0], mx = &scene.soupBoxes[size_t(-pc.owner - 1)][3];
+            }
+            if (!boxIn(mn, mx)) continue;
+            idx.insert(idx.end(), scene.cpuIndices.begin() + pc.firstIndex, scene.cpuIndices.begin() + pc.firstIndex + pc.indexCount);
+        }
+        b.indexCount = uint32_t(idx.size()) - b.firstIndex;
+        if (b.indexCount) wc.batches.push_back(b);
+    }
+    const uint32_t bytes = uint32_t(idx.size() * 4);
+    if (bytes > wc.indexCap) {
+        if (wc.indices) SDL_ReleaseGPUBuffer(dev, wc.indices);
+        SDL_GPUBufferCreateInfo bi{};
+        bi.usage = SDL_GPU_BUFFERUSAGE_INDEX;
+        bi.size = wc.indexCap = std::max(bytes, wc.indexCap * 2);
+        wc.indices = SDL_CreateGPUBuffer(dev, &bi);
+        if (!wc.indices) sdlFail("cascade index buffer");
+    }
+    if (bytes) {
+        SDL_GPUTransferBufferCreateInfo ti{};
+        ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        ti.size = bytes;
+        SDL_GPUTransferBuffer* xfer = SDL_CreateGPUTransferBuffer(dev, &ti);
+        void* dst = SDL_MapGPUTransferBuffer(dev, xfer, false);
+        std::memcpy(dst, idx.data(), bytes);
+        SDL_UnmapGPUTransferBuffer(dev, xfer);
+        SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+        const SDL_GPUTransferBufferLocation src{xfer, 0};
+        const SDL_GPUBufferRegion region{wc.indices, 0, bytes};
+        SDL_UploadToGPUBuffer(cp, &src, &region, false);
+        SDL_EndGPUCopyPass(cp);
+        SDL_ReleaseGPUTransferBuffer(dev, xfer);
+    }
+    SDL_GPUDepthStencilTargetInfo dt{};
+    dt.texture = wc.tex;
+    dt.clear_depth = 1.0f;
+    dt.load_op = SDL_GPU_LOADOP_CLEAR;
+    dt.store_op = SDL_GPU_STOREOP_STORE;
+    dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+    dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    SDL_GPURenderPass* sp = SDL_BeginGPURenderPass(cmd, nullptr, 0, &dt);
+    SDL_BindGPUGraphicsPipeline(sp, enhShadowPipe);
+    if (bytes) {
+        const SDL_GPUBufferBinding vb{scene.vertices, 0};
+        SDL_BindGPUVertexBuffers(sp, 0, &vb, 1);
+        const SDL_GPUBufferBinding ib{wc.indices, 0};
+        SDL_BindGPUIndexBuffer(sp, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+        struct SVU { float vp[16]; Mat4 model; float p[4]; } u{};
+        std::memcpy(u.vp, fit.viewProj.data(), sizeof u.vp);
+        u.model = kIdentity;
+        for (const Batch& b : wc.batches) {
+            u.p[0] = b.pass == Pass::AlphaTest ? 1.0f : 0.0f;
+            SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
+            const SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
+            SDL_BindGPUFragmentSamplers(sp, 0, &tb, 1);
+            drawIndexed(sp, b.indexCount, 1, b.firstIndex, 0, 0);
+        }
+    }
+    SDL_EndGPURenderPass(sp);
+    ++enhStats.cascadeRenders;
+}
+
+// TAA (docs/render-enhanced.md "Temporal anti-aliasing"): the $floatz pass with the motion vectors as a second target. Each item's
+// previous transform and, for skinned models, its previous skinned vertices (a copy of last frame's skin arena) give the previous
+// clip position per vertex; the world's previous position is its own (camera motion only).
+void Renderer::enhFloatzVelocity(SDL_GPUCommandBuffer* cmd, const SDL_GPUColorTargetInfo& fz, const SDL_GPUDepthStencilTargetInfo& fds, const Scene& scene,
+                                 const Camera& cam, const Camera& camIn, const std::vector<DrawItem>& items, uint32_t w, uint32_t h) {
+    ensureVelocity(w, h);
+    SDL_GPUColorTargetInfo ct[2] = {fz, {}};
+    ct[1].texture = velocityTex;
+    ct[1].clear_color = {0, 0, 0, 0};
+    ct[1].load_op = SDL_GPU_LOADOP_CLEAR;
+    ct[1].store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass* fp = SDL_BeginGPURenderPass(cmd, ct, 2, &fds);
+    stats.phase = 1;
+    const float aspect = float(w) / float(h);
+    struct VVU { Mat4 vp; float eye[4]; Mat4 model; Mat4 curVP; Mat4 prevVP; Mat4 prevModel; };
+    const Mat4 vpJ = cam.viewProj(aspect), vpU = camIn.viewProj(aspect);
+    const Mat4 prevVP = taaPrevVPValid ? taaPrevVP : vpU;
+    auto drawV = [&](const Batch& b, VVU u) {
+        if (b.pass != Pass::Opaque && b.pass != Pass::AlphaTest) return;
+        SDL_BindGPUGraphicsPipeline(fp, enhFloatzVelPipes[std::clamp(int(b.polygonOffset), 0, 2)][std::clamp(b.cull, 0, 2)]);
+        u.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
+        SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof(u));
+        const SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
+        SDL_BindGPUFragmentSamplers(fp, 0, &tb, 1);
+        const float fzu[4] = {b.pass == Pass::AlphaTest ? 1.0f : 0.0f, 0, 0, 0};
+        SDL_PushGPUFragmentUniformData(cmd, 0, fzu, sizeof(fzu));
+        drawIndexed(fp, b.indexCount, 1, b.firstIndex, 0, 0);
+    };
+    const VVU base{vpJ, {cam.pos.x, cam.pos.y, cam.pos.z, 0}, kIdentity, vpU, prevVP, kIdentity};
+    const SDL_GPUBufferBinding wvb[2] = {{scene.vertices, 0}, {scene.vertices, 0}};
+    SDL_BindGPUVertexBuffers(fp, 0, wvb, 2);
+    if (culledIndexBuf) {
+        const SDL_GPUBufferBinding cib{culledIndexBuf, 0};
+        SDL_BindGPUIndexBuffer(fp, &cib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+        for (const Batch& b : culledBatches)
+            if (b.indexCount) drawV(b, base);
+    }
+    // stable keys for the items: the model (or brush batches) and its occurrence in this frame's list
+    itemKeys.assign(items.size(), 0);
+    {
+        std::unordered_map<const void*, uint32_t> occ;
+        for (size_t i = 0; i < items.size(); ++i) {
+            const void* id = items[i].model ? static_cast<const void*>(items[i].model) : static_cast<const void*>(items[i].worldBatches);
+            const uint32_t n = occ[id]++;
+            itemKeys[i] = uint64_t(reinterpret_cast<uintptr_t>(id)) * 0x9E3779B97F4A7C15ull ^ (uint64_t(n) * 0xC2B2AE3D27D4EB4Full);
+        }
+    }
+    curItems.clear();
+    const SDL_GPUBufferBinding fib{scene.indices, 0};
+    SDL_BindGPUIndexBuffer(fp, &fib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+    for (size_t i = 0; i < items.size(); ++i) {
+        const DrawItem& it = items[i];
+        if (!it.worldBatches) continue;
+        VVU u = base;
+        u.model = it.transform;
+        const auto pv = prevItems.find(itemKeys[i]);
+        u.prevModel = pv != prevItems.end() ? pv->second.transform : it.transform;
+        curItems[itemKeys[i]] = {it.transform, 0, 0, false};
+        for (const Batch& b : *it.worldBatches) drawV(b, u);
+    }
+    for (size_t i = 0; i < items.size(); ++i) {
+        const DrawItem& it = items[i];
+        if (!it.model) continue;
+        const SDL_GPUViewport fzRange{0, 0, float(w), float(h), 0.0f, it.depthMax};
+        SDL_SetGPUViewport(fp, &fzRange);
+        const bool arena = it.model->arenaVertices && it.model->vertices == scene.skinArena;
+        PrevItem cur{it.transform, arena ? it.model->vertexOffset : 0, arena ? it.model->arenaBytes : 0, arena};
+        curItems[itemKeys[i]] = cur;
+        const auto pv = prevItems.find(itemKeys[i]);
+        SDL_GPUBufferBinding vb[2] = {{it.model->vertices, it.model->vertexOffset}, {it.model->vertices, it.model->vertexOffset}};
+        VVU u = base;
+        u.model = it.transform;
+        u.prevModel = it.transform;
+        if (it.depthMax < 1.0f) { // the view model moves with the camera: no motion
+            u.vp = cam.viewProj(aspect, it.zNear, true);
+            u.curVP = u.prevVP = camIn.viewProj(aspect, it.zNear, true);
+        } else if (pv != prevItems.end()) {
+            u.prevModel = pv->second.transform;
+            if (arena && pv->second.arena && pv->second.arenaBytes == cur.arenaBytes && prevArenaValid && prevArena &&
+                pv->second.arenaOffset + cur.arenaBytes <= prevArenaCap)
+                vb[1] = {prevArena, pv->second.arenaOffset};
+        }
+        SDL_BindGPUVertexBuffers(fp, 0, vb, 2);
+        const SDL_GPUBufferBinding mib{it.model->indices, 0};
+        SDL_BindGPUIndexBuffer(fp, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+        for (const Batch& b : it.model->batches) drawV(b, u);
+    }
+    SDL_EndGPURenderPass(fp);
+    stats.phase = 0;
+    velocityFromFloatz = true;
+}
+
+// The history resolve into the scene image (before exposure, bloom and the tone curve).
+void Renderer::enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam) {
+    if (!taaHist[0] || taaW != w || taaH != h) {
+        for (SDL_GPUTexture*& t : taaHist) {
+            if (t) SDL_ReleaseGPUTexture(dev, t);
+            SDL_GPUTextureCreateInfo ti{};
+            ti.type = SDL_GPU_TEXTURETYPE_2D;
+            ti.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+            ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            ti.width = w, ti.height = h, ti.layer_count_or_depth = 1, ti.num_levels = 1;
+            t = SDL_CreateGPUTexture(dev, &ti);
+            if (!t) sdlFail("TAA history");
+        }
+        taaW = w, taaH = h;
+        taaHistValid = false;
+    }
+    if (taaScene != scene.serial) taaHistValid = false, taaScene = scene.serial;
+    const Mat4 vp = cam.viewProj(float(w) / float(h));
+    game::Mat4c cur{}, inv{};
+    std::memcpy(cur.data(), vp.data(), sizeof(float) * 16);
+    if (!game::invertMat(cur, inv)) return;
+    const Vec3 fw = cam.forward();
+    const float eye[3] = {cam.pos.x, cam.pos.y, cam.pos.z}, fwd[3] = {fw.x, fw.y, fw.z};
+    const auto zl = game::clipDepthLine(cur, eye, fwd);
+    struct { float inv[16], prev[16], z[4], size[4]; } u{};
+    std::memcpy(u.inv, inv.data(), sizeof u.inv);
+    std::memcpy(u.prev, (taaPrevVPValid ? taaPrevVP : vp).data(), sizeof u.prev);
+    u.z[0] = zl[0], u.z[1] = zl[1], u.z[2] = 262144.0f * 2.0f * 1.7f, u.z[3] = taaHistValid && taaPrevVPValid ? 1.0f : 0.0f;
+    u.size[0] = 1.0f / float(w), u.size[1] = 1.0f / float(h), u.size[2] = cam.jitterX, u.size[3] = cam.jitterY;
+    SDL_GPUColorTargetInfo ct{};
+    ct.texture = taaHist[1 - taaCur];
+    ct.load_op = SDL_GPU_LOADOP_DONT_CARE;
+    ct.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(p, enhTaaPipe);
+    const SDL_GPUTextureSamplerBinding tb[4] = {{sceneTex, pointClampSampler}, {taaHist[taaCur], clampSampler}, {velocityTex, pointClampSampler},
+                                                {floatzTex, pointClampSampler}};
+    SDL_BindGPUFragmentSamplers(p, 0, tb, 4);
+    SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof u);
+    SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(p);
+    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd); // the resolved frame replaces the scene image for the rest of the frame
+    SDL_GPUTextureLocation src{}, dst{};
+    src.texture = taaHist[1 - taaCur];
+    dst.texture = sceneTex;
+    SDL_CopyGPUTextureToTexture(cp, &src, &dst, w, h, 1, false);
+    SDL_EndGPUCopyPass(cp);
+    taaCur = 1 - taaCur;
+    taaHistValid = true;
+}
+
+// End of a TAA frame: keep this frame's skinned vertices, item transforms and camera for the next frame's motion vectors.
+void Renderer::enhTaaEndFrame(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& camIn, uint32_t w, uint32_t h, const std::vector<DrawItem>& items) {
+    (void)items;
+    uint32_t used = 0;
+    for (const auto& [k, v] : curItems)
+        if (v.arena) used = std::max(used, v.arenaOffset + v.arenaBytes);
+    prevArenaValid = false;
+    if (used > 0 && scene.skinArena && used <= scene.skinArenaSize) {
+        if (used > prevArenaCap) {
+            if (prevArena) SDL_ReleaseGPUBuffer(dev, prevArena);
+            SDL_GPUBufferCreateInfo bi{};
+            bi.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+            bi.size = prevArenaCap = std::max(used + used / 2, 4u << 20);
+            prevArena = SDL_CreateGPUBuffer(dev, &bi);
+            if (!prevArena) sdlFail("previous skin arena");
+        }
+        SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+        const SDL_GPUBufferLocation src{scene.skinArena, 0}, dst{prevArena, 0};
+        SDL_CopyGPUBufferToBuffer(cp, &src, &dst, used, false);
+        SDL_EndGPUCopyPass(cp);
+        prevArenaValid = true;
+    }
+    prevItems.swap(curItems);
+    taaPrevVP = camIn.viewProj(float(w) / float(h));
+    taaPrevVPValid = true;
+    ++taaFrame;
+}
+
+// GTAO and contact shadows from $floatz at half size, then a depth-aware blur (docs/render-enhanced.md "Ambient occlusion").
+void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam) {
+    const uint32_t hw = std::max(w / 2, 1u), hh = std::max(h / 2, 1u);
+    if (!aoTex[0] || aoW != hw || aoH != hh) {
+        for (SDL_GPUTexture*& t : aoTex) {
+            if (t) SDL_ReleaseGPUTexture(dev, t);
+            SDL_GPUTextureCreateInfo ti{};
+            ti.type = SDL_GPU_TEXTURETYPE_2D;
+            ti.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+            ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            ti.width = hw, ti.height = hh, ti.layer_count_or_depth = 1, ti.num_levels = 1;
+            t = SDL_CreateGPUTexture(dev, &ti);
+            if (!t) sdlFail("AO texture");
+        }
+        aoW = hw, aoH = hh;
+    }
+    const Mat4 vp = cam.viewProj(float(w) / float(h));
+    game::Mat4c cur{}, inv{};
+    std::memcpy(cur.data(), vp.data(), sizeof(float) * 16);
+    if (!game::invertMat(cur, inv)) return;
+    const Vec3 fw = cam.forward();
+    const float eye[3] = {cam.pos.x, cam.pos.y, cam.pos.z}, fwd[3] = {fw.x, fw.y, fw.z};
+    const auto zl = game::clipDepthLine(cur, eye, fwd);
+    // focal length in pixels: the projected size of one unit at depth 1 (vertical)
+    const Vec3 upv = cross(cam.right(), fw);
+    const float p1[3] = {eye[0] + fw.x * 100.0f, eye[1] + fw.y * 100.0f, eye[2] + fw.z * 100.0f};
+    const float p2[3] = {p1[0] + upv.x, p1[1] + upv.y, p1[2] + upv.z};
+    const auto c1 = game::mulPoint(cur, p1), c2 = game::mulPoint(cur, p2);
+    const float focal = std::fabs(c2[1] / c2[3] - c1[1] / c1[3]) * 0.5f * float(h) * 100.0f;
+    struct { float inv[16], vp[16], z[4], eye[4], sun[4], params[4], size[4]; } u{};
+    std::memcpy(u.inv, inv.data(), sizeof u.inv);
+    std::memcpy(u.vp, vp.data(), sizeof u.vp);
+    u.z[0] = zl[0], u.z[1] = zl[1], u.z[2] = 262144.0f * 2.0f * 1.7f, u.z[3] = float(aoFrame++ % 64);
+    u.eye[0] = eye[0], u.eye[1] = eye[1], u.eye[2] = eye[2], u.eye[3] = focal;
+    u.sun[0] = sunDirForAO[0], u.sun[1] = sunDirForAO[1], u.sun[2] = sunDirForAO[2], u.sun[3] = enh.contactShadows ? 1.0f : 0.0f;
+    u.params[0] = 40.0f, u.params[1] = enh.ao ? 1.0f : 0.0f, u.params[2] = 18.0f, u.params[3] = 10.0f;
+    u.size[0] = 1.0f / float(w), u.size[1] = 1.0f / float(h), u.size[2] = float(w), u.size[3] = float(h);
+    auto pass = [&](SDL_GPUGraphicsPipeline* pipe, SDL_GPUTexture* dst, SDL_GPUTexture* src, SDL_GPUSampler* smp, const void* uu, uint32_t usize) {
+        SDL_GPUColorTargetInfo ct{};
+        ct.texture = dst;
+        ct.load_op = SDL_GPU_LOADOP_DONT_CARE;
+        ct.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+        SDL_BindGPUGraphicsPipeline(p, pipe);
+        const SDL_GPUTextureSamplerBinding b{src, smp};
+        SDL_BindGPUFragmentSamplers(p, 0, &b, 1);
+        SDL_PushGPUFragmentUniformData(cmd, 0, uu, usize);
+        SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+        SDL_EndGPURenderPass(p);
+    };
+    pass(enhAoPipe, aoTex[1], floatzTex, pointClampSampler, &u, sizeof u);
+    const float bu[4] = {1.0f / float(hw), 1.0f / float(hh), 0, 0};
+    pass(enhAoBlurPipe, aoTex[0], aoTex[1], pointClampSampler, bu, sizeof bu);
+    aoReady = true;
+    // the frame's slot-1 uniforms with the frame size, pushed again now that the AO image exists
+    enhFragPending.aoParams[0] = 1.0f / float(w), enhFragPending.aoParams[1] = 1.0f / float(h);
+    SDL_PushGPUFragmentUniformData(cmd, 1, &enhFragPending, sizeof enhFragPending);
 }
 
 void Renderer::enhPost(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam, bool floatzReady) {
@@ -4609,7 +5139,7 @@ void Renderer::enhPost(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const 
     }
     // Camera motion vectors (docs/render-enhanced.md "Motion vectors"); for now only the debug view consumes them.
     const Mat4 vp = cam.viewProj(float(w) / float(h));
-    if (enh.motionDebug && floatzReady) {
+    if (enh.motionDebug == 1 && floatzReady && !velocityFromFloatz) {
         if (!velocityTex || velocityW != w || velocityH != h) {
             if (velocityTex) SDL_ReleaseGPUTexture(dev, velocityTex);
             SDL_GPUTextureCreateInfo ti{};
@@ -10446,6 +10976,7 @@ int main(int argc, char** argv) {
                     byName.clear();
                     g_skinStats = {};
                     if (std::getenv("IW2_BENCH_SKINLIST")) g_skinStats.byName = &byName;
+                    if (const char* bt = std::getenv("IW2_BENCH_TURN")) cam.yaw += float(std::atof(bt)); // debug: turn the camera every bench frame
                     const uint64_t t0 = SDL_GetTicksNS();
                     auto benchItems = killcamView ? gatherKillcamItems(cam, 1.0f) : gatherItems(cam);
                     benchItems.insert(benchItems.end(), shotVmItems.begin(), shotVmItems.end());
@@ -10499,8 +11030,10 @@ int main(int argc, char** argv) {
                             renderer.cullStats.models, renderer.cullStats.modelsBeyond, renderer.cullStats.cell, renderer.cullStats.visits,
                             renderer.cullStats.portals, double(renderer.farDist));
                 if (renderer.enh.enabled)
-                    std::printf("bench: enhanced: %d shadow casters (%u triangles per cascade set), %d items with a light-grid lattice (%d points)\n",
-                                renderer.enhStats.casters, renderer.enhStats.casterTriangles, renderer.enhStats.latticeItems, renderer.enhStats.latticePoints);
+                    std::printf("bench: enhanced: %d shadow casters (%u triangles per cascade set), %d items with a light-grid lattice (%d points), "
+                                "%d world cascades re-rendered in the last frame\n",
+                                renderer.enhStats.casters, renderer.enhStats.casterTriangles, renderer.enhStats.latticeItems, renderer.enhStats.latticePoints,
+                                renderer.enhStats.cascadeRenders);
             }
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
             Uploader::releasePool(dev);

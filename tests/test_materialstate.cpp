@@ -109,7 +109,14 @@ int main() {
     CHECK(litTechniqueSlot(kTechLightmap, 31, 12, 2) == kTechLightProbeSModel);            // static model as a type-2 scene record
     CHECK(litTechniqueSlot(kTechLightmap, 31, 12, 0) == kTechLightProbe);                  // xmodel entity
     CHECK(litTechniqueSlot(kTechLightmap, 31, 12, 3) == kTechLightProbe);
-    CHECK(litTechniqueSlot(kTechBuildFloatz, 31, 12, 0) == kTechBuildFloatz);             // other walks keep their type
+    CHECK(litTechniqueSlot(kTechBuildFloatz, 31, 12, 0, 0x100) == kTechBuildFloatz);      // other walks keep their type
+    // r_depthPrepassModels 0: build floatz / depth prepass skip static models and model records without flag 0x100
+    CHECK(litTechniqueSlot(kTechBuildFloatz, 31, kStaticModelEntity, 0) == -1);
+    CHECK(litTechniqueSlot(kTechBuildFloatz, 31, 12, 2) == -1 && litTechniqueSlot(kTechDepthPrepass, 31, 12, 0) == -1);
+    CHECK(litTechniqueSlot(kTechBuildFloatz, 31, 12, 4) == kTechBuildFloatz);             // sprites and other record types
+    CHECK(litTechniqueSlot(kTechBuildFloatz, 5, kWorldEntity, 0) == kTechBuildFloatz);     // world surfaces stay
+    CHECK(litTechniqueSlot(kTechBuildFloatz, 31, kStaticModelEntity, 0, 0, true) == kTechBuildFloatz);
+    CHECK(litTechniqueSlot(kTechLightmap, 31, kStaticModelEntity, 0) == kTechLightProbeSModelCached); // the lit walk is unaffected
     CHECK(litTechniqueSlot(1, 31, 12, 0) == 1);
     CHECK(foggedTechniqueSlot(kTechLightProbe, true, 2) == 11 && foggedTechniqueSlot(kTechLightProbe, false, 2) == kTechLightProbe);
     CHECK(foggedTechniqueSlot(kTechBuildFloatz, true, 1) == kTechBuildFloatz && foggedTechniqueSlot(26, true, 1) == 27);

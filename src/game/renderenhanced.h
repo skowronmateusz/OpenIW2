@@ -31,6 +31,42 @@ inline SunShadowQuality sunShadowQuality(int level) {
     }
 }
 
+// World (static) sun shadow cascades: the world and static models, cached and re-rendered only when the camera has moved a quarter
+// of a cascade's radius (docs/render-enhanced.md "World sun shadows").
+struct WorldShadowQuality {
+    int resolution = 0;
+    int cascades = 0;
+    float radius[3] = {0.0f, 0.0f, 0.0f};
+    int pcfTaps = 0;
+};
+
+inline WorldShadowQuality worldShadowQuality(int level) {
+    switch (level) {
+        case 1: return {2048, 2, {1100.0f, 4500.0f, 0.0f}, 8};
+        case 2: return {2048, 3, {700.0f, 2400.0f, 8000.0f}, 12};
+        default: return {};
+    }
+}
+
+// The centre of a cached cascade: the camera position snapped to a world grid of a quarter radius in x and y (z keeps the camera
+// height), so the cascade is re-rendered only when that snapped point changes.
+inline std::array<float, 3> cascadeCentre(const float cam[3], float radius) {
+    const float step = radius * 0.25f;
+    return {std::round(cam[0] / step) * step, std::round(cam[1] / step) * step, std::round(cam[2] / step) * step};
+}
+
+// Depth reach towards the sun that keeps every caster of a world box in the map: the box's extent along the sun direction beyond
+// the cascade centre, at least `minimum`.
+inline float casterReachForBounds(const float towardsSun[3], const float centre[3], const float mins[3], const float maxs[3], float minimum) {
+    float reach = minimum;
+    for (int k = 0; k < 8; ++k) {
+        const float p[3] = {(k & 1) ? maxs[0] : mins[0], (k & 2) ? maxs[1] : mins[1], (k & 4) ? maxs[2] : mins[2]};
+        const float d = (p[0] - centre[0]) * towardsSun[0] + (p[1] - centre[1]) * towardsSun[1] + (p[2] - centre[2]) * towardsSun[2];
+        reach = std::max(reach, d);
+    }
+    return reach;
+}
+
 struct EnhancedSettings {
     bool enabled = false;    // r_enhanced (latched when the renderer starts)
     int preset = 1;          // r_enhPreset: 0 low, 1 medium, 2 high
@@ -39,8 +75,13 @@ struct EnhancedSettings {
     bool autoExposure = true; // r_enhAutoExposure
     bool edr = true;         // r_enhEdr: extended dynamic range output on displays that support it
     int sunShadows = 2;      // r_enhSunShadows: 0 off, 1 low, 2 medium, 3 high (sunShadowQuality)
+    int worldShadows = 1;    // r_enhWorldShadows: 0 off, 1 two cascades, 2 three cascades (worldShadowQuality)
+    bool ao = true;          // r_enhAO: ground-truth ambient occlusion on the baked / probe light
+    float aoStrength = 0.7f; // r_enhAOStrength (0..1)
+    bool contactShadows = true; // r_enhContactShadows: short screen-space rays towards the sun
+    bool taa = true;         // r_enhTAA: temporal anti-aliasing (jittered projection, motion vectors, history clamp)
     bool gridPerPixel = true; // r_enhGridPerPixel: light-grid lattice per model instead of one sample
-    int motionDebug = 0;     // r_enhMotionDebug: 1 shows the motion vectors instead of the frame
+    int motionDebug = 0;     // r_enhMotionDebug: 1 shows the motion vectors, 2 the AO (red) / contact shadow (green) image
     float bloomIntensity = 0.06f; // r_enhBloomIntensity
     float exposureBias = 0.0f;    // r_enhExposureBias (EV)
 };
@@ -59,8 +100,8 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     s.enabled = num("r_enhanced", f) && f != 0.0f;
     if (num("r_enhPreset", f)) s.preset = std::clamp(int(f), 0, 2);
     switch (s.preset) {
-        case 0: s.sunShadows = 1, s.bloom = true, s.autoExposure = false, s.gridPerPixel = true; break;
-        case 2: s.sunShadows = 3, s.bloom = true, s.autoExposure = true, s.gridPerPixel = true; break;
+        case 0: s.sunShadows = 1, s.worldShadows = 0, s.bloom = true, s.autoExposure = false, s.gridPerPixel = true, s.ao = false, s.contactShadows = false, s.taa = false; break;
+        case 2: s.sunShadows = 3, s.worldShadows = 2, s.bloom = true, s.autoExposure = true, s.gridPerPixel = true; break;
         default: break;
     }
     if (num("r_enhTonemap", f)) s.tonemap = f != 0.0f;
@@ -69,7 +110,12 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhEdr", f)) s.edr = f != 0.0f;
     if (num("r_enhSunShadows", f)) s.sunShadows = std::clamp(int(f), 0, 3);
     if (num("r_enhGridPerPixel", f)) s.gridPerPixel = f != 0.0f;
-    if (num("r_enhMotionDebug", f)) s.motionDebug = std::clamp(int(f), 0, 1);
+    if (num("r_enhWorldShadows", f)) s.worldShadows = std::clamp(int(f), 0, 2);
+    if (num("r_enhAO", f)) s.ao = f != 0.0f;
+    if (num("r_enhAOStrength", f)) s.aoStrength = std::clamp(f, 0.0f, 1.0f);
+    if (num("r_enhContactShadows", f)) s.contactShadows = f != 0.0f;
+    if (num("r_enhTAA", f)) s.taa = f != 0.0f;
+    if (num("r_enhMotionDebug", f)) s.motionDebug = std::clamp(int(f), 0, 2);
     if (num("r_enhBloomIntensity", f)) s.bloomIntensity = std::clamp(f, 0.0f, 1.0f);
     if (num("r_enhExposureBias", f)) s.exposureBias = std::clamp(f, -2.0f, 2.0f);
     return s;
@@ -238,6 +284,39 @@ inline ProbeLattice probeLattice(const float mins[3], const float maxs[3]) {
         l.step[a] = float(k) * kGridCell[a];
     }
     return l;
+}
+
+// ---- ambient occlusion ----------------------------------------------------------------------------------------------------------------
+
+// Ground-truth ambient occlusion (Jimenez et al. 2016), the cosine-weighted visible arc of one slice: n = the angle of the normal
+// projected into the slice, from the view vector; h0 <= n <= h1 the horizon angles on both sides (radians, from the view vector).
+// Returns the slice's visibility in 0..1 (1 for an unoccluded slice whose horizons lie flat at -pi/2 + n and pi/2 + n).
+inline float gtaoSliceVisibility(float n, float h0, float h1) {
+    const float hp = 1.5707963f;
+    h0 = n + std::max(h0 - n, -hp);
+    h1 = n + std::min(h1 - n, hp);
+    const float cn = std::cos(n), sn = std::sin(n);
+    const float a = -std::cos(2.0f * h0 - n) + cn + 2.0f * h0 * sn;
+    const float b = -std::cos(2.0f * h1 - n) + cn + 2.0f * h1 * sn;
+    return 0.25f * (a + b);
+}
+
+// ---- temporal anti-aliasing ------------------------------------------------------------------------------------------------------
+
+// Halton low-discrepancy sequence (base b) at index i >= 1, in [0, 1).
+inline float halton(int i, int b) {
+    float f = 1.0f, r = 0.0f;
+    for (; i > 0; i /= b) {
+        f /= float(b);
+        r += f * float(i % b);
+    }
+    return r;
+}
+
+// Sub-pixel projection jitter of frame n for a w x h target, in NDC: Halton (2, 3) over 8 frames, centred, one pixel wide.
+inline std::array<float, 2> taaJitter(uint32_t frame, int w, int h) {
+    const int i = int(frame % 8u) + 1;
+    return {(halton(i, 2) - 0.5f) * 2.0f / float(w), (halton(i, 3) - 0.5f) * 2.0f / float(h)};
 }
 
 // ---- motion vectors ----------------------------------------------------------------------------------------------------------------

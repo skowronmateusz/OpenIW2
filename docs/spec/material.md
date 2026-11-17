@@ -208,10 +208,13 @@ model they keep (0x10009565 in 0x100094c0, 0x10009685 in 0x100095b0) and then su
 static model is drawn with the lightprobe smodel technique, and xmodel entities from the client game with lightprobe.
 TODO(spec): which submission gives a list record the entity 0x7ff (the cached technique).
 
-Every other walk type and every surface with a lightmap keeps its type, with one exception: while the dvar behind 0x101ce750 is
-off, the depth prepass and build floatz walks (types 0 and 2) get no technique (the surface is skipped) for a static model
-(entity 0x7ff) and for a scene entity whose record type is at most 2 and whose record flags (+4) lack bit 0x100. TODO(spec): the
-dvar's name and default, and how this matches iw2view's build floatz pass, which takes every model. Then the fog variant is
+Every other walk type and every surface with a lightmap keeps its type, with one exception: while `r_depthPrepassModels`
+(dvar behind 0x101ce750, registered at 0x1000b37b..0x1000b392: boolean, default 0, flags 0x2000) is off, the depth prepass
+and build floatz walks (types 0 and 2) get no technique (the surface is skipped) for a static model (list entity 0x7ff) and for
+a scene entity whose record type is at most 2 and whose record flags (+4) lack bit 0x100. Static models reach the list as type-2
+records whose flags 0x10023fe0 leaves 0, so by default `$floatz` holds no static model. iw2view leaves static model batches out
+of the build floatz pass. TODO(spec): which client-game submissions set record flag 0x100; iw2view keeps every xmodel entity in
+`$floatz`. Then the fog variant is
 added: when the dvar behind 0x101ce830 is set, the value at 0x106b1794 + 0x16bfac (0 none, 1 linear, 2 exp) is added for types
 3..26.
 A surface whose technique set has no technique for the result is not drawn by that walk.
