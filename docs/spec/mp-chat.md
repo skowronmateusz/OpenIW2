@@ -140,15 +140,19 @@ movement and buttons keep working, and the menu takes only its execKey keys and 
 Not in the original, which shows only the last `cg_chatHeight` lines for `cg_chatTime` ms and clears them at every map load.
 - Cvar `iw2_chatHistory` (default 1; 0 turns the feature off and leaves the original behaviour). The closed field is
   unchanged: the chat lines look and fade exactly as described above.
-- While the message field is open (t / y) the panel replaces the fading chat lines: the newest 10 history lines (at most
-  `MpChatHistory::kVisible`), in the chat lines' rows (bottom row at `cg_hudChatPosition`.y - 10, so it sits above the field,
-  growing upward), with the same font, text scale, strip bars (colour of the line's first `^N`, alpha 0.6) and no fading.
+- While the message field is open (t / y) the panel is drawn as a window: a translucent dark rectangle (black, alpha about
+  0.55) with a 1-unit grey border, a header row reading "Chat" (plain English, not localized) with a separator line, then
+  `MpChatHistory::kVisible` (8, the largest `cg_chatHeight`) rows and the message field inside the rectangle. Its size is
+  fixed (`mpChatPanelRect`: x from `cg_hudChatPosition`.x - 4, 436 units wide, from 14 units above the top row to 5 units
+  below the field baseline), whatever the number of lines; with the defaults it spans y 56..165 and stays clear of the
+  score block. Rows keep the chat lines' look: bottom row at `cg_hudChatPosition`.y - 10, growing upward, same font,
+  text scale, strip bars (colour of the line's first `^N`, alpha 0.6), no fading; older rows stay empty when fewer lines exist.
 - The history keeps the last 50 display lines of the session (messages are wrapped by the same rules as the chat buffer,
   so a long message takes several lines). It is filled by every shown chat command (`h` unless `cg_teamChatsOnly`, `i`),
   independent of `cg_chatHeight` / `cg_chatTime`. It survives level loads (map change, map rotation) within one server
   session and is cleared on disconnect or when connecting to a server.
 - PgUp / PgDn scroll by 9 lines, the mouse wheel by 3, towards older lines and back; the view is clamped to the lines
-  that exist and returns to the newest line each time the field is opened. A scrolled-back view shows `(+N)`, N being the number of newer lines below.
+  that exist and returns to the newest line each time the field is opened. A scrolled-back view shows `(+N)` at the right of the header, N being the number of newer lines below.
 - Tests: tests/test_mpchat.cpp (wrap, capacity, scroll clamp, view).
 
 ## Bots

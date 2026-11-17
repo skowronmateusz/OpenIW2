@@ -57,7 +57,7 @@ private:
 class MpChatHistory {
 public:
     static constexpr int kCapacity = 50; // lines kept
-    static constexpr int kVisible = 10;  // lines shown at once
+    static constexpr int kVisible = 8;   // lines shown at once (the most cg_chatHeight allows; keeps the window clear of the score HUD)
     void add(const std::string& msg);
     void clear() { lines_.clear(); scroll_ = 0; }
     int size() const { return int(lines_.size()); }
@@ -73,5 +73,12 @@ private:
     std::vector<std::string> lines_;
     int scroll_ = 0;
 };
+
+// OpenIW2 addition: the history window's rectangle in virtual units, for the chat position (chatX, chatY) and the say
+// position's baseline: it spans kVisible rows above chatY, a 14-unit header row, and the message field below.
+struct MpChatPanelRect { float x0, y0, x1, y1; };
+inline MpChatPanelRect mpChatPanelRect(float chatX, float chatY, float fieldBaseline) {
+    return {chatX - 4.0f, mpChatLineTop(chatY, MpChatHistory::kVisible - 1) - 14.0f, chatX + 432.0f, fieldBaseline + 5.0f};
+}
 
 } // namespace iw2::game

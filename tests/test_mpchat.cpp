@@ -81,13 +81,18 @@ int main() {
         for (int i = 4; i < 70; ++i) h.add("line " + std::to_string(i));
         CHECK(h.size() == MpChatHistory::kCapacity); // the oldest are dropped
         auto v = h.view();
-        CHECK(int(v.size()) == MpChatHistory::kVisible && v.back().text == "line 69" && v.front().text == "line 60" && v.front().code == -1);
+        CHECK(int(v.size()) == MpChatHistory::kVisible && v.back().text == "line 69" && v.front().text == "line " + std::to_string(70 - MpChatHistory::kVisible) && v.front().code == -1);
         h.scrollBy(3);
         v = h.view();
-        CHECK(h.scroll() == 3 && v.back().text == "line 66" && v.front().text == "line 57");
+        CHECK(h.scroll() == 3 && v.back().text == "line 66" && v.front().text == "line " + std::to_string(67 - MpChatHistory::kVisible));
         h.scrollBy(1000);
         CHECK(h.scroll() == MpChatHistory::kCapacity - MpChatHistory::kVisible);
-        CHECK(h.view().front().text == "line 20" && h.view().back().text == "line 29");
+        CHECK(h.view().front().text == "line 20" && h.view().back().text == "line " + std::to_string(19 + MpChatHistory::kVisible));
+        { // the window: fixed height for kVisible rows, header above, the field inside (defaults 5,150 and field baseline 160)
+            const MpChatPanelRect r = mpChatPanelRect(5.0f, 150.0f, mpChatFieldBaseline(126.0f, 0.2083f));
+            CHECK(r.x0 < 5.0f && r.x1 > r.x0 && r.y0 == 150.0f - 10.0f * MpChatHistory::kVisible - 14.0f && r.y1 > 150.0f + 10.0f);
+            CHECK(r.y0 >= 50.0f); // clear of the score block at the top left
+        }
         h.scrollBy(-1000);
         CHECK(h.scroll() == 0);
         h.scrollBy(10);

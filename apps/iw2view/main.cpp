@@ -7926,6 +7926,24 @@ int main(int argc, char** argv) {
                     // PgUp / PgDn / the wheel. Otherwise the chat lines are drawn as in the original.
                     const bool historyPanel = chatField.open && cvarInt("iw2_chatHistory", 1) != 0;
                     const auto lines = historyPanel ? chatHistory.view() : chatBuffer.frame(cgNowMs(), cvarInt("cg_chatHeight", 8), cvarInt("cg_chatTime", 12000));
+                    if (historyPanel) { // the window: a translucent dark rectangle with a thin border and a header, a fixed height whatever the line count
+                        const auto sp = vec2("cg_hudSayPosition", 5.0f, 126.0f);
+                        const auto pr = game::mpChatPanelRect(cp[0], cp[1], game::mpChatFieldBaseline(sp[1], ts));
+                        const float x0 = pr.x0, x1 = pr.x1, y0 = pr.y0, y1 = pr.y1;
+                        auto rect = [&](float ax, float ay, float bx, float by, uint8_t r, uint8_t g, uint8_t bl, uint8_t a) {
+                            Quad2D q{left43 + ax * sc, ay * sc, left43 + bx * sc, by * sc};
+                            q.rgba[0] = r, q.rgba[1] = g, q.rgba[2] = bl, q.rgba[3] = a;
+                            out.push_back(q);
+                        };
+                        rect(x0, y0, x1, y1, 0, 0, 0, 140);
+                        rect(x0, y0, x1, y0 + 1.0f, 150, 150, 150, 160); // border
+                        rect(x0, y1 - 1.0f, x1, y1, 150, 150, 150, 160);
+                        rect(x0, y0, x0 + 1.0f, y1, 150, 150, 150, 160);
+                        rect(x1 - 1.0f, y0, x1, y1, 150, 150, 150, 160);
+                        rect(x0 + 1.0f, y0 + 12.0f, x1 - 1.0f, y0 + 13.0f, 150, 150, 150, 100); // under the header
+                        const uint8_t grey[4] = {200, 200, 200, 255};
+                        hudText(out, "Chat", left43 + (x0 + 4.0f) * sc, (y0 + 10.0f) * sc, gs, *f, grey, 0.0f, 1.0f, 3);
+                    }
                     for (size_t i = 0; i < lines.size(); ++i) {
                         const auto& l = lines[i];
                         const float y = game::mpChatLineTop(cp[1], historyPanel ? int(lines.size() - 1 - i) : int(i)); // the panel lists oldest first
@@ -7943,7 +7961,7 @@ int main(int argc, char** argv) {
                     if (historyPanel && chatHistory.scroll() > 0) { // a scrolled-back view is marked with the number of newer lines below
                         const uint8_t grey[4] = {200, 200, 200, 255};
                         const std::string mark = "(+" + std::to_string(chatHistory.scroll()) + ")";
-                        hudText(out, mark, left43 + (cp[0] + 400.0f) * sc, (game::mpChatLineTop(cp[1], int(lines.size()) - 1) + 9.0f) * sc, gs, *f, grey, 0.0f, 1.0f, 3);
+                        hudText(out, mark, left43 + (cp[0] + 395.0f) * sc, (game::mpChatLineTop(cp[1], game::MpChatHistory::kVisible - 1) - 14.0f + 10.0f) * sc, gs, *f, grey, 0.0f, 1.0f, 3); // in the header, right
                     }
                     // The field: "<EXE_SAY>: " or "<EXE_SAYTEAM>: " and the text, below the history (docs/spec/mp-chat.md). TODO(spec): the label colour, the cursor.
                     if (chatField.open) {
@@ -10124,6 +10142,8 @@ int main(int argc, char** argv) {
             mpCrossMs = -1;
             chatBuffer = {};
             chatField = {};
+            // Debug: IW2_CHATFIELD="<text>" keeps the message field open with that text after every level load in live play (also +connect).
+            if (const char* cf = std::getenv("IW2_CHATFIELD")) chatField = {true, false, cf};
             if (std::string(why) == "disconnect") chatHistory.clear(); // a level load keeps the history, a new session starts empty
             mpSb = {};
             mpIntermissionView = false;
