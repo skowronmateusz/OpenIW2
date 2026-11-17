@@ -213,7 +213,14 @@ void MenuStack::close(const std::string& name) {
 }
 
 void MenuStack::closeAll() {
-    while (!stack_.empty()) close(stack_.back()->name);
+    // Close-all (0x4c8080): one sweep over the loaded menu table (uiInfo +0x2c, count +0x12c) in load order; each entry goes
+    // through close() below (the 0x4c7f90 of the exe), which does nothing for a menu that is not open. Visiting each entry once
+    // ends the sweep even when an onClose reopens a menu: a menu behind the sweep stays open, one ahead of it is closed again
+    // (the profile popups of ui/playerprofile.menu reopen each other while no profile exists; docs/spec/ui.md).
+    for (size_t i = 0; i < lib_.menus().size(); ++i) {
+        Menu* m = lib_.menus()[i].get();
+        if (std::find(stack_.begin(), stack_.end(), m) != stack_.end()) close(m->name);
+    }
 }
 
 bool MenuStack::flagVisible(const Item& it) const {
@@ -679,8 +686,8 @@ void MenuStack::key(Key k) {
         return;
     if (k == Key::Escape) {
         // UI_KeyEvent (0x4c63c0) on ESC down: when no open visible menu is fullScreen (0x4cf6a0, menu +0x214) and the focused menu has
-        // no onESC (+0x24c), every menu is closed (0x4c8080); otherwise the key goes to the menu handler (0x4cbf2a), which runs onESC if
-        // set (nothing for a fullScreen menu without one, e.g. main). After closing the last menu the exe also clears the
+        // no onESC (+0x24c), the menu table is swept once (0x4c8080, closeAll below); otherwise the key goes to the menu handler
+        // (0x4cbf2a), which runs onESC if set (nothing for a fullScreen menu without one, e.g. main). After closing the last menu the exe also clears the
         // UI key catcher and, when the byte behind pointer 0x59b724 is 0, sets cl_paused to 0 (0x4c6455); the port has no key catcher
         // and its caller owns cl_paused (uiScript ingameclose clears it, menurun.cpp).
         if (m->onEsc.empty() && !fullScreenOpen()) closeAll();

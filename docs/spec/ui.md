@@ -237,6 +237,15 @@ sets 0x100000 (0x4d1e90).
   visible + focus, runs `onOpen` and re-sends the pointer position (0x4d0060). Closing (0x4c7f90) runs `onClose` when the menu is
   visible, removes it, and only if it held the focus gives the focus bit to the last remaining visible menu. The key handler
   (UI_KeyEvent 0x4c63c0, ESC and every other key) hands the key to the focused menu only (0x4cbc70), not to the list end.
+- Close-all (0x4c8080; reached from ESC without an onESC handler at 0x4c63f8, the `ingameclose` handler 0x4c8320 and the
+  `playerstart` uiScript at 0x4c54c0) is one sweep over the loaded menu table — the pointer array at ui state +0x2c with its
+  entry count at +0x12c, a different array from the open-menu list at +0x130/+0x170 — in load order: every table entry goes
+  through the close of 0x4c7f90, which does nothing for a menu that is not on the open list. Each entry is visited once, so the
+  sweep always ends: an `onClose` script that reopens a menu leaves it open when its table entry is behind the sweep, and the menu
+  is closed again when its entry is still ahead of it. The two profile popups of ui/playerprofile.menu are that case: while no
+  profile exists, closing the "create profile" popup opens the "must create" popup (a uiScript gated on the profile count) and
+  closing that one opens the create popup back, so with the shipped table order (the create popup is defined first) a close-all
+  ends with the create popup open instead of looping between the two.
 - Pointer move (0x4d0060, called by 0x4c6470 after it clamps the cursor to 0..640 x 0..480): if the focused menu has the popup flag,
   only that menu is offered the move (0x4cf6e0). Otherwise the list is walked from the end towards the start and the walk stops at
   the first menu whose move handler returns 1. That handler (0x4cf6e0) returns 1 only when an item under the pointer accepted the

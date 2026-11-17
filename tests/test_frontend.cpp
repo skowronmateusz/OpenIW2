@@ -175,12 +175,61 @@ int main() {
 		}
 	}
 })";
+    // Close-all sweep (0x4c8080): two popups whose onClose scripts reopen each other - the profile popups of
+    // ui/playerprofile.menu while no profile exists - must not loop the sweep; the popup defined first is left open.
+    std::ofstream(dir / "ui/x.menu") << R"({
+	menuDef
+	{
+		name ppbase
+		rect 0 0 640 480
+		visible 1
+		itemDef
+		{
+			name ppbtn
+			type 1
+			rect 10 10 100 20
+			visible 1
+			action { close ppbase; }
+		}
+	}
+	menuDef
+	{
+		name popA
+		rect 100 100 200 80
+		visible 1
+		popup
+		onClose { open popB; }
+		itemDef
+		{
+			name aok
+			type 1
+			rect 0 0 100 20
+			visible 1
+		}
+	}
+	menuDef
+	{
+		name popB
+		rect 100 100 200 80
+		visible 1
+		popup
+		onClose { open popA; }
+		itemDef
+		{
+			name bok
+			type 1
+			rect 0 0 100 20
+			visible 1
+		}
+	}
+})";
     iw2::fs::Vfs vfs;
     vfs.mountDirectory(dir);
     iw2::ui::MenuLibrary lib(vfs);
     CHECK(lib.loadFile("ui/t.menu"));
     CHECK(lib.loadFile("ui/w.menu"));
     CHECK(lib.loadFile("ui/v.menu"));
+    CHECK(lib.loadFile("ui/x.menu"));
     std::map<std::string, std::string> cv;
     std::vector<std::string> log;
     iw2::ui::MenuEnv env;
@@ -226,6 +275,19 @@ int main() {
     st.close("diff");
     st.key(iw2::ui::MenuStack::Key::Escape);
     CHECK(st.empty());
+    // Close-all (0x4c8080) sweeps the loaded menu table once, so two popups that reopen each other from onClose (the profile
+    // popups of ui/playerprofile.menu while no profile exists) do not loop it: popB is closed when the sweep reaches it after
+    // popA's onClose reopened it, and the popA that popB's onClose reopens is behind the sweep and stays open.
+    CHECK(st.open("ppbase"));
+    CHECK(st.open("popA"));
+    CHECK(st.open("popB"));
+    st.closeAll();
+    CHECK(st.menus().size() == 1 && st.menus()[0]->name == "popA");
+    st.closeAll(); // the same rule from the reopened state: the sweep again ends with popA
+    CHECK(st.menus().size() == 1 && st.menus()[0]->name == "popA");
+    st.close("popA"); // one close alone runs its onClose: popB takes over
+    CHECK(st.menus().size() == 1 && st.menus()[0]->name == "popB");
+    st.reset();
     // ingameclose (0x4c8320) acts only while cl_paused is nonzero and a menu name follows: at the front end (cl_paused 0) the
     // main menu's ESC script "ingameclose main" leaves the menus open; in the pause menu it closes them and unpauses.
     {
