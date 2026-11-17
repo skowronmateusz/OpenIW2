@@ -249,6 +249,12 @@ docs/spec/mp-players.md).
 `score` (subtracts 1 for a suicide or a non-player killer), waits 2 seconds and respawns: immediately with
 `scr_forcerespawn` > 0, otherwise when `useButtonPressed` is true (`dm.gsc:526-557`).
 
+Deviation (openiw2 default): the shipped default_mp.cfg sets `scr_forcerespawn` to 1, so the original's dedicated server
+respawns players automatically. openiw2's dedicated server sets it to 0 right after that file, before language.cfg,
+`config_mp_server.cfg`, the command line (`--cvar`, `+set`), `server.cfg` and console `set`, which can all turn it on
+again. The listen server from the create-server screen does not run that file: the cvar stays empty and the gametype
+script's default 0 applies (docs/spec/mp-ui.md); the screen's option still turns it on.
+
 ## Client fields
 
 `sessionteam` and `sessionstate` are engine fields with validated setters: `sessionteam` (0x80f7db6) accepts

@@ -196,6 +196,9 @@ Start it with:
   `sv_privateClients` and `sv_privatePassword` reserve slots for players who give that password.
 - `rcon_password` enables remote console: a client sends `rcon <password> <command>` to the server's address and gets
   the output back. Wrong passwords get `Invalid password.`; replies are limited to two per second per address.
+- Auto respawn is off by default (OpenIW2 default; the original's default_mp.cfg turns it on): after a death a player
+  respawns by pressing Use. Set `scr_forcerespawn 1` (in `server.cfg`, `config_mp_server.cfg`, `+set scr_forcerespawn 1`
+  or `--cvar scr_forcerespawn=1`) to enable automatic respawn.
 - Set the cvars of the options in the file too if you like (`set sv_maxclients 20`), but the command-line options win.
 
 ## Player slots

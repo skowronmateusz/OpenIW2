@@ -376,6 +376,10 @@ int runDedicated(fs::Vfs& vfs, const DedicatedSettings& s) {
         std::string text;
         console.execute(host.readFile("default_localize_mp.cfg", text) ? "exec default_localize_mp.cfg"
                                                                        : "exec default_mp.cfg");
+        // openiw2 default (a deviation, docs/spec/mp.md "Respawn"): no automatic respawn. The 1.3 default file turns
+        // it on; it is set back here, before language.cfg / config_mp_server.cfg, the command line and server.cfg,
+        // all of which can still turn it on.
+        console.cvars["scr_forcerespawn"] = "0";
         console.execute("exec language.cfg");
         console.execute("exec config_mp_server.cfg");
     }

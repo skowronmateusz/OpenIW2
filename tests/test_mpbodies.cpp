@@ -577,7 +577,7 @@ int main() {
     }
     ServerProcess server;
     if (!server.start(serverExe, {mainDir, "mp_toujane", "dm", "--port", "0", "--bots", "0", "--maxclients", "8", "+set", "scr_dm_timelimit", "0",
-                                  "+set", "scr_dm_scorelimit", "0"})) {
+                                  "+set", "scr_dm_scorelimit", "0", "+set", "scr_forcerespawn", "1"})) {
         std::cerr << "cannot start the server\n";
         return 1;
     }

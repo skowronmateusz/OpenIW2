@@ -197,14 +197,95 @@ void server(const char* mainDir) {
     CHECK(frames > 0);
 }
 
+// The value the console prints for scr_forcerespawn after a start with `s` (docs/spec/mp.md "Respawn"). `extra` is a
+// directory mounted after the game data (it can hold config_mp_server.cfg / server.cfg).
+std::string forceRespawnAfterStart(const char* mainDir, netgame::DedicatedSettings s, const std::string& extra = {}) {
+    fs::Vfs vfs;
+    vfs.mountDirectory(mainDir);
+    if (!extra.empty()) vfs.mountDirectory(extra);
+    std::atomic<int> port{0};
+    std::mutex m;
+    std::vector<std::string> typed;
+    s.onStarted = [&](int p) { port = p; };
+    s.frontEnd = [&] {
+        std::lock_guard<std::mutex> lock(m);
+        return std::exchange(typed, {});
+    };
+    netgame::StdoutTee tee;
+    CHECK(tee.start());
+    int rc = -1;
+    std::thread t([&] { rc = netgame::runDedicated(vfs, s); });
+    for (int i = 0; i < 1200 && port == 0; ++i) usleep(50000);
+    std::string out;
+    if (port != 0) {
+        {
+            std::lock_guard<std::mutex> lock(m);
+            typed = {"scr_forcerespawn"};
+        }
+        for (int i = 0; i < 100 && out.find("scr_forcerespawn") == std::string::npos; ++i) {
+            usleep(50000);
+            out += tee.take();
+        }
+        std::lock_guard<std::mutex> lock(m);
+        typed = {"quit"};
+    }
+    t.join();
+    tee.stop();
+    CHECK(rc == 0);
+    const auto at = out.find("scr_forcerespawn");
+    return at == std::string::npos ? std::string("<none>") : out.substr(at, out.find('\n', at) - at);
+}
+
+void respawnDefault(const char* mainDir) {
+    auto base = [] {
+        netgame::DedicatedSettings s;
+        s.map = "mp_toujane";
+        s.gametype = "dm";
+        s.port = 0;
+        s.readStdin = false;
+        return s;
+    };
+    // The default is off although the shipped default_mp.cfg turns it on.
+    std::string r = forceRespawnAfterStart(mainDir, base());
+    CHECK(r.find("\"0^7\"") != std::string::npos);
+    // --cvar / the menu's cvars, +set and the configuration files can turn it on.
+    auto a = base();
+    a.cvars = {{"scr_forcerespawn", "1"}};
+    r = forceRespawnAfterStart(mainDir, a);
+    CHECK(r.find("\"1^7\"") != std::string::npos);
+    auto b = base();
+    b.startup = {"set scr_forcerespawn 1"};
+    r = forceRespawnAfterStart(mainDir, b);
+    CHECK(r.find("\"1^7\"") != std::string::npos);
+    char tmpl[] = "/tmp/iw2respawnXXXXXX";
+    if (const char* d = mkdtemp(tmpl)) {
+        const std::string dir = d;
+        FILE* f = std::fopen((dir + "/config_mp_server.cfg").c_str(), "w");
+        if (f) { std::fputs("set scr_forcerespawn 1\n", f); std::fclose(f); }
+        r = forceRespawnAfterStart(mainDir, base(), dir);
+        CHECK(r.find("\"1^7\"") != std::string::npos);
+        std::remove((dir + "/config_mp_server.cfg").c_str());
+        f = std::fopen((dir + "/server.cfg").c_str(), "w");
+        if (f) { std::fputs("set scr_forcerespawn 1\n", f); std::fclose(f); }
+        auto c = base();
+        c.startup = {"exec server.cfg"};
+        r = forceRespawnAfterStart(mainDir, c, dir);
+        CHECK(r.find("\"1^7\"") != std::string::npos);
+        std::remove((dir + "/server.cfg").c_str());
+        rmdir(dir.c_str());
+    }
+}
+
 } // namespace
 
 int main() {
     menuSettings();
     consoleView();
     stdoutTee();
-    if (const char* main = std::getenv("IW2_MAIN")) server(main);
-    else std::cout << "IW2_MAIN not set: server part skipped\n";
+    if (const char* main = std::getenv("IW2_MAIN")) {
+        server(main);
+        respawnDefault(main);
+    } else std::cout << "IW2_MAIN not set: server part skipped\n";
     if (failures) return 1;
     std::cout << "dedicatedstart: ok\n";
     return 0;

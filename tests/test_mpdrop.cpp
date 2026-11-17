@@ -125,6 +125,8 @@ int main() {
             CHECK(!it->obj->get("$arate").isVector());
             CHECK(it->obj->get("origin").asVector()[2] < z0);
         }
+        // Auto respawn is off by default (listen server: the gametype script's default 0; docs/spec/mp.md "Respawn").
+        CHECK(w.cvars["scr_forcerespawn"] == "0");
         for (const auto& e : w.vm().errors()) std::cerr << "  script error: " << e << "\n";
         CHECK(w.vm().errors().empty());
     }
