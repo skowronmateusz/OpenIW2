@@ -185,6 +185,66 @@ interpolation and a later surface loses LessEqual in blocks that change with the
 level, so that it wins the tie with any coplanar surface drawn earlier, which is the outcome LessEqual asks for. Coplanar depth-writing surfaces are not changed.
 TODO(spec): the original's result on such faces has not been observed at run time.
 
+## Model lighting techniques (1.3 DLL 0x1001c0d5, 0x1002f730)
+
+Technique types. The technique set loader names its slots from a table of 34 strings that 0x1001c0d1..0x1001c1ef stores at
+ascending stack offsets, so the slot index is the position in that list: 0 depth prepass, 1 sky, 2 build floatz, 3-5 unlit (no fog, linear fog,
+exp fog), 6-8 lightmap, 9-11 lightprobe, 12-14 lightprobe smodel, 15-17 lightprobe smodel cached, 18-20 pointlight, 21-23
+emissive, 24-26 emissive feathered, then fakelight normal, fakelight view, solid wireframe, shaded wireframe, shadowcookie
+caster, shadowcookie receiver, debug bumpmap. The walk types quoted elsewhere in this spec (1, 2, 6, 0x12, 0x15, 0x18) are these
+slots.
+
+Which technique a list surface uses. The surface walker (0x1002f830) calls 0x1002f730 with the walk's type, the record's layer
+(lightmap index, 31 = none) and its entity (the key's entity field; values from 0x800 up are clamped to 0x7fe, so every world
+soup arrives as 0x7fe). For the lit walk (type 6) and a surface without a lightmap:
+- entity 0x7fe (a world surface): type 9, lightprobe;
+- entity 0x7ff (a static model): type 15, lightprobe smodel cached;
+- a scene entity: type 12, lightprobe smodel, when the first dword of its 0x74-byte scene entity record (array behind
+  0x1070c3c4) is 2, else type 9, lightprobe.
+
+Record type 2 is what 0x10023fe0 writes when it turns a static model into a scene entity record (it clears the record, sets
++0 to 2 and copies the static model's origin, axes and scale); both static model visibility paths call it for every static
+model they keep (0x10009565 in 0x100094c0, 0x10009685 in 0x100095b0) and then submit the record (0x10024ad0). So a visible
+static model is drawn with the lightprobe smodel technique, and xmodel entities from the client game with lightprobe.
+TODO(spec): which submission gives a list record the entity 0x7ff (the cached technique).
+
+Every other walk type and every surface with a lightmap keeps its type, with one exception: while the dvar behind 0x101ce750 is
+off, the depth prepass and build floatz walks (types 0 and 2) get no technique (the surface is skipped) for a static model
+(entity 0x7ff) and for a scene entity whose record type is at most 2 and whose record flags (+4) lack bit 0x100. TODO(spec): the
+dvar's name and default, and how this matches iw2view's build floatz pass, which takes every model. Then the fog variant is
+added: when the dvar behind 0x101ce830 is set, the value at 0x106b1794 + 0x16bfac (0 none, 1 linear, 2 exp) is added for types
+3..26.
+A surface whose technique set has no technique for the result is not drawn by that walk.
+
+The light-probe techniques of the phong_* technique sets (lprobe, lprobe_a, lprobe_dtl, lprobe_s and their alpha, detail,
+scroll and flag variants; shaders lprobe*.hlsl over lib/lightprobe.hlsl, lib/normalmap.hlsl, lib/phong.hlsl,
+lib/shade.hlsl) all compute, per pixel:
+- diffuse colour = vertex colour times the colour map, plus (detail variants) the detail sample centred on 0.5;
+- the world normal from the normal map, decoded exactly like the lightmapped specular technique (lmap_s): the interpolated normal
+  plus (2x - 1) times the tangent plus (2y - 1) times the binormal, x and y from the alpha and green channels, normalized. With the
+  built-in flat normal map this is the interpolated normal;
+- the light-grid probe evaluated for that normal (the same cube weights as before, lib/lightprobe.hlsl ProbeLighting);
+- sun diffuse = the entity's sun visibility (lightColor0 alpha, times the dynamic shadow sampler) times max(0, N·L) times the sun
+  colour;
+- for the _s variants the Phong specular of lmap_s: specular map colour times the specularity lookup at (specular map alpha,
+  N·H) times the specular light colour, with the half angle computed per vertex from the eye and sun directions, scaled by
+  0.3 + 0.7 visibility;
+- colour = diffuse colour times (probe + sun diffuse) + specular; alpha as for the other lit techniques (1 for USE_ALPHA 0).
+All maps are read at the scrolled texture coordinate of the scroll variants.
+
+The static-model techniques (lprobe_sm*, lprobe_smc*; lib/lightprobe_sm.hlsl) light the same way per pixel but read the probe
+and the sun visibility from a 3D lighting texture (smodelLightingSampler): the normal, turned into the grid's basis, offsets a
+lookup position that is a per-draw constant (lprobe_sm) or a second vertex texture coordinate (lprobe_smc). TODO(spec): how the
+DLL fills that texture and the lookup constants is not decoded; iw2view keeps one probe sample per static model baked into its
+vertices with the vertex normal (docs/spec/lightgrid.md "Implementation"), so static models do not get the per-pixel normal and
+specular yet.
+
+World surfaces without a lightmap take the lightprobe technique too (entity 0x7fe above). TODO(spec): which probe constants the
+DLL sets for them; iw2view draws them with a fixed ambient plus sun term.
+
+iw2view: every surface of an xmodel entity whose material uses a phong_* technique set is drawn by `vs_probe` / `fs_probe`
+(apps/iw2view/shaders.metal.inc); the other technique sets keep the per-vertex-normal probe of `fs_main`.
+
 ## Face culling (1.3 DLL 0x1003cb13)
 
 mtlCullFace = bits 14–15 of state word 0 (file 0x2c, mask 0xc000; values None / Back / Front = 0x4000 / 0x8000 /
@@ -205,7 +265,8 @@ colour.
 Which passes bend (phong_flag_alphatest_spec.techset): the light probe techniques without and with fog, the point light
 technique without fog, and the light probe static-model technique without fog. The depth prepass, the build floatz pass, the
 unlit, lightmap and fogged point light techniques and the other static-model variants use the ordinary shaders, so there the
-cloth is drawn unbent.
+cloth is drawn unbent. A visible static model takes the static-model technique ("Model lighting techniques"), so it bends
+without fog and is rigid with fog.
 
 The wave, with (U, V) = (1 - u, 1 - v) from the first texture coordinate and t = gameTime.w in seconds: three travelling
 sine waves k = 1..3, each with a wavelength L, a direction angle a in the (U, V) plane, a speed s in cycles per second and an
@@ -234,9 +295,10 @@ at record +0x5c (stride 0x74; world surfaces and entity 0x7fe use 0). The scene 
 (0x10025c65 -> 0x10025c79), carried through the scene command (0x10021fb0, view +8) into 0x1070c3bc (0x10032675).
 
 openiw2: `assets::flagWave` and `assets::gameTimeConst` (src/assets/material.h) and the same function in the iw2view vertex
-shaders (`flag_flap`, vs_main and the point light vs_dlight); the vertex weight and an offset scale (1 for entity models, the
-placement scale for static models baked into world space) go in a per-vertex attribute that is 0 for every other surface.
+shaders (`flag_flap`, vs_main, the light-probe vs_probe and the point light vs_dlight); the vertex weight and an offset scale
+(1 for entity models, the placement scale for static models baked into world space) go in a per-vertex attribute that is 0 for
+every other surface.
 gameTime is pushed once per frame from the client render time (`clientRenderTimeMs`), not the 20 Hz world time. Deliberate
 deviations: t is taken modulo 10 s (the period above) so the float keeps its precision; the fogged point light pass bends too,
-so its additive light stays on the cloth. TODO(spec): the per-entity material time is taken as 0 for flag models, and which
-static-model variant (bent or not) the renderer picks for static flags. Tests: `tests/test_xmodel.cpp`.
+so its additive light stays on the cloth. TODO(spec): the per-entity material time is taken as 0 for flag models; static flags
+bend with fog too. Tests: `tests/test_xmodel.cpp`.

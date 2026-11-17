@@ -101,6 +101,19 @@ int main() {
     CHECK(layerTieBias(true) == 0.0f);
     CHECK(layerTieBias(false) < 0.0f && layerTieBias(false) > -1.0f / 65536.0f);
 
+    // Technique slot selection (docs/spec/material.md "Model lighting techniques", 0x1002f730).
+    CHECK(litTechniqueSlot(kTechLightmap, 3, kWorldEntity, 0) == kTechLightmap);           // lightmapped world keeps the lightmap slot
+    CHECK(litTechniqueSlot(kTechLightmap, 31, kWorldEntity + 5, 0) == kTechLightProbe);    // world surface without a lightmap
+    CHECK(litTechniqueSlot(kTechLightmap, 31, 0x7fe, 0) == kTechLightProbe);
+    CHECK(litTechniqueSlot(kTechLightmap, 31, kStaticModelEntity, 0) == kTechLightProbeSModelCached);
+    CHECK(litTechniqueSlot(kTechLightmap, 31, 12, 2) == kTechLightProbeSModel);            // static model as a type-2 scene record
+    CHECK(litTechniqueSlot(kTechLightmap, 31, 12, 0) == kTechLightProbe);                  // xmodel entity
+    CHECK(litTechniqueSlot(kTechLightmap, 31, 12, 3) == kTechLightProbe);
+    CHECK(litTechniqueSlot(kTechBuildFloatz, 31, 12, 0) == kTechBuildFloatz);             // other walks keep their type
+    CHECK(litTechniqueSlot(1, 31, 12, 0) == 1);
+    CHECK(foggedTechniqueSlot(kTechLightProbe, true, 2) == 11 && foggedTechniqueSlot(kTechLightProbe, false, 2) == kTechLightProbe);
+    CHECK(foggedTechniqueSlot(kTechBuildFloatz, true, 1) == kTechBuildFloatz && foggedTechniqueSlot(26, true, 1) == 27);
+
     if (failures) return 1;
     std::printf("materialstate tests passed\n");
     return 0;

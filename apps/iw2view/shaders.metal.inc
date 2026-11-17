@@ -340,6 +340,82 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
     const float3 spec = mix(0.3, 1.0, vis) * (u.sunColor.rgb * ss.rgb * strength) * u.sunDirection.w; // lightSpecular0 = lightColor0 * r_specularColorScale (sunDirection.w, default 1)
     return float4(apply_fog(base.rgb * (lm + sunDiffuse) + spec, length(in.eyeVec), u), outA);
 }
+// Light-probe techniques of the phong_* technique sets for scene entities (lprobe, lprobe_s, lprobe_a*, lprobe_dtl*, lprobe_flag*;
+// docs/spec/material.md "Model lighting techniques"): the lit pass of every xmodel entity whose surface has no lightmap. Per pixel:
+// the normal map perturbs the interpolated normal (the same decode as fs_spec), the light-grid probe is evaluated for that normal, the
+// sun adds visibility * max(0, N.L) * sunColor, and the _s variants add the Phong specular of the specular map with the per-vertex
+// half angle, scaled by mix(0.3, 1, visibility).
+struct ProbeVertexUniforms {
+    float4x4 viewProj;
+    float4 eye;
+    float4x4 model;
+    float4 sun; // lightPosition0 (direction towards the sun)
+};
+struct ProbeVertexOut {
+    float4 position [[position]];
+    float3 normal;
+    float3 tangent;
+    float3 binormal;
+    float4 color;
+    float2 uv;
+    float3 halfAngle;
+    float3 eyeVec;
+};
+vertex ProbeVertexOut vs_probe(VertexIn in [[stage_in]], constant ProbeVertexUniforms& u [[buffer(0)]], constant GameTimeU& gt [[buffer(1)]]) {
+    ProbeVertexOut o;
+    float3 pos = in.position, nrm = in.normal;
+    flag_flap(in.wave, in.uv, gt.gameTime.w, in.tangent, in.binormal, pos, nrm); // lprobe_flag*: the cloth wave of vs_main
+    o.position = world_clip(u.viewProj, u.model, pos, u.eye.w); // same expression as vs_main (overlays on model surfaces)
+    const float3 wp = (u.model * float4(pos, 1.0)).xyz;
+    o.normal = (u.model * float4(nrm, 0.0)).xyz;
+    o.tangent = (u.model * float4(in.tangent, 0.0)).xyz;
+    o.binormal = (u.model * float4(in.binormal, 0.0)).xyz;
+    o.color = in.color;
+    o.uv = in.uv;
+    o.halfAngle = normalize(normalize(u.eye.xyz - wp) + u.sun.xyz); // Phong_VertexSetup
+    o.eyeVec = wp - u.eye.xyz;
+    return o;
+}
+// u.params: x alpha test, y 1 = specular map, z 1 = normal map, w fullbright; u.lmWeights: xy detail scale, z 1 = detail;
+// u.sunColor.w: r_specularColorScale; u.scroll.x: V offset (tread scroll).
+fragment float4 fs_probe(ProbeVertexOut in [[stage_in]],
+                         constant FragmentUniforms& u [[buffer(0)]],
+                         texture2d<float> colorMap [[texture(0)]],
+                         texture2d<float> normalMap [[texture(1)]],
+                         texture2d<float> specularMap [[texture(2)]],
+                         texture2d<float> specularity [[texture(3)]],
+                         texture2d<float> detailMap [[texture(4)]],
+                         sampler colorSampler [[sampler(0)]],
+                         sampler normalSampler [[sampler(1)]],
+                         sampler specSampler [[sampler(2)]],
+                         sampler specularitySampler [[sampler(3)]],
+                         sampler detailSampler [[sampler(4)]]
+                         ) {
+    const float2 uv = in.uv - float2(0.0, u.scroll.x);
+    float4 tex = colorMap.sample(colorSampler, uv);
+    if (u.lmWeights.z > 0.5) tex.rgb += detailMap.sample(detailSampler, uv * u.lmWeights.xy).rgb - 0.5; // lib/shade.hlsl USE_DETAIL
+    const float4 base = tex * in.color;
+    if (!uses_coverage_ramp(u.params.x) && alpha_rejected(u.params.x, base.a)) discard_fragment();
+    const float outA = u.params.x > 3.5 ? coverage_alpha(u.params.x, base.a) : u.params.x < -0.5 ? 1.0 : base.a;
+    if (u.params.w > 0.5) return float4(apply_fog(base.rgb, length(in.eyeVec), u), outA);
+    float3 n = in.normal;
+    if (u.params.z > 0.5) { // Normal_GetSample (wy = alpha, green) and Normal_DecodeNormalizedWorldSpace
+        const float4 ns = normalMap.sample(normalSampler, uv);
+        n += (2.0 * ns.a - 1.0) * in.tangent + (2.0 * ns.g - 1.0) * in.binormal;
+    }
+    n = normalize(n);
+    float vis = u.ambient.w; // lightColor0.a: the entity's sun visibility (* dynamicShadowSampler, no dynamic shadows: 1)
+    float3 probe = u.sunDirection.w > 0.5 ? probe_lighting(n, u) : u.ambient.rgb;
+    const float3 sunDiffuse = vis * max(dot(u.sunDirection.xyz, n), 0.0) * u.sunColor.rgb;
+    float3 spec = float3(0.0);
+    if (u.params.y > 0.5) { // Phong_SpecularLighting / Phong_SpecularVisibility
+        const float4 ss = specularMap.sample(specSampler, uv);
+        const float nh = dot(normalize(in.halfAngle), n);
+        const float3 strength = float3(specularity.sample(specularitySampler, float2(ss.a, nh)).r);
+        spec = mix(0.3, 1.0, vis) * (u.sunColor.rgb * ss.rgb * strength) * u.sunColor.w;
+    }
+    return float4(apply_fog(base.rgb * (probe + sunDiffuse) + spec, length(in.eyeVec), u), outA);
+}
 // ---- glow / bloom post chain (materials/shaders/glow_setup.hlsl, filter_symmetric_N.hlsl, glow_apply_bloom/sky_bleed.hlsl) ----
 struct GlowU {
     float4 a; // setup: xy = dest texel size (inv width/height), blur: xy = step in uv, z = radius, apply: x = bloom intensity, y = sky bleed intensity

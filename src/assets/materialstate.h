@@ -88,6 +88,21 @@ constexpr bool surfaceDrawsBefore(const SurfaceKey& a, const SurfaceKey& b) {
     if (a.layer != b.layer) return a.layer < b.layer;
     return a.entity < b.entity;
 }
+// Technique slots of a technique set (1.3 DLL name table filled at 0x1001c0d1; docs/spec/material.md "Model lighting techniques").
+inline constexpr int kTechBuildFloatz = 2, kTechLightmap = 6, kTechLightProbe = 9, kTechLightProbeSModel = 12, kTechLightProbeSModelCached = 15;
+// The technique slot the lit walk (or any walk) uses for a list surface, without the fog offset (0x1002f730): a surface without a
+// lightmap (layer 31) in the lightmap walk takes a light-probe slot by its entity: a world surface (entity 0x800 and up, clamped to
+// 0x7fe by the walker) the light probe, a static model list entity (0x7ff) the cached static-model probe, a scene entity record of
+// type 2 (a static model turned into a record by 0x10023fe0) the static-model probe, any other scene entity the light probe.
+constexpr int litTechniqueSlot(int walkType, int layer, int entity, int recordType) {
+    if (walkType != kTechLightmap || layer != 31) return walkType;
+    if (entity >= 0x7fe && entity != kStaticModelEntity) return kTechLightProbe;
+    if (entity == kStaticModelEntity) return kTechLightProbeSModelCached;
+    return recordType == 2 ? kTechLightProbeSModel : kTechLightProbe;
+}
+// Fog variant added to slots 3..26 when fog is on: 1 linear, 2 exponential.
+constexpr int foggedTechniqueSlot(int slot, bool fogOn, int fogMode) { return fogOn && slot >= 3 && slot <= 26 ? slot + fogMode : slot; }
+
 // Material order from the first-use indices of its technique set and of the material itself.
 constexpr int materialOrder(int techsetFirstUse, int materialFirstUse) { return techsetFirstUse << 16 | materialFirstUse; }
 

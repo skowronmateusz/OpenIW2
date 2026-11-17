@@ -409,6 +409,7 @@ struct Batch {
     float fxParm[2] = {0, 0};
     int sort = 0, materialOrder = 0; // see MatInfo
     bool emissive = false, multiplyFog = false, pointLit = false, pointBlend = false; // see MatInfo
+    bool probeLit = false; // model batches: see MatInfo::probeLit (normal map pointNormalTex, specular map specTex)
     // Static world batches (Scene::batches): the range of Scene::cullPieces whose indices make up the batch, in index order.
     uint32_t pieceFirst = 0, pieceCount = 0;
 };
@@ -474,6 +475,9 @@ struct MatInfo {
     bool multiplyFog = false; // effect_multiply: the fogged techniques add the multiply_fog pass (effect_multiply_nofog has none)
     bool pointLit = false;    // the technique set has a "pointlight no fog" technique
     bool pointBlend = false;  // ... which is l_point_blend (light scaled by the surface alpha)
+    // phong_* technique set: an entity model surface is lit by its light-probe technique (lprobe*: normal-mapped probe, sun and, for
+    // _spec sets, specular per pixel; docs/spec/material.md "Model lighting techniques").
+    bool probeLit = false;
 };
 
 // water.techset / water_l_sun.tech (lib/water.hlsl): waterColor constant and the cubicEnvMap reflection cube.
@@ -790,6 +794,7 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
             }
             mi.scroll = m.techniqueSet.size() > 7 && m.techniqueSet.compare(m.techniqueSet.size() - 7, 7, "_scroll") == 0;
             mi.alphaOne = mi.pass == Pass::Opaque && (m.techniqueSet.rfind("phong_", 0) == 0 || m.techniqueSet.rfind("ambient_", 0) == 0);
+            mi.probeLit = m.techniqueSet.rfind("phong_", 0) == 0;
             for (const auto& t : m.textures)
                 if (t.samplerName == "colorMap") { mi.colorState = t.samplerState; break; }
             const std::string& img = m.colorImage();
@@ -883,7 +888,7 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
             }
             Batch b;
             b.pass = mi.pass;
-            b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState;
+            b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState; b.probeLit = mi.probeLit, b.specTex = mi.specTex, b.specState = mi.specState;
             b.texture = mi.texture;
             b.lightmap = -3;
             b.polygonOffset = mi.polygonOffset;
@@ -944,7 +949,7 @@ void buildSkinData(Scene::CpuModel& cm) {
         }
         Batch b;
         b.pass = mi.pass;
-        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState;
+        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState; b.probeLit = mi.probeLit, b.specTex = mi.specTex, b.specState = mi.specState;
         b.texture = mi.texture;
         b.lightmap = -3;
         b.polygonOffset = mi.polygonOffset;
@@ -1195,7 +1200,7 @@ const GpuModel* spriteModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, cons
         if ((mi.pass == Pass::Skip && mi.fxKind != 2) || mi.pass == Pass::Sky) continue;
         Batch b;
         b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.fxKind == 2 ? Pass::Blend : mi.pass;
-        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState;
+        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState; b.probeLit = mi.probeLit, b.specTex = mi.specTex, b.specState = mi.specState;
         b.texture = mi.texture;
         b.colorState = mi.colorState;
         b.lightmap = -3;
@@ -1384,7 +1389,7 @@ const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
         const bool useOutdoor = outdoorTest && scene.outdoor.valid() && !std::getenv("IW2_NO_OUTDOOR");
         Batch b;
         b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest ? Pass::Blend : mi.pass;
-        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState;
+        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState; b.probeLit = mi.probeLit, b.specTex = mi.specTex, b.specState = mi.specState;
         b.texture = mi.texture;
         b.colorState = mi.colorState;
         b.lightmap = -3;
@@ -1480,7 +1485,7 @@ const GpuModel* marksModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
         if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
         Batch b;
         b.pass = mi.pass == Pass::Additive ? Pass::Additive : Pass::Blend;
-        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState;
+        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState; b.probeLit = mi.probeLit, b.specTex = mi.specTex, b.specState = mi.specState;
         b.texture = mi.texture;
         b.colorState = mi.colorState;
         b.lightmap = k.second < int(scene.lightmaps.size()) ? k.second : -3;
@@ -1877,8 +1882,9 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.binormal[0] = binormal.x; g.binormal[1] = binormal.y; g.binormal[2] = binormal.z;
                 { const auto c = assets::drawnVertexColor(mi.flag, v.color); std::memcpy(g.color, c.data(), 4); }
                 // Baked into world space: the wave runs in model space before the placement, so its offset takes the model scale.
-                // TODO(spec): whether static models wave in the original depends on the smodel technique the renderer picks
-                // (the flag techset maps only "lightprobe smodel no fog" to a flag shader; the fog and cached variants are rigid).
+                // A visible static model is drawn as a type-2 scene record (1.3 DLL 0x10023fe0), i.e. with the "lightprobe smodel"
+                // technique (docs/spec/material.md "Model lighting techniques"), which the flag technique set bends in its no-fog variant
+                // only. TODO(spec): the fogged variants are rigid in the original; iw2view bends static flags with fog too.
                 if (mi.flag) g.wave[0] = float(v.color[3]) / 255.0f, g.wave[1] = pl.scale;
                 g.uv[0] = v.uv[0]; g.uv[1] = v.uv[1];
                 const float ndl = std::max(0.0f, dot(n, scene.sunDirection));
@@ -2307,6 +2313,7 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* pipelines[5] = {}; // Opaque, AlphaTest, Blend, Additive, Multiply
     SDL_GPUGraphicsPipeline* statePipelines[5][3][3] = {}; // [pass][polygon offset 0..2][cull none / back / front]
     SDL_GPUGraphicsPipeline* specPipelines[3][3][3] = {}; // lmap_s: [Opaque, AlphaTest, Blend][polygon offset][cull]
+    SDL_GPUGraphicsPipeline* probePipelines[5][3][3] = {}; // lprobe* (entity models of phong_* sets): [pass][polygon offset][cull]
     SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
     SDL_GPUGraphicsPipeline* objectivePipelines[3] = {}; // objective.sm: [polygon offset level]; cull back
     float gameTimeSeconds = 0.0f; // provisional gameTime.z of the objective technique (see the objective pass in draw)
@@ -2492,6 +2499,14 @@ struct Renderer {
         SDL_GPUShader* specVsh = SDL_CreateGPUShader(dev, &svsi);
         SDL_GPUShader* specFsh = SDL_CreateGPUShader(dev, &sfsi);
         if (!specVsh || !specFsh) sdlFail("spec shaders");
+        SDL_GPUShaderCreateInfo pvsi = vmain;
+        pvsi.entrypoint = "vs_probe";
+        SDL_GPUShaderCreateInfo pfsi = fs;
+        pfsi.entrypoint = "fs_probe";
+        pfsi.num_samplers = 5;
+        SDL_GPUShader* probeVsh = SDL_CreateGPUShader(dev, &pvsi);
+        SDL_GPUShader* probeFsh = SDL_CreateGPUShader(dev, &pfsi);
+        if (!probeVsh || !probeFsh) sdlFail("probe shaders");
         for (int p = 0; p < 5; ++p) {
             SDL_GPUColorTargetDescription ct{};
             ct.format = colorFormat;
@@ -2544,6 +2559,11 @@ struct Renderer {
                     multisampleScene(pi, p == int(Pass::AlphaTest));
                     statePipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
                     if (!statePipelines[p][lvl][c]) sdlFail("SDL_CreateGPUGraphicsPipeline");
+                    SDL_GPUGraphicsPipelineCreateInfo ppi = pi; // lprobe*: same states, the probe shaders
+                    ppi.vertex_shader = probeVsh;
+                    ppi.fragment_shader = probeFsh;
+                    probePipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &ppi);
+                    if (!probePipelines[p][lvl][c]) sdlFail("probe pipeline");
                 }
             if (p == 3) { // l_point (stateMap additive_nofog): ONE / ONE, depth test only
                 pi.vertex_shader = dlightVsh;
@@ -2598,6 +2618,8 @@ struct Renderer {
         }
         SDL_ReleaseGPUShader(dev, specVsh);
         SDL_ReleaseGPUShader(dev, specFsh);
+        SDL_ReleaseGPUShader(dev, probeVsh);
+        SDL_ReleaseGPUShader(dev, probeFsh);
         {
             SDL_GPUShaderCreateInfo svs = vs;
             svs.entrypoint = "vs_sky";
@@ -3506,6 +3528,40 @@ struct Renderer {
         };
         auto drawItemBatch = [&](const DrawItem& it, const Batch& b) {
             const Pass p = b.pass;
+            // An xmodel entity's lit surface without a lightmap takes the light-probe technique (docs/spec/material.md "Model lighting
+            // techniques"); for phong_* sets that is lprobe*. IW2_NO_LPROBE=1 (debug) draws it with the per-vertex fs_main path instead.
+            static const bool noLprobe = std::getenv("IW2_NO_LPROBE") != nullptr;
+            const int itemEntity = int(&it - items.data());
+            if (b.probeLit && !noLprobe && scene.specularity &&
+                assets::litTechniqueSlot(assets::kTechLightmap, b.lightmap >= 0 ? b.lightmap : 31, itemEntity, 0) == assets::kTechLightProbe) {
+                bindItem(it);
+                SDL_BindGPUGraphicsPipeline(pass, probePipelines[int(p)][b.polygonOffset][b.cull]);
+                struct PVU { VU base; float sun[4]; } pvu{itemVu(it), {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0}};
+                pvu.base.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f;
+                SDL_PushGPUVertexUniformData(cmd, 0, &pvu, sizeof(pvu));
+                const bool hasNormal = b.pointNormalTex >= 0, hasSpec = b.specTex >= 0;
+                const SDL_GPUTextureSamplerBinding tex[5] = {
+                    {scene.textures[size_t(b.texture)], matSampler(b.colorState)},
+                    {scene.textures[size_t(hasNormal ? b.pointNormalTex : b.texture)], matSampler(b.pointNormalState)},
+                    {scene.textures[size_t(hasSpec ? b.specTex : b.texture)], matSampler(b.specState)},
+                    {scene.specularity, clampSampler},
+                    detailBinding(b.detail)};
+                SDL_BindGPUFragmentSamplers(pass, 0, tex, 5);
+                FragmentUniforms fu = {
+                    {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
+                    {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, specColorScaleDvar()},
+                    {b.detail >= 0 ? scene.details[size_t(b.detail)].scale[0] : 0.0f, b.detail >= 0 ? scene.details[size_t(b.detail)].scale[1] : 0.0f,
+                     b.detail >= 0 && !std::getenv("IW2_NO_DETAIL") ? 1.0f : 0.0f, 0.0f},
+                    {alphaParam(b, p), hasSpec ? 1.0f : 0.0f, hasNormal ? 1.0f : 0.0f, fullbright ? 1.0f : 0.0f},
+                    {it.ambient[0], it.ambient[1], it.ambient[2], it.sunVisibility},
+                    {b.scroll ? it.scrollV : 0.0f, 0, 0, 0}};
+                std::memcpy(fu.probe, it.probe, sizeof(fu.probe));
+                if (p != Pass::Multiply) applyFog(fu, p);
+                SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+                drawIndexed(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                unbindItem(it);
+                return;
+            }
             bindItem(it);
             bindOffset(p, b.polygonOffset, b.cull, itemVu(it));
             const Lightmap& elm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
