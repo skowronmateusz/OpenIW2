@@ -49,6 +49,16 @@ int countFor(const std::vector<std::pair<int, std::string>>& v, int client) {
 
 int main() {
     using namespace iw2::game;
+    // Quick message gate (0x4c1680): the player state's pm_flags 0x800000, not a script field (a network client has none).
+    CHECK(mpQuickMessageAllowedPs(0x800000, 0));         // playing, as the server sends it
+    CHECK(mpQuickMessageAllowedPs(0x800002, 0));         // crouched
+    CHECK(!mpQuickMessageAllowedPs(0x1000000, 4));       // spectator
+    CHECK(!mpQuickMessageAllowedPs(0, 5));               // intermission
+    CHECK(mpQuickMessageAllowedPs(0, 6));                // dead, not following
+    CHECK(!mpQuickMessageAllowedPs(0x400000, 6));        // killcam view
+    CHECK(!mpQuickMessageAllowedPs(0, 0));               // no snapshot flags
+    CHECK(mpQuickMessageAllowedSession(0) && mpQuickMessageAllowedSession(1));
+    CHECK(!mpQuickMessageAllowedSession(2) && !mpQuickMessageAllowedSession(3));
     // Cleaning (0x44a8d0, 0x4fe010).
     CHECK(mpCleanString("^1Red^7 Guy\x01!") == "Red Guy!");
     CHECK(mpCleanString("a^^1b") == "a^b"); // "^^" is not a colour code: the first '^' is kept, then "^1" is dropped

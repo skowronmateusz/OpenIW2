@@ -117,7 +117,11 @@ that is not a colour code, becomes `UnnamedPlayer` (0x5b8544).
   whose player state has pm_flags bit 0x800000. The game module sets that bit in the end-of-frame client update
   (0x501068..0x501098) for a client in session state playing or dead that is not following another client.
   TODO(spec): the other writers of the bit and how the UI call (0x4024a0) treats menus already open. The port opens
-  the menu while the local player is playing or dead and no other menu is open.
+  the menu while no other menu is open and the gate holds: a network client reads the snapshot's player state (pm_flags bit
+  0x800000, or pm_type 6 without the follow bit, because the port's server sends the bit while playing only; TODO(spec):
+  the bit while dead on the wire), a local server the client's session state (playing or dead). A network client has no
+  script state of its own, so the gate never reads `sessionstate`. `openscriptmenu <menu> <response>` on a network client
+  sends `mr` with the server's precache slot of the menu (matched ignoring case), like a menu's own response.
 - `wm_quickmessage.menu:124-154`: keys 1, 2, 3 close it and open `quickcommands`, `quickstatements`,
   `quickresponses`; the script menus (`quickcommands.menu:124-236` etc.) answer the digit keys with
   `scriptMenuResponse "<digit>"` and close themselves. All four menus set `cl_bypassMouseInput` 1 while open: they are keyboard-only. Port rule (`menuBypassesGameInput`,

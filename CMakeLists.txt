@@ -987,6 +987,13 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(mpchat PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
 endif()
 
+add_executable(test_mpquickmsg tests/test_mpquickmsg.cpp)
+target_link_libraries(test_mpquickmsg PRIVATE iw2_game)
+add_test(NAME mpquickmsg COMMAND test_mpquickmsg)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  set_tests_properties(mpquickmsg PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache")
+endif()
+
 add_executable(test_mpmenus tests/test_mpmenus.cpp)
 target_link_libraries(test_mpmenus PRIVATE iw2_game)
 add_test(NAME mpmenus COMMAND test_mpmenus)

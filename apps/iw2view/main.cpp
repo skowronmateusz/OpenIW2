@@ -6137,6 +6137,7 @@ int main(int argc, char** argv) {
             return ui::ingameCloseActive(world && world->multiplayer(), world != nullptr, std::atoi(menuEnv.getCvar("cl_paused").c_str()) != 0);
         };
         menuEnv.multiplayer = [&] { return world && world->multiplayer(); };
+        auto lowerAscii = [](std::string t) { for (auto& ch : t) ch = char(std::tolower(static_cast<unsigned char>(ch))); return t; };
         menuEnv.scriptMenuResponse = [&](const std::string& menu, const std::string& response) {
             // "cmd mr <menu index> <response>" (0x4c8e20); the index is the menu's precache slot.
             if (!world) return;
@@ -6146,7 +6147,7 @@ int main(int argc, char** argv) {
                     // precaches its menus with its own cvars, so its order can differ from the server's.
                     for (int i = 0; i < 32; ++i) {
                         const auto cs = netClient->configstrings.find(netgame::kMenuConfigstrings + i);
-                        if (cs != netClient->configstrings.end() && cs->second == menu) {
+                        if (cs != netClient->configstrings.end() && lowerAscii(cs->second) == lowerAscii(menu)) {
                             netClient->addReliableCommand("mr " + std::to_string(netClient->serverId) + " " + std::to_string(i) + " " + response);
                             break;
                         }
@@ -6851,9 +6852,18 @@ int main(int argc, char** argv) {
                 // with the local player's pm_flags 0x800000 (playing or dead and not following, 0x501068). The port loads the menu
                 // and its three script menus on first use.
                 else if (c == "mp_quickmessage") {
-                    const game::Entity* lp = world->mpClientEntity(world->mpLocalClient());
-                    const std::string ss = lp ? lp->obj->get("sessionstate").toString() : std::string();
-                    if ((ss == "playing" || ss == "dead") && frontStack.empty()) {
+                    // A network client has no script state: the gate reads the server's player state (snapshot), a local
+                    // server the session state of its own client.
+                    bool allowed = false;
+                    if (netClient) {
+                        if (const net::ClientSnapshot* qs = netClient->latest()) {
+                            const netgame::PsFields qf = netgame::readPs(qs->ps);
+                            allowed = game::mpQuickMessageAllowedPs(qf.pmFlags, qf.pmType);
+                        }
+                    } else {
+                        allowed = game::mpQuickMessageAllowedSession(world->mpSessionState(world->mpLocalClient()));
+                    }
+                    if (allowed && frontStack.empty()) {
                         if (!scriptMenus.find("quickmessage")) scriptMenus.loadFile("ui_mp/wm_quickmessage.menu");
                         for (const char* m : {"quickcommands", "quickstatements", "quickresponses"})
                             if (!scriptMenus.find(m)) scriptMenus.loadFile(std::string("ui_mp/scriptmenus/") + m + ".menu");
@@ -6862,6 +6872,9 @@ int main(int argc, char** argv) {
                 }
                 else if (c == "openscriptmenu") {
                     if (response.empty()) std::cout << "USAGE: openscriptmenu <parent menu name> <script menu response>\n";
+                    // A network client: the pair goes to the server as "mr" like a menu's own response (the local world
+                    // does not run the gametype); the menu is matched case-insensitively among the server's precached menus.
+                    else if (netClient) menuEnv.scriptMenuResponse(menu, response);
                     else world->mpOpenScriptMenu(menu, response);
                 }
             }

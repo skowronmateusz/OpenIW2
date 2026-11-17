@@ -74,6 +74,16 @@ private:
     int scroll_ = 0;
 };
 
+// Whether mp_QuickMessage (0x4c1680) opens the menu: the local player state has pm_flags bit 0x800000 (docs/spec/mp-chat.md
+// "Quick messages"). A network client reads the snapshot's / predicted player state. The server sets the bit for playing
+// and dead clients that follow nobody; the port's server sends it while playing only, so a dead state (pm_type 6) that
+// is not a follow view counts too (TODO(spec): the bit while dead on the wire).
+constexpr bool mpQuickMessageAllowedPs(int pmFlags, int pmType) {
+    return (pmFlags & 0x800000) != 0 || (pmType == 6 && (pmFlags & 0x400000) == 0);
+}
+// The same rule for a world that runs the gametype itself (listen server, local game): session state 0 playing / 1 dead.
+constexpr bool mpQuickMessageAllowedSession(int sessionState) { return sessionState == 0 || sessionState == 1; }
+
 // OpenIW2 addition: the history window's rectangle in virtual units, for the chat position (chatX, chatY) and the say
 // position's baseline: it spans kVisible rows above chatY, a 14-unit header row, and the message field below.
 struct MpChatPanelRect { float x0, y0, x1, y1; };
