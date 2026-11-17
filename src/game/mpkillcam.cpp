@@ -125,6 +125,8 @@ void World::mpSetLocalViewState(const MpViewState& v) {
 void World::mpPushClientEvent(int client, int event, const std::string& weapon) {
     if (!mp_ || mpRemote_ || client < 0 || size_t(client) >= mp_->clients.size()) return;
     mp_->clients[size_t(client)].events.push(event, weapon);
+    // A reload begins (the bots hear it, docs/spec/mp-bots.md "Hearing").
+    if (event == mpev::kReload || event == mpev::kReloadFromEmpty || event == mpev::kReloadStart) mpNoteReload(client);
 }
 
 void World::mpPushLocalClientEvent(int event, const std::string& weapon) {

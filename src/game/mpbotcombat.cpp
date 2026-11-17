@@ -191,22 +191,36 @@ bool botInView(const BotView& v, const std::array<float, 3>& d, float viewYawDeg
     return std::fabs(o[0]) <= v.halfYawDeg && std::fabs(o[1]) <= v.halfPitchDeg;
 }
 
+int botClassIndex(const std::string& c) {
+    static const char* kNames[7] = {"rifle", "bolt", "sniper", "smg", "mg", "shotgun", "pistol"};
+    for (int i = 0; i < 7; ++i)
+        if (c == kNames[i]) return i;
+    return -1;
+}
+
 // Damage to a client (from mpPlayerDamage / mpPlayerDie): the bots' counters and the damaged bot's reaction.
+
 void World::mpBotOnDamage(Entity& target, Entity* attacker, const std::string& mod, bool died) {
     if (!bots_) return;
     const int tc = mpClientOf(target), ac = attacker ? mpClientOf(*attacker) : -1;
     for (MpBot& b : bots_->bots) {
         if (b.client == ac && ac != tc) {
             const bool grenade = mod.rfind("MOD_GRENADE", 0) == 0;
+            // A team mate hit (team gametypes) is no hit on an enemy.
+            const bool mate = mp_->gametype != "dm" && attacker && attacker->obj->get("sessionteam").toString() == target.obj->get("sessionteam").toString();
             if (died) {
                 ++b.stats.kills, ++b.kills;
                 // Where the kill fell: its weapon lies there (docs/spec/mp-bots.md "Weapons from the ground").
                 if (target.obj->get("origin").isVector()) b.killPos = target.obj->get("origin").asVector(), b.killMs = timeMs_;
                 if (mpClientOnTurret(b.client)) ++b.stats.turretKills;
+            } else if (!mate) {
+                // The damage of every hit comes before the death (mpPlayerDamage): a killing hit is counted once.
+                if (grenade) ++b.stats.grenadeHits;
+                else if (mod.find("BULLET") != std::string::npos) {
+                    if (mpClientOnTurret(b.client)) ++b.stats.turretHits;
+                    else if (b.firingShot) b.shotHit = true; // the bot's shot hit an enemy (mpBotFireShot counts it)
+                } else if (mod == "MOD_MELEE") ++b.stats.meleeHits;
             }
-            if (grenade) b.stats.grenadeHits += !died;
-            else if (mod.find("BULLET") != std::string::npos) ++(mpClientOnTurret(b.client) ? b.stats.turretHits : b.stats.hits); // a killing bullet is a hit too
-            else if (mod == "MOD_MELEE") ++b.stats.meleeHits;
         }
         if (b.client == tc) {
             if (died) {
@@ -232,7 +246,7 @@ void World::mpBotOnDamage(Entity& target, Entity* attacker, const std::string& m
                     const float err = (float(nextRand() % 2001) / 1000.0f - 1.0f) * maxErr;
                     const float scale = 0.8f + float(nextRand() % 401) / 1000.0f;
                     const int delay = 120 + int(float(botSkill(b.skill).reactionMs) * b.trait.reaction * 0.5f);
-                    mpBotAlert(b, attacker->number, botHeardPosition(b.ps.origin, attacker->obj->get("origin").asVector(), err, scale), delay, 3);
+                    mpBotAlert(b, attacker->number, botHeardPosition(b.ps.origin, attacker->obj->get("origin").asVector(), err, scale), delay, BotCue::Hit);
                 }
             }
         }

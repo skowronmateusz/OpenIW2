@@ -393,6 +393,7 @@ void World::explodeGrenade(Entity& e) {
     ++stats.grenadeExplosions;
     // A smoke grenade's cloud hides what is behind it from the bots (docs/spec/mp-bots.md "Perception").
     if (mp_ && lowerStr(weaponField(g.weapon, "offhandClass")) == "smoke grenade") mpBotSmoke(at);
+    if (mp_) mpBotGrenadeNoise(e, at, true); // and the bots hear it go off (docs/spec/mp-bots.md "Hearing")
     // 0x5267d3: radius damage only when explosionInnerDamage (+0x37c) is not 0 (the moscow potato has 0).
     const float radius = weaponFloat(g.weapon, "explosionRadius");
     if (weaponFloat(g.weapon, "explosionInnerDamage") != 0.0f)
@@ -511,6 +512,7 @@ void World::runGrenade(Entity& e) {
                 g.impactSurface = int((tr.surfaceFlags >> 20) & 0x1f);
                 if (bounceGrenade(e, tr, hitMs) && !tr.startSolid) {
                     g.bounceEvents.push_back(g.impactSurface);
+                    if (mp_) mpBotGrenadeNoise(e, grenadePosition(g, hitMs), false); // the bots hear it land (docs/spec/mp-bots.md "Hearing")
                     // The bounce event (0x5262bf): EV_POTATO_BOUNCE 0xbd for the weapon "potato", else
                     // EV_GRENADE_BOUNCE 0xbe, with the surface type (surface flags >> 20 & 0x1f). The client
                     // (0x4ba8d0 case 0xbd/0xbe) plays <potato|grenade>_bounce_<surface> (sounds built at 0x4a28c5 /

@@ -192,9 +192,26 @@ bool botWantRetreat(const BotRetreatIn& in);
 bool botGrenadeAngles(const std::array<float, 3>& from, const std::array<float, 3>& to, float speed, float speedUp, float gravity, bool high,
                       float& yawDeg, float& pitchDeg, std::array<float, 3>& vel);
 
+// What a bot hears or feels (docs/spec/mp-bots.md "Hearing"); the order is the urgency: a later cue replaces a pending
+// one only when it is at least as urgent.
+enum class BotCue : int { Steps, Reload, Gunfire, GrenadeLanded, Explosion, NearMiss, Hit, Count };
+inline int botCueUrgency(BotCue c) {
+    switch (c) {
+    case BotCue::Steps:
+    case BotCue::Reload: return 1;     // quiet: not followed while another enemy is known
+    case BotCue::Hit: return 3;        // turns the bot even in a fight
+    default: return 2;
+    }
+}
+
 // Per-bot counters for tests and the debug overlay.
 struct MpBotStats {
+    // shots: hand weapon shots (a shotgun blast is one); hits: those of them that hit an enemy (any pellet, any pass).
     int shots = 0, hits = 0, kills = 0, deaths = 0;
+    // The same by the weapon class (rifle, bolt, sniper, smg, mg, shotgun, pistol: botClassIndex) and by the distance
+    // to the enemy fought (under 500, 500..1000, over 1000 units).
+    int classShots[7] = {}, classHits[7] = {};
+    int bandShots[3] = {}, bandHits[3] = {};
     int grenades = 0, grenadeHits = 0, smokes = 0;
     int pistolSwitches = 0, adsShots = 0, crouchFrames = 0, proneFrames = 0, heard = 0, cornerChecks = 0;
     int stuckEvents = 0; // 20 s without moving 64 units (not fighting, not on the objective)
@@ -215,6 +232,9 @@ struct MpBotStats {
     int acquired = 0;           // enemies noticed by sight
     int acquiredOutsideView = 0; // of those, outside the view the bot had then (its field of view at the current zoom)
     int retreats = 0;           // spells of falling back to cover when hurt
+    int giveWays = 0;           // steps out of a team mate's way
+    int heardCue[int(BotCue::Count)] = {}; // cues that made an enemy known, by kind
+    int grenadeFlees = 0;       // runs from a live grenade that landed close by
 };
 
 // The bot's view (docs/spec/mp-bots.md "Perception"): the field of view of a player's screen at the current zoom.
@@ -225,6 +245,8 @@ struct BotView {
     float halfYawDeg = 0, halfPitchDeg = 0;
 };
 BotView botViewAngles(float fov43);
+// The index of a weapon class in MpBotStats::classShots (rifle 0, bolt 1, sniper 2, smg 3, mg 4, shotgun 5, pistol 6; -1 other).
+int botClassIndex(const std::string& weaponClass);
 // The yaw and pitch (degrees) of `dir` relative to the view angles: {to the left +, down +} as view angles turn.
 std::array<float, 2> botViewOffset(const std::array<float, 3>& dir, float viewYawDeg, float viewPitchDeg);
 // Whether a direction lies inside the view.
@@ -335,8 +357,11 @@ struct MpBot {
         int entity = -1;
         script::Vec3 pos{};
         int64_t atMs = 0;
-        int urgency = 0;          // 1 steps, 2 gunfire, 3 a hit
+        BotCue kind = BotCue::Steps;
     } alert;
+    // A live frag grenade that landed close by (heard): the bot runs from it from dangerFromMs until it goes off.
+    int dangerEnt = -1;
+    int64_t dangerFromMs = 0, dangerUntilMs = 0;
     int64_t hurtMs = -100000;     // the last hit by an enemy
     int focusEnt = -1;            // the attacker a hit turned the bot to
     int64_t focusUntilMs = 0;
@@ -348,6 +373,8 @@ struct MpBot {
     int clip = 0;
     int64_t nextFireMs = 0; // burst pauses and the reaction (the weapon's own cadence is the weapon state's)
     int burstShots = 0;
+    bool firingShot = false; // within mpBotFireShot: a damage to an enemy marks the shot as a hit
+    bool shotHit = false;
     // The player's weapon state machine (docs/spec/weapons.md): fireTime, rechamber, reload, raise / drop, semi-auto,
     // with the inventory's clip and reserve; restarted on every spawn.
     PlayerWeapon weapon;
@@ -418,6 +445,9 @@ struct MpBot {
     float scanYaw = 0;            // where a standing bot looks (it looks around)
     int64_t scanNextMs = 0;
     std::array<float, 2> escapeDir{};
+    std::array<float, 2> lastMoveDir{};  // the walk direction of the last frame (world, 0 0 standing): what a team mate reads
+    std::array<float, 2> giveWayDir{};   // stepping out of a team mate's way (docs/spec/mp-bots.md "Giving way") until then
+    int64_t giveWayUntilMs = 0;
     int64_t escapeUntilMs = 0;
     bool escapeCrouch = false;
     script::Vec3 anchorPos{};
@@ -492,6 +522,11 @@ struct BotSystem {
     int64_t walkMs = 0;           // time all bots together wanted to walk (not fighting, not on a traversal)
     double lastFrameUs = 0, maxFrameUs = 0, sumFrameUs = 0;
 };
+
+// Whether a team mate presses into the bot (docs/spec/mp-bots.md "Giving way"): it stands within 44 units (flat, heights
+// within 60) and wants to walk towards the bot (its move direction within 60 degrees of the line to the bot). `toMe` is
+// from the mate to the bot.
+bool botPushedBy(const std::array<float, 2>& toMe, float dz, const std::array<float, 2>& mateMove);
 
 // Converts a world-space move direction to the forward / right inputs for the view yaw (degrees), scaled so that the
 // larger of the two is 1 (exposed for tests).

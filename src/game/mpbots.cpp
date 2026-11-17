@@ -27,7 +27,7 @@ namespace {
 
 constexpr float kDt = 0.05f; // one server frame
 constexpr float kDeg = 3.14159265358979f / 180.0f;
-constexpr uint32_t kNavGenVersion = 9; // part of the cache key: bump when the generator changes
+constexpr uint32_t kNavGenVersion = 10; // part of the cache key: bump when the generator changes
 
 const BotSkill kSkills[4] = {
     // name       react  turn  noise omega damp  lead  tol   notice sight  burst pause  aimLag memory hear  steps  grenade corners
@@ -69,6 +69,13 @@ std::array<float, 2> botMoveInput(const std::array<float, 2>& dir, float yawDeg)
     const float m = std::max(std::fabs(f), std::fabs(r));
     if (m < 1e-4f) return {0, 0};
     return {f / m, r / m};
+}
+
+bool botPushedBy(const std::array<float, 2>& toMe, float dz, const std::array<float, 2>& m) {
+    const float d = std::hypot(toMe[0], toMe[1]), ml = std::hypot(m[0], m[1]);
+    if (d > 44.0f || std::fabs(dz) > 60.0f || ml < 0.1f) return false;
+    if (d < 1.0f) return true;
+    return (toMe[0] * m[0] + toMe[1] * m[1]) / (d * ml) > 0.5f;
 }
 
 float botTurn(float from, float to, float maxStep) {
@@ -739,6 +746,10 @@ void World::mpBotFrame(MpBot& b) {
     } else if (!fighting) {
         b.coverCrouch = false;
     }
+    // Running from a live grenade that landed close by (src/game/mpbotsense.cpp), also in a fight; not while planting or
+    // defusing, not on a ladder, mantle or leap. The bot runs standing, without aiming.
+    std::array<float, 2> fleeDir{0, 0};
+    const bool fleeing = !traverse && !b.holdingUse && mpBotFleeGrenade(b, fleeDir);
     const int wstate = b.weapon.stateNumber();
     const bool reloading = wstate >= 5 && wstate <= 9; // reload states of PM_Weapon (docs/spec/weapons.md)
     const bool holdFire = reloading || now < b.nextFireMs;
@@ -746,7 +757,7 @@ void World::mpBotFrame(MpBot& b) {
     si.weaponClass = wclass;
     si.dist = enemyDist;
     si.fighting = engage && !atUse && !charge;
-    si.moving = traverse != nullptr || walkObjective;
+    si.moving = traverse != nullptr || walkObjective || fleeing;
     si.coverCrouch = b.coverCrouch;
     si.holdFire = holdFire;
     // Behind cover the bot crouches (docs/spec/mp-bots.md "Cover").
@@ -790,6 +801,16 @@ void World::mpBotFrame(MpBot& b) {
             b.strafe = -b.strafe;
         }
         b.path.clear();
+    }
+
+    // Out of a team mate's way (not in a fight, on a traversal, holding use or behind cover).
+    if (!engage && !traverse && !atUse && !b.holdingUse && !(b.detour.kind == BotDetour::Cover && b.inCover)) mpBotGiveWay(b, *e, moveDir);
+    else b.giveWayUntilMs = 0;
+    // Away from a live grenade that landed close by (decided above), also in a fight.
+    if (fleeing) {
+        moveDir = fleeDir;
+        b.path.clear();
+        b.pathIdx = 0;
     }
 
     // Aim: a point that follows the enemy's chest with the skill's lag; a hidden enemy seen in the last 2 s is
@@ -1002,7 +1023,6 @@ void World::mpBotFrame(MpBot& b) {
         mpBotFireShot(b, *e, eye, firedWeapon, b.weapon.clip() == 0 && shot == shotsNow - 1);
         cl.animInput.fired = true;
         ++b.shots;
-        ++b.stats.shots;
         if (adsReady) ++b.stats.adsShots;
         b.clip = b.weapon.clip();
         const BotBurst burst = botBurst(wclass, enemyDist, sk.burst, sk.burstPauseMs);
@@ -1122,6 +1142,16 @@ void World::mpBotFrame(MpBot& b) {
                          int(obj.valid), obj.what, obj.valid ? dist3(obj.pos, b.ps.origin) : 0.0f, int(traverse != nullptr), int(b.detour.kind));
             for (size_t k = b.pathIdx > 0 ? b.pathIdx - 1 : 0; k < b.path.size() && k < b.pathIdx + 3; ++k)
                 std::fprintf(stderr, " n(%.0f %.0f %.0f)", nav.nodes[size_t(b.path[k])][0], nav.nodes[size_t(b.path[k])][1], nav.nodes[size_t(b.path[k])][2]);
+            std::fprintf(stderr, " mantling %d pmtime %d pmtype %d", int(b.ps.mantling), b.ps.pmTimeMs, b.ps.pmType);
+            for (size_t c = 0; c < bots_->clients.size(); ++c) {
+                const BotClientInfo& ci = bots_->clients[c];
+                if (ci.playing && ci.ent != e && dist3(ci.origin, b.ps.origin) < 80.0f) {
+                    const MpBot* ob = mpBot(int(c));
+                    std::fprintf(stderr, " near client %zu team %d (mine %d) at %.0f %.0f %.0f bot %d obj '%s' vis %d enemy %d turret %d", c, ci.team,
+                                 bots_->clients[size_t(b.client)].team, ci.origin[0], ci.origin[1], ci.origin[2], ob != nullptr, ob ? ob->objective.c_str() : "",
+                                 ob ? int(ob->enemyVisible) : -1, ob ? ob->enemy : -1, int(mpClientOnTurret(int(c))));
+                }
+            }
             std::fprintf(stderr, "\n");
         }
         b.anchorPos = b.ps.origin;
@@ -1137,6 +1167,7 @@ void World::mpBotFrame(MpBot& b) {
         }
     }
 
+    b.lastMoveDir = traverse ? std::array<float, 2>{0, 0} : moveDir;
     PlayerInput in;
     const auto fr = botMoveInput(moveDir, b.yaw);
     in.forward = fr[0];
@@ -1200,6 +1231,14 @@ void World::mpBotFrame(MpBot& b) {
     e->obj->set("origin", Value(Vec3{b.ps.origin[0], b.ps.origin[1], b.ps.origin[2]}));
     e->obj->set("angles", Value(Vec3{0, b.yaw, 0}));
     e->velocity = {b.ps.velocity[0], b.ps.velocity[1], b.ps.velocity[2]};
+    // The bot's box where the move put it, with the top of its stance (docs/spec/mp-pmove.md "Players against each
+    // other"), at once: the bots moved after it in this frame collide with it there, not where it stood at the frame start
+    // (two bots stepping into the same place in one frame would end up inside each other).
+    {
+        const float top = b.ps.stance == Stance::Prone ? 30.0f : b.ps.stance == Stance::Crouch ? 50.0f : 70.0f;
+        e->obj->set("$clipheight", Value(top));
+        collision_->moveEntityClip(e->number, b.ps.origin, top);
+    }
     // Movement for the third-person animation (docs/spec/mp-players.md).
     cl.animInput.valid = true;
     cl.animInput.move.viewHeightTarget = int(b.ps.viewHeightTarget);
@@ -1210,6 +1249,64 @@ void World::mpBotFrame(MpBot& b) {
     cl.animInput.ads = b.ps.ads;
     mpSetViewState(b.client, mpViewStateOf(b.weapon, b.ps)); // the recorded view state (the killcam view of this bot), its ground and legs event
     mpBotCommand(b);
+}
+
+// Giving way (docs/spec/mp-bots.md "Giving way"): a team mate that wants to walk presses into the bot (an escort or a guard
+// that stands on its objective, in a passage one body wide): the bot steps aside, across the mate's way on the side it
+// already stands, else the other side, else ahead along the mate's way, for a second. Two bots walking into each other
+// head-on: the one with the higher client number steps aside. Returns true while it steps aside (moveDir is the step).
+bool World::mpBotGiveWay(MpBot& b, Entity& self, std::array<float, 2>& moveDir) {
+    const int64_t now = timeMs_;
+    if (mp_->gametype != "dm" && now >= b.giveWayUntilMs && size_t(b.client) < bots_->clients.size()) {
+        const std::vector<BotClientInfo>& infos = bots_->clients;
+        const BotClientInfo& me = infos[size_t(b.client)];
+        const bool walking = moveDir[0] != 0 || moveDir[1] != 0;
+        const NavGraph& nav = *bots_->nav;
+        for (size_t c = 0; c < infos.size() && me.team != 0; ++c) {
+            const BotClientInfo& ci = infos[c];
+            if (int(c) == b.client || !ci.playing || ci.team != me.team || !ci.ent) continue;
+            // What the mate wants: a bot's walk of its last frame; a player's command move turned by its view yaw.
+            std::array<float, 2> m{0, 0};
+            if (const MpBot* ob = mpBot(int(c))) {
+                m = ob->lastMoveDir;
+            } else {
+                float fwd = 0, right = 0, yaw = 0;
+                if (ci.ent == player_) {
+                    fwd = float(playerCmd_.forward), right = float(playerCmd_.right), yaw = playerCmd_.viewAngles[1];
+                } else if (const MpPlayerInput* pi = mpPlayerInput(int(c)); pi && pi->valid) {
+                    fwd = pi->move.forwardMove, right = pi->move.rightMove, yaw = v3(ci.ent->obj->get("angles"))[1];
+                }
+                const float cy = std::cos(yaw * kDeg), sy = std::sin(yaw * kDeg);
+                m = {fwd * cy + right * sy, fwd * sy - right * cy}; // the right axis of yaw is (sin, -cos)
+            }
+            const std::array<float, 2> toMe{me.origin[0] - ci.origin[0], me.origin[1] - ci.origin[1]};
+            if (!botPushedBy(toMe, me.origin[2] - ci.origin[2], m)) continue;
+            const float tl = std::max(1e-3f, std::hypot(toMe[0], toMe[1]));
+            if (walking && !(-(moveDir[0] * toMe[0] + moveDir[1] * toMe[1]) / tl > 0.5f && b.client > int(c))) continue;
+            const float ml = std::hypot(m[0], m[1]);
+            const std::array<float, 2> u{m[0] / ml, m[1] / ml}, perp{-u[1], u[0]};
+            const float side = perp[0] * toMe[0] + perp[1] * toMe[1] >= 0 ? 1.0f : -1.0f;
+            const std::array<float, 2> tries[3] = {{perp[0] * side, perp[1] * side}, {-perp[0] * side, -perp[1] * side}, u};
+            std::array<float, 2> pick{0, 0};
+            for (const auto& t : tries) {
+                const Vec3 ahead{b.ps.origin[0] + t[0] * 40.0f, b.ps.origin[1] + t[1] * 40.0f, b.ps.origin[2]};
+                if (nav.size() && nav.nearest(ahead, 40.0f, true) < 0) continue;
+                const Vec3 step{b.ps.origin[0] + t[0] * 24.0f, b.ps.origin[1] + t[1] * 24.0f, b.ps.origin[2]};
+                const TraceResult tr = collision_->trace(b.ps.origin, step, {-15, -15, 18}, {15, 15, 70}, Contents::PlayerSolid, self.number);
+                if (tr.startSolid || tr.fraction < 1.0f) continue;
+                pick = t;
+                break;
+            }
+            if (pick[0] == 0 && pick[1] == 0) continue;
+            b.giveWayDir = pick;
+            b.giveWayUntilMs = now + 1000;
+            ++b.stats.giveWays;
+            break;
+        }
+    }
+    if (now >= b.giveWayUntilMs) return false;
+    moveDir = b.giveWayDir;
+    return true;
 }
 
 // The bot's command of this frame as the server reads a client's (docs/spec/mp-bots.md "Client side of a bot"): the

@@ -265,6 +265,17 @@ int main() {
             CHECK(n >= 0);
             if (n >= 0) CHECK(size_t(n) < g.mainCount || w.paths().findPath(n, 0).size() > 1);
         }
+        // Every usable mounted machine gun has a place on the main graph to use it from (docs/spec/mp-bots.md
+        // "Turrets"); the loft of mp_farmhouse with its gun is reached by a ladder found on the coarse grid.
+        for (const auto& t : w.mpBotTurrets()) {
+            std::cout << "  " << name << " turret " << t.entity << " at " << t.origin[0] << " " << t.origin[1] << " " << t.origin[2] << ": use node "
+                      << t.node << " at " << t.usePos[0] << " " << t.usePos[1] << " " << t.usePos[2] << ", coverage " << t.coverage << "\n";
+            CHECK(t.node >= 0 && size_t(t.node) < g.mainCount);
+        }
+        if (name == "mp_farmhouse") {
+            const int loft = g.nearest({-2304, 1392, 262}, 32.0f);
+            CHECK(loft >= 0 && size_t(loft) < g.mainCount);
+        }
     }
     return failures ? 1 : 0;
 }

@@ -257,6 +257,10 @@ NavGraph generateNavGraph(const CollisionWorld& w, const V& mins, const V& maxs,
             links[from].push_back({uint32_t(t), std::sqrt(ddx * ddx + ddy * ddy + ddz * ddz), flag, yaw});
         };
         const V ladMins{-9, -9, 8}, ladMaxs{9, 9, 70};
+        // How far the ladder probe reaches: 24 units on the 16-unit grid; on a coarser grid (a large map) the column
+        // nearest a ladder can stand farther from it (mp_farmhouse, 24-unit grid: the ladder to the loft with the
+        // machine gun was found from no column), so 1.5 cells.
+        const float ladReach = std::max(24.0f, p.cell * 1.5f);
         const V manMins{-0.1f, -0.1f, 0}, manMaxs{0.1f, 0.1f, 70};
         for (size_t i = 0; i < nodes.size(); ++i) {
             const V& o = nodes[i];
@@ -264,7 +268,7 @@ NavGraph generateNavGraph(const CollisionWorld& w, const V& mins, const V& maxs,
             for (int k = 0; k < 8; ++k) {
                 const float a = float(k) * 45.0f * kRad;
                 const V d{std::cos(a), std::sin(a), 0};
-                TraceResult tr = trace(w, o, {o[0] + d[0] * 24, o[1] + d[1] * 24, o[2]}, ladMins, ladMaxs);
+                TraceResult tr = trace(w, o, {o[0] + d[0] * ladReach, o[1] + d[1] * ladReach, o[2]}, ladMins, ladMaxs);
                 if (!tr.startSolid && tr.fraction < 1.0f && (tr.surfaceFlags & kLadderSurf) && std::fabs(tr.normal[2]) < 0.7f)
                     yaws[0].push_back(std::atan2(-tr.normal[1], -tr.normal[0]) / kRad);
                 tr = w.trace({o[0] - d[0] * 14.9f, o[1] - d[1] * 14.9f, o[2]}, {o[0] + d[0] * 40, o[1] + d[1] * 40, o[2]}, manMins,

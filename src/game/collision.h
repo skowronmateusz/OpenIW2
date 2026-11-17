@@ -98,6 +98,8 @@ public:
     // Contents of a submodel's brushes and triangles (0 for an unknown model).
     uint32_t modelContents(int model) const;
     void setEntityClips(std::vector<EntityClip> clips);
+    // Moves the box clip `id` (set with setEntityClips) to `origin` with the box top `maxsZ` (a client's move within a frame).
+    void moveEntityClip(int id, const Vec& origin, float maxsZ);
     // Static models of the map (FUN_004152b0); point traces of the world (and sight traces) test their collision surfaces.
     void setStaticModels(std::vector<StaticModel> models);
     size_t staticModelCount() const;

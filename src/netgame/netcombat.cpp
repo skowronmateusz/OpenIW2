@@ -343,6 +343,7 @@ void NetCombat::think(World& w, int client, const net::UserCmd& cmd, game::Playe
         switch (ev.kind) {
         case K::ReloadBegin:
             if (anim && !ev.weapon.empty()) anim->reloaded = true; // a reload begins (the empty-named ones only clear the aim)
+            if (!ev.weapon.empty()) w.mpNoteReload(client);        // heard by the bots (docs/spec/mp-bots.md "Hearing")
             break;
         case K::StateEvent:
             // Reload, reload start / end, rechamber, raise, put away: the event of the state change (docs/spec/net.md

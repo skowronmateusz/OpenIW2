@@ -7,6 +7,7 @@
 #include "game/world.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 
 namespace iw2::game {
@@ -84,14 +85,140 @@ void World::mpBotSmoke(const Vec3& at) {
 }
 
 // Something heard or felt: the place the bot believes the enemy at, known to it after `delayMs`. A later one replaces a
-// pending one only when it is more urgent (damage before gunfire before steps).
-void World::mpBotAlert(MpBot& b, int entity, const Vec3& believed, int delayMs, int urgency) {
-    if (b.alert.valid && b.alert.urgency > urgency && timeMs_ < b.alert.atMs) return;
+// pending one only when it is more urgent (a hit before gunfire, grenades and near misses, these before steps and
+// reloads): in a fight the shots of several enemies come one after another, and each would put the pending one off.
+void World::mpBotAlert(MpBot& b, int entity, const Vec3& believed, int delayMs, BotCue kind) {
+    if (b.alert.valid && botCueUrgency(b.alert.kind) >= botCueUrgency(kind) && timeMs_ < b.alert.atMs) return;
     b.alert.valid = true;
     b.alert.entity = entity;
     b.alert.pos = believed;
     b.alert.atMs = timeMs_ + delayMs;
-    b.alert.urgency = urgency;
+    b.alert.kind = kind;
+}
+
+namespace {
+// A random angle within +-maxDeg and a distance scale within 1 +- spread (the imprecision of a sound).
+float cueAngle(uint32_t r, float maxDeg) { return (float(r % 2001) / 1000.0f - 1.0f) * maxDeg; }
+float cueScale(uint32_t r, float spread) { return 1.0f - spread + float(r % 1001) / 1000.0f * 2.0f * spread; }
+} // namespace
+
+// The client's team for the bots (0 none, 1 axis, 2 allies) and whether `a` and `b` are enemies.
+static bool botEnemies(const MpState& mp, const BotClientInfo& a, const BotClientInfo& b) {
+    return mp.gametype == "dm" || (a.team != 0 && b.team != 0 && a.team != b.team);
+}
+
+// A grenade lands or goes off (docs/spec/mp-bots.md "Hearing"). Landing (the bounce sound) within 500 units: the thrower
+// becomes known at a place in the direction the grenade came from (up to 30..45 degrees off, the distance within 40%);
+// a frag grenade that lands within 300 units is a danger the bot runs from after its reaction time. Going off within the
+// bot's hearing distance: an enemy is known at the place of the blast (as imprecise as gunfire).
+void World::mpBotGrenadeNoise(Entity& grenade, const Vec3& at, bool exploded) {
+    if (!bots_ || !mp_ || !grenade.grenade) return;
+    const GrenadeState& g = *grenade.grenade;
+    Entity* thrower = g.parent;
+    const int tc = thrower ? mpClientOf(*thrower) : -1;
+    const bool known = tc >= 0 && size_t(tc) < bots_->clients.size() && thrower && isAlive(*thrower); // a thrower to turn to
+    std::string oc = weaponField(g.weapon, "offhandClass");
+    for (char& ch : oc) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+    const bool frag = oc != "smoke grenade";
+    const Vec3 from = known ? v3(thrower->obj->get("origin")) : at;
+    for (MpBot& b : bots_->bots) {
+        if (!b.psValid || !b.combat || size_t(b.client) >= bots_->clients.size()) continue;
+        const BotClientInfo& me = bots_->clients[size_t(b.client)];
+        if (!me.playing) continue;
+        // A team mate's grenade is no danger and no enemy (team gametypes); one whose thrower is gone (dead, left) or the
+        // bot's own is still a danger.
+        const bool mate = tc >= 0 && size_t(tc) < bots_->clients.size() && b.client != tc && !botEnemies(*mp_, me, bots_->clients[size_t(tc)]);
+        if (mate) continue;
+        const BotSkill& sk = botSkill(b.skill);
+        const float d = dist3(at, b.ps.origin);
+        const int react = int(float(sk.reactionMs) * b.trait.reaction);
+        if (!exploded) {
+            if (d > 500.0f) continue;
+            // A frag grenade heard landing is a danger: the bot runs from it once it is within 350 units
+            // (mpBotFleeGrenade), so a walk towards the thrower does not lead over it.
+            if (frag && b.dangerEnt != grenade.number) {
+                b.dangerEnt = grenade.number;
+                b.dangerFromMs = timeMs_ + react + int(nextRand() % 150);
+                b.dangerUntilMs = g.explodeMs + 100;
+            }
+            if (!known || b.client == tc || b.enemyVisible) continue; // in a fight it does not turn to the thrower
+            if (b.alert.valid && b.alert.entity == thrower->number && timeMs_ < b.alert.atMs) continue; // one throw, one cue
+            const float err = cueAngle(uint32_t(nextRand()), 30.0f + float(3 - b.skill) * 5.0f), sc = cueScale(uint32_t(nextRand()), 0.4f);
+            const Vec3 believed = botHeardPosition(b.ps.origin, from, err, sc);
+            mpBotAlert(b, thrower->number, believed, int(float(react) * 1.2f) + int(nextRand() % 200), BotCue::GrenadeLanded);
+        } else {
+            if (!known || b.client == tc || !frag || d > sk.hearDist || b.enemyVisible) continue;
+            if (b.alert.valid && b.alert.entity == thrower->number && timeMs_ < b.alert.atMs) continue;
+            const float err = cueAngle(uint32_t(nextRand()), 12.0f + float(3 - b.skill) * 4.3f), sc = cueScale(uint32_t(nextRand()), 0.25f);
+            const Vec3 believed = botHeardPosition(b.ps.origin, at, err, sc);
+            mpBotAlert(b, thrower->number, believed, int(float(react) * 1.2f) + int(nextRand() % 200), BotCue::Explosion);
+        }
+    }
+}
+
+// An enemy's bullet that passes within 40 units of a bot's eye without hitting it (docs/spec/mp-bots.md "Hearing"): the
+// crack of the near miss shows where it came from about as a hit does, less precisely (12..25 degrees, the distance
+// within 30%), after 120 ms plus half the reaction time; whatever the shooter's distance.
+void World::mpBotBulletPassed(Entity& shooter, const Vec3& start, const Vec3& end, const Entity* hit) {
+    if (!bots_ || !mp_) return;
+    const int sc = mpClientOf(shooter);
+    if (sc < 0 || size_t(sc) >= bots_->clients.size()) return;
+    const Vec3 seg{end[0] - start[0], end[1] - start[1], end[2] - start[2]};
+    const float l2 = seg[0] * seg[0] + seg[1] * seg[1] + seg[2] * seg[2];
+    if (l2 < 1.0f) return;
+    for (MpBot& b : bots_->bots) {
+        if (b.client == sc || !b.psValid || !b.combat || size_t(b.client) >= bots_->clients.size()) continue;
+        const BotClientInfo& me = bots_->clients[size_t(b.client)];
+        if (!me.playing || !me.ent || me.ent == hit || !botEnemies(*mp_, me, bots_->clients[size_t(sc)])) continue;
+        const Vec3 eye{b.ps.origin[0], b.ps.origin[1], b.ps.origin[2] + b.ps.viewHeight};
+        const float t = ((eye[0] - start[0]) * seg[0] + (eye[1] - start[1]) * seg[1] + (eye[2] - start[2]) * seg[2]) / l2;
+        if (t <= 0.0f || t >= 1.0f || t * std::sqrt(l2) < 64.0f) continue;
+        const Vec3 c{start[0] + seg[0] * t, start[1] + seg[1] * t, start[2] + seg[2] * t};
+        if (dist3(c, eye) > 40.0f) continue;
+        if (b.enemyVisible && b.enemy == shooter.number) continue; // it fights that one already
+        // The bullets of one burst are one cue (a pending one is not put off by the next bullet).
+        if (b.alert.valid && b.alert.entity == shooter.number && timeMs_ < b.alert.atMs) continue;
+        const float err = cueAngle(uint32_t(nextRand()), 12.0f + float(3 - b.skill) * 4.3f), sc = cueScale(uint32_t(nextRand()), 0.3f);
+        const Vec3 believed = botHeardPosition(b.ps.origin, v3(shooter.obj->get("origin")), err, sc);
+        mpBotAlert(b, shooter.number, believed, 120 + int(float(botSkill(b.skill).reactionMs) * b.trait.reaction * 0.5f), BotCue::NearMiss);
+    }
+}
+
+void World::mpNoteReload(int client) {
+    if (mp_ && client >= 0 && size_t(client) < mp_->clients.size()) mp_->clients[size_t(client)].lastReloadMs = timeMs_;
+}
+
+// Running from a live frag grenade that landed close by: away from where it lies now, on the graph (the combat step's
+// test) with room for the body, else 45, 90 or 135 degrees to either side, until it goes off or the bot is 350 units from
+// it.
+bool World::mpBotFleeGrenade(MpBot& b, std::array<float, 2>& moveDir) {
+    const int64_t now = timeMs_;
+    if (b.dangerEnt < 0) return false;
+    Entity* ge = entityByNumber(b.dangerEnt);
+    if (now >= b.dangerUntilMs || !ge || ge->obj->removed || !ge->grenade) {
+        b.dangerEnt = -1;
+        return false;
+    }
+    if (now < b.dangerFromMs) return false;
+    const Vec3 gp = grenadePosition(*ge->grenade, now);
+    const float dx = b.ps.origin[0] - gp[0], dy = b.ps.origin[1] - gp[1], d = std::hypot(dx, dy);
+    if (d > 350.0f) return false;
+    const float base = d > 1.0f ? std::atan2(dy, dx) : float(nextRand() % 360) * kDeg;
+    const NavGraph& nav = *bots_->nav;
+    const int self = size_t(b.client) < bots_->clients.size() && bots_->clients[size_t(b.client)].ent ? bots_->clients[size_t(b.client)].ent->number : -1;
+    for (float off : {0.0f, 45.0f, -45.0f, 90.0f, -90.0f, 135.0f, -135.0f}) {
+        const float a = base + off * kDeg;
+        const std::array<float, 2> dir{std::cos(a), std::sin(a)};
+        if (nav.size() && nav.nearest(Vec3{b.ps.origin[0] + dir[0] * 40.0f, b.ps.origin[1] + dir[1] * 40.0f, b.ps.origin[2]}, 40.0f, true) < 0) continue;
+        // and the body gets 32 units that way (not against a wall)
+        const TraceResult tr = collision_->trace(b.ps.origin, Vec3{b.ps.origin[0] + dir[0] * 32.0f, b.ps.origin[1] + dir[1] * 32.0f, b.ps.origin[2]},
+                                                 {-15, -15, 18}, {15, 15, 70}, Contents::PlayerSolid, self);
+        if (tr.startSolid || tr.fraction < 1.0f) continue;
+        if (b.dangerFromMs > 0) ++b.stats.grenadeFlees, b.dangerFromMs = 0; // counted once per grenade
+        moveDir = dir;
+        return true;
+    }
+    return false;
 }
 
 // Perception of one frame. Returns the enemy the bot sees and fights (nullptr none) and keeps b.enemy, b.enemyVisible,
@@ -226,34 +353,36 @@ Entity* World::mpBotSense(MpBot& b, Entity& self, const Vec3& eye, const std::st
             const BotClientInfo& ci = infos[c];
             const MpClient& oc = mp_->clients[c];
             Entity* t = ci.ent;
-            const bool shot = now - oc.lastShotMs < 100; // a shot of the last two frames
-            if (!shot && !stepsFrame) continue;
+            const bool shot = now - oc.lastShotMs < 100;      // a shot of the last two frames
+            const bool reload = now - oc.lastReloadMs < 100;  // a reload begun in the last two frames
+            if (!shot && !reload && !stepsFrame) continue;
             if (int(c) == b.client || !ci.playing || (teams && ci.team == myTeam)) continue;
-            int urgency = 0;
-            Vec3 at{};
+            BotCue kind = BotCue::Steps;
+            Vec3 at = ci.origin;
             if (shot) {
-                at = {oc.lastShotPos[0], oc.lastShotPos[1], oc.lastShotPos[2]};
-                if (dist3(at, eye) > sk.hearDist) continue;
-                at = ci.origin;
-                urgency = 2;
+                const Vec3 muzzle{oc.lastShotPos[0], oc.lastShotPos[1], oc.lastShotPos[2]};
+                if (dist3(muzzle, eye) > sk.hearDist) continue;
+                kind = BotCue::Gunfire;
+            } else if (reload) {
+                // A reload (the clip's sounds) is heard about as far as running steps.
+                if (dist3(at, eye) > sk.stepDist) continue;
+                kind = BotCue::Reload;
             } else {
                 // Steps: a standing enemy running on the ground, not aiming (docs/spec/mp-pmove.md: quiet when crouched).
-                at = ci.origin;
                 if (ci.speed < 130.0f || ci.viewHeight < 60 || ci.ads || dist3(at, eye) > sk.stepDist) continue;
-                urgency = 1;
             }
-            // The sound leaves the direction and the distance uncertain: gunfire by up to 12..25 degrees, steps by up to
-            // 30..45, the distance by a quarter.
-            const float maxErr = (urgency == 2 ? 12.0f : 30.0f) + float(3 - b.skill) * (urgency == 2 ? 4.3f : 5.0f);
-            const float err = (float(nextRand() % 2001) / 1000.0f - 1.0f) * maxErr;
-            const float scale = 0.75f + float(nextRand() % 501) / 1000.0f;
-            const Vec3 believed = botHeardPosition(b.ps.origin, at, err, scale);
+            // The sound leaves the direction and the distance uncertain: gunfire by up to 12..25 degrees, steps and
+            // reloads by up to 30..45, the distance by a quarter.
+            const bool loud = kind == BotCue::Gunfire;
+            const float maxErr = (loud ? 12.0f : 30.0f) + float(3 - b.skill) * (loud ? 4.3f : 5.0f);
+            const float err = cueAngle(uint32_t(nextRand()), maxErr), sc = cueScale(uint32_t(nextRand()), 0.25f);
+            const Vec3 believed = botHeardPosition(b.ps.origin, at, err, sc);
             const bool scoped = view.halfYawDeg < 15.0f; // through a scope the sound takes longer to get the bot's attention
             const int delay = int(float(sk.reactionMs) * b.trait.reaction * (scoped ? 2.0f : 1.2f)) + int(nextRand() % 200);
             // Not again for the same enemy while the last sound's place is fresh (a burst is one sound).
-            if (b.enemy == t->number && now - b.enemySeenMs < 1500 && urgency < 2) continue;
+            if (b.enemy == t->number && now - b.enemySeenMs < 1500 && !loud) continue;
             if (b.alert.valid && b.alert.entity == t->number && now < b.alert.atMs) continue;
-            mpBotAlert(b, t->number, believed, delay, urgency);
+            mpBotAlert(b, t->number, believed, delay, kind);
         }
     }
     // A sound or a hit the bot has become aware of: the enemy is known at the believed place.
@@ -261,20 +390,27 @@ Entity* World::mpBotSense(MpBot& b, Entity& self, const Vec3& eye, const std::st
         b.alert.valid = false;
         Entity* src = entityByNumber(b.alert.entity);
         const bool fightingOther = b.enemyVisible && b.enemy != b.alert.entity;
-        if (src && isAlive(*src) && b.combat && !(fightingOther && b.alert.urgency < 3) && !(b.enemyVisible && b.enemy == b.alert.entity)) {
-            const bool steps = b.alert.urgency == 1;
-            // Steps of somebody while another enemy is known: not followed.
-            if (!(steps && b.enemy >= 0 && b.enemy != b.alert.entity && now - b.enemySeenMs < 4000)) {
+        const int urgency = botCueUrgency(b.alert.kind);
+        if (src && isAlive(*src) && b.combat && !(fightingOther && urgency < 3) && !(b.enemyVisible && b.enemy == b.alert.entity)) {
+            const bool quiet = urgency == 1; // steps, a reload
+            // Steps or a reload of somebody while another enemy is known: not followed.
+            if (!(quiet && b.enemy >= 0 && b.enemy != b.alert.entity && now - b.enemySeenMs < 4000)) {
                 if (b.enemy != b.alert.entity) b.aimValid = false;
-                if (b.alert.urgency >= 3) b.focusEnt = b.alert.entity, b.focusUntilMs = now + 1500;
+                if (urgency >= 3) b.focusEnt = b.alert.entity, b.focusUntilMs = now + 1500;
                 b.enemy = b.alert.entity;
                 b.enemyVisible = false;
                 b.enemySeenMs = now;
                 b.enemyLastPos = b.alert.pos;
                 b.enemyHeardOnly = true;
-                b.path.clear();
-                b.pathIdx = 0;
+                // A walk that already leads close to the place goes on (within 300 units, or a third of the way there:
+                // the sounds of one fight come one after another, each with its own error, and planning anew for each
+                // kept a bot going to and fro); else the bot plans to the place.
+                const bool sameWay = !b.path.empty() && b.pathIdx < b.path.size() && bots_->nav &&
+                                     dist3(bots_->nav->nodes[size_t(b.path.back())], b.alert.pos) <
+                                         std::max(300.0f, dist3(b.ps.origin, b.alert.pos) / 3.0f);
+                if (!sameWay) b.path.clear(), b.pathIdx = 0;
                 ++b.stats.heard;
+                ++b.stats.heardCue[int(b.alert.kind)];
             }
         }
     }

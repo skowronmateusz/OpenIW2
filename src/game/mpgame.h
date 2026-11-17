@@ -56,6 +56,7 @@ struct MpClient {
     // The client's last weapon fire (the event that pings the compass): the bots hear it (docs/spec/mp-bots.md).
     int64_t lastShotMs = -100000;
     std::array<float, 3> lastShotPos{};
+    int64_t lastReloadMs = -100000; // the start of its last reload (heard close by)
     // Shell shock in the client's player state (ps+0x5d8 index, +0x5dc start, +0x5e0 duration ms; docs/spec/mp.md
     // "Per-client player state"): every client has its own, the local view shows only the local client's.
     int shockIndex = 0;

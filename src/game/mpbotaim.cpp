@@ -182,7 +182,21 @@ void World::mpBotFireShot(MpBot& b, Entity& self, const Vec3& eye, const std::st
     addFireSpread(b.ps, hs, adsFrac);
     const float pr = b.pitch * kDeg, yr = b.yaw * kDeg;
     const Vec3 fwd{std::cos(pr) * std::cos(yr), std::cos(pr) * std::sin(yr), -std::sin(pr)};
+    // Whether the shot hits an enemy (any pellet, any pass) is told by the damage it does (mpBotOnDamage).
+    b.firingShot = true;
+    b.shotHit = false;
     const Vec3 kick = fireWeaponShot(self, weapon, eye, fwd, lastShot, spread);
+    b.firingShot = false;
+    ++b.stats.shots;
+    b.stats.hits += b.shotHit;
+    const int ci = botClassIndex(wi.cls);
+    if (ci >= 0) ++b.stats.classShots[ci], b.stats.classHits[ci] += b.shotHit;
+    if (Entity* en = b.enemy >= 0 ? entityByNumber(b.enemy) : nullptr) {
+        const Vec3 o = en->obj->get("origin").asVector();
+        const float d = std::sqrt((o[0] - eye[0]) * (o[0] - eye[0]) + (o[1] - eye[1]) * (o[1] - eye[1]) + (o[2] - eye[2]) * (o[2] - eye[2]));
+        const int band = d < 500.0f ? 0 : d < 1000.0f ? 1 : 2;
+        ++b.stats.bandShots[band], b.stats.bandHits[band] += b.shotHit;
+    }
     for (int k = 0; k < 3; ++k) b.ps.velocity[size_t(k)] -= kick[size_t(k)];
     // The view kick of the shot (docs/spec/weapons.md "Recoil"): the same spring a player's view has.
     const RecoilKick::Field field = [&](const char* key) { return weaponFloat(weapon, key); };

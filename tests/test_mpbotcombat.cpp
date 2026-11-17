@@ -1,13 +1,15 @@
 // Multiplayer bot combat (docs/spec/mp-bots.md "Combat behaviour", "Cost limits", "Stuck watch"): the pure decisions,
 // fights per skill (shots, hits, kills, grenades), the pistol switch, hearing, the cost of 15 bots and the stuck watch
 // on every map. Needs the game files (IW2_MAIN); the graph cache goes to IW2_NAV_CACHE.
-//   test_mpbotcombat                 pure tests and the fights on mp_toujane
+//   test_mpbotcombat                 pure tests, the fights on mp_toujane, sd rounds, hearing
 //   test_mpbotcombat perf <map>      15 bots: frame cost and A* plans per frame
 //   test_mpbotcombat stall <map> [gametype]  "wants to walk, stays on the spot" spells by hot spot (IW2_BOT_SOAK_SECONDS)
 //   test_mpbotcombat stall-check <map>       the same with limits
 //   test_mpbotcombat soak <map>      8 bots for IW2_BOT_SOAK_SECONDS (default 60) game seconds: no bot stuck
 //   test_mpbotcombat behaviour       the humanlike behaviour scenarios on mp_toujane (ammunition, melee, pickups, turrets,
-//                                    perception, aim), each a bot against a client that stands where the test puts it
+//                                    perception, aim), each a bot against a client that stands where the test puts it;
+//                                    giving way on mp_dawnville, the loft gun of mp_farmhouse
+//   test_mpbotcombat giveway | hearing | turretloft   one of those scenarios (hearing: the more sounds of the fights)
 //   test_mpbotcombat stats <map> <gametype> <bots> <skill> <seconds> [scripted]   measurement run (docs/spec/mp-bots.md
 //                                    "Measurement"): bots against each other, with `scripted` also against a scripted player
 
@@ -108,6 +110,17 @@ void pureTests() {
     CHECK(botGrenadeAngles({0, 0, 0}, {600, 0, 0}, 940, up, g, false, yl, pl, vl) && botGrenadeAngles({0, 0, 0}, {600, 0, 0}, 940, up, g, true, yh, ph, vh));
     CHECK(ph < pl - 20); // the high arc: the view much further up (a view pitch is negative upwards)
     CHECK(!botGrenadeAngles({0, 0, 0}, {5000, 0, 0}, 940, up, g, false, yl, pl, vl));
+
+    // Giving way: a mate 30 units away walking at the bot presses into it; one walking away, standing, too far or on
+    // another floor does not.
+    using iw2::game::botPushedBy;
+    CHECK(botPushedBy({30, 0}, 0, {1, 0}));
+    CHECK(botPushedBy({30, 10}, 0, {1, 0.2f}));
+    CHECK(!botPushedBy({30, 0}, 0, {-1, 0}));
+    CHECK(!botPushedBy({30, 0}, 0, {0, 1}));
+    CHECK(!botPushedBy({30, 0}, 0, {0, 0}));
+    CHECK(!botPushedBy({60, 0}, 0, {1, 0}));
+    CHECK(!botPushedBy({30, 0}, 90, {1, 0}));
 }
 
 // The pure decisions of the humanlike behaviour (docs/spec/mp-bots.md).
@@ -403,6 +416,8 @@ struct Game {
         for (int c : bots)
             if (const MpBotStats* b = w.mpBotStats(c)) {
                 s.shots += b->shots, s.hits += b->hits, s.kills += b->kills, s.deaths += b->deaths;
+                for (int k = 0; k < 7; ++k) s.classShots[k] += b->classShots[k], s.classHits[k] += b->classHits[k];
+                for (int k = 0; k < 3; ++k) s.bandShots[k] += b->bandShots[k], s.bandHits[k] += b->bandHits[k];
                 s.grenades += b->grenades, s.grenadeHits += b->grenadeHits, s.smokes += b->smokes;
                 s.pistolSwitches += b->pistolSwitches, s.adsShots += b->adsShots, s.crouchFrames += b->crouchFrames;
                 s.proneFrames += b->proneFrames, s.heard += b->heard, s.cornerChecks += b->cornerChecks, s.stuckEvents += b->stuckEvents, s.trapped += b->trapped;
@@ -646,6 +661,8 @@ int weaponTests(iw2::fs::Vfs& vfs) {
 
 float flat(const V3& a, const V3& b) { return std::hypot(a[0] - b[0], a[1] - b[1]); }
 
+void hearingTests(iw2::fs::Vfs& vfs);
+
 int combatTests(iw2::fs::Vfs& vfs) {
     // 1. Fights per skill: 6 bots of one skill in DM for 90 s on mp_toujane.
     MpBotStats st[4];
@@ -671,10 +688,23 @@ int combatTests(iw2::fs::Vfs& vfs) {
     {
         Game g(vfs, "mp_toujane", "sd", 6, 2);
         for (int c : g.bots) g.w.mpBotSetWeaponClass(c, "smg");
-        run(g.w, 20 * 180);
+        // A round restart (sd's map_restart, a fast restart of the level) keeps what belongs to the bots: their counters
+        // and their weapon class (docs/spec/mp-bots.md "Measurement").
+        int lastShots = 0, lastAlive = 0;
+        bool monotonic = true;
+        for (int f = 0; f < 20 * 180; ++f) {
+            g.w.frame();
+            const MpBotStats now = g.sum();
+            if (now.shots < lastShots || now.aliveFrames < lastAlive) monotonic = false;
+            lastShots = now.shots, lastAlive = now.aliveFrames;
+        }
         const MpBotStats s = g.sum();
         print("sd hardened", s);
+        std::cout << "sd rounds restarted " << g.w.mpState().restarts << "\n";
         CHECK(s.smokes > 0);
+        CHECK(g.w.mpState().restarts >= 1);
+        CHECK(monotonic);
+        for (int c : g.bots) CHECK(g.w.mpBot(c) && g.w.mpBot(c)->weaponClass == "smg");
         CHECK(g.w.vm().errors().empty());
     }
 
@@ -756,7 +786,243 @@ int combatTests(iw2::fs::Vfs& vfs) {
         CHECK(ratio > 0.7f && ratio < 1.3f);
         CHECK(flat(believed, V3{bo[0], bo[1], bo[2]}) > 1.0f); // a guess, not the shooter's place
     }
+    hearingTests(vfs);
     return 0;
+}
+
+// 4. More sounds (docs/spec/mp-bots.md "Hearing"): a reload close by, a near miss from beyond the hearing distance, a
+//    grenade that lands close by (the bot also runs from it) and one that goes off farther away. Each is known after a
+//    delay, never in the same frame, at a place off the true one; a team mate's near miss is not taken for an enemy; the
+//    bullets of a burst are one cue. e. An enemy out of sight that fires every half second: the bot walks towards the
+//    sounds and gets there, it does not go to and fro on each new believed place.
+void hearingTests(iw2::fs::Vfs& vfs) {
+    using iw2::game::BotCue;
+    auto yawOff = [](const V3& from, const V3& truth, const V3& got) {
+        float d = (std::atan2(got[1] - from[1], got[0] - from[0]) - std::atan2(truth[1] - from[1], truth[0] - from[0])) * 57.29578f;
+        while (d > 180) d -= 360;
+        while (d < -180) d += 360;
+        return d;
+    };
+    // a. Reload: an enemy out of sight 250..450 units away reloads (its clip emptied: the weapon state reloads by itself).
+    {
+        Game g(vfs, "mp_toujane", "dm", 2, 3);
+        run(g.w, 40);
+        Entity* a = g.w.mpClientEntity(g.bots[0]);
+        Entity* b = g.w.mpClientEntity(g.bots[1]);
+        g.w.mpBotSetCombat(g.bots[1], false);
+        V3 pa{}, pb{};
+        CHECK(nodePair(g.w, 250, 450, false, pa, pb));
+        place(a, pa, pb), place(b, pb, pa);
+        g.w.mpBotSetGoal(g.bots[0], pa, 64.0f);
+        g.w.mpBotSetGoal(g.bots[1], pb, 64.0f);
+        run(g.w, 20 * 2);
+        const MpBotStats* s = g.w.mpBotStats(g.bots[0]);
+        const int heard0 = s->heard;
+        auto& inv = g.w.inventory(*b);
+        const std::string held = b->obj->get("$weapon").toString();
+        inv.clip[field(g.w, held, "clipname")] = 0;
+        int f = 0, reloadFrame = -1;
+        for (; f < 20 * 3 && s->heardCue[int(BotCue::Reload)] == 0; ++f) {
+            g.w.frame();
+            if (reloadFrame < 0 && g.w.mpState().clients[size_t(g.bots[1])].lastReloadMs == g.w.debugTimeMs()) reloadFrame = f;
+        }
+        const iw2::game::MpBot* mb = g.w.mpBot(g.bots[0]);
+        const V3 ao = a->obj->get("origin").asVector(), bo = b->obj->get("origin").asVector();
+        std::cout << "hearing a reload: began at frame " << reloadFrame << ", known at " << f << ", " << yawOff(ao, bo, mb->enemyLastPos) << " degrees off\n";
+        CHECK(s->heard == heard0 + 1 && s->heardCue[int(BotCue::Reload)] == 1);
+        CHECK(reloadFrame >= 0 && f > reloadFrame + 1);
+        CHECK(mb->enemy == b->number && mb->enemyHeardOnly);
+        CHECK(std::fabs(yawOff(ao, bo, mb->enemyLastPos)) <= 31.0f); // a veteran: up to 30 degrees
+        CHECK(flat(mb->enemyLastPos, bo) > 1.0f);
+    }
+    // b. Near miss: an enemy (and in the second run a team mate) 1300..2000 units away, beyond a recruit's hearing of
+    //    gunfire, fires a bullet that passes 30 units beside the bot's head while the bot looks away.
+    for (const bool mate : {false, true}) {
+        Game g(vfs, "mp_toujane", mate ? "tdm" : "dm", mate ? 3 : 2, 0);
+        run(g.w, 60);
+        int ia = g.bots[0], ib = g.bots[1];
+        if (mate)
+            for (int i : g.bots)
+                for (int j : g.bots)
+                    if (i < j && g.w.mpClientEntity(i)->obj->get("sessionteam").toString() == g.w.mpClientEntity(j)->obj->get("sessionteam").toString())
+                        ia = i, ib = j;
+        for (int c : g.bots)
+            if (c != ia) g.w.mpBotSetCombat(c, false);
+        Entity* a = g.w.mpClientEntity(ia);
+        Entity* b = g.w.mpClientEntity(ib);
+        V3 pa{}, pb{};
+        CHECK(nodePair(g.w, 1300, 2000, true, pa, pb));
+        g.w.mpBotSetGoal(ia, pa, 64.0f);
+        g.w.mpBotSetGoal(ib, pb, 64.0f);
+        for (int c : g.bots)
+            if (c != ia && c != ib) g.w.mpBotSetGoal(c, pb, 400.0f);
+        const MpBotStats* s = g.w.mpBotStats(ia);
+        iw2::game::MpBot* mb = g.w.mpBot(ia);
+        const float away = std::atan2(pa[1] - pb[1], pa[0] - pb[0]) * 57.29578f;
+        for (int f = 0; f < 20 * 2; ++f) {
+            place(a, pa, pb), place(b, pb, pa);
+            mb->yaw = away, mb->pitch = 0;
+            g.w.frame();
+        }
+        const int heard0 = s->heard;
+        const V3 ao = a->obj->get("origin").asVector(), bo = b->obj->get("origin").asVector();
+        const V3 eyeA{ao[0], ao[1], ao[2] + 60}, eyeB{bo[0], bo[1], bo[2] + 60};
+        const float dx = eyeA[0] - eyeB[0], dy = eyeA[1] - eyeB[1], l = std::hypot(dx, dy);
+        const V3 past{eyeA[0] + dx / l * 400 - dy / l * 30, eyeA[1] + dy / l * 400 + dx / l * 30, eyeA[2]};
+        const int health = a->obj->get("health").asInt();
+        // Three bullets 100 ms apart (a burst): one cue, known as soon after the first as after a single one.
+        bool sameFrame = false;
+        int f = 0;
+        for (; f < 20 && s->heard == heard0; ++f) {
+            if (f == 0 || f == 2 || f == 4) g.w.debugFireBulletFrom(*b, eyeB, past);
+            mb->yaw = away;
+            g.w.frame();
+            if (f == 0) sameFrame = s->heard != heard0;
+        }
+        std::cout << "near misses (" << (mate ? "team mate" : "enemy") << " " << l << " units away): heard " << s->heard - heard0 << " after " << f * 50 << " ms";
+        if (!mate) std::cout << ", " << yawOff(ao, bo, mb->enemyLastPos) << " degrees off, distance x " << flat(mb->enemyLastPos, ao) / flat(bo, ao);
+        std::cout << "\n";
+        CHECK(!sameFrame);
+        CHECK(a->obj->get("health").asInt() == health); // not hit
+        if (mate) {
+            CHECK(s->heard == heard0);
+        } else {
+            CHECK(s->heardCue[int(BotCue::NearMiss)] == 1 && s->heardCue[int(BotCue::Gunfire)] == 0);
+            CHECK(f * 50 >= 150 && f * 50 <= 700);
+            CHECK(std::fabs(yawOff(ao, bo, mb->enemyLastPos)) <= 26.0f);
+            const float ratio = flat(mb->enemyLastPos, ao) / flat(bo, ao);
+            CHECK(ratio > 0.65f && ratio < 1.35f);
+        }
+    }
+    // c. A grenade lands 100 units in front of the bot (thrown by an enemy 450..700 units away on open ground); d. one goes
+    //    off 650..950 units away, by its thrower 800..1100 units away.
+    for (const bool far : {false, true}) {
+        Game g(vfs, "mp_toujane", "dm", 2, 3);
+        run(g.w, 40);
+        Entity* a = g.w.mpClientEntity(g.bots[0]);
+        Entity* b = g.w.mpClientEntity(g.bots[1]);
+        g.w.mpBotSetCombat(g.bots[1], false);
+        // Two nodes on open, level ground: graph nodes all along the line between them at about the same height (the
+        // grenade must not fall off a ledge on the way).
+        V3 pa{}, pb{};
+        {
+            const NavGraph& nav = g.w.mpNav();
+            bool found = false;
+            for (size_t i = 0; i < nav.mainCount && !found; i += 53)
+                for (size_t j = 0; j < nav.mainCount && !found; j += 29) {
+                    const V3 p = nav.nodes[i], q = nav.nodes[j];
+                    const float d = flat(p, q);
+                    if (d < (far ? 800 : 450) || d > (far ? 1100 : 700) || std::fabs(p[2] - q[2]) > 8) continue;
+                    bool level = true;
+                    for (float t = 0; t <= 1.0f && level; t += 24.0f / d) {
+                        const int n = nav.nearest({p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2]}, 20.0f, true);
+                        level = n >= 0 && std::fabs(nav.nodes[size_t(n)][2] - p[2]) < 8;
+                    }
+                    const bool sees = g.w.collision().trace({p[0], p[1], p[2] + 60}, {q[0], q[1], q[2] + 60}, {0, 0, 0}, {0, 0, 0},
+                                                            iw2::game::Contents::SightMaskNoCharacters, -1).fraction >= 0.999f;
+                    if (level && sees) pa = p, pb = q, found = true;
+                }
+            CHECK(found);
+        }
+        g.w.mpBotSetGoal(g.bots[0], pa, 64.0f);
+        g.w.mpBotSetGoal(g.bots[1], pb, 64.0f);
+        place(a, pa, pb), place(b, pb, pa);
+        run(g.w, 20);
+        const MpBotStats* s = g.w.mpBotStats(g.bots[0]);
+        const int heard0 = s->heard;
+        std::string frag;
+        for (const std::string& w : g.w.inventory(*b).owned)
+            if (field(g.w, w, "offhandclass") == "Frag Grenade") frag = w;
+        CHECK(!frag.empty());
+        const V3 ao = a->obj->get("origin").asVector(), bo = b->obj->get("origin").asVector();
+        const V3 eyeB{bo[0], bo[1], bo[2] + 60};
+        // Where it lands: 100 units from the bot towards the thrower, or (far) next to the thrower itself.
+        const float l = flat(ao, bo);
+        const V3 at = far ? V3{bo[0] + (ao[0] - bo[0]) / l * 150, bo[1] + (ao[1] - bo[1]) / l * 150, bo[2]}
+                          : V3{ao[0] + (bo[0] - ao[0]) / l * 100, ao[1] + (bo[1] - ao[1]) / l * 100, ao[2]};
+        float yaw = 0, pitch = 0;
+        V3 vel{};
+        CHECK(iw2::game::botGrenadeAngles(eyeB, {at[0], at[1], at[2] + 4}, float(std::atof(field(g.w, frag, "projectilespeed").c_str())),
+                                          float(std::atof(field(g.w, frag, "projectilespeedup").c_str())), 800.0f, false, yaw, pitch, vel));
+        g.w.clientThrowGrenade(*b, frag, eyeB, {pitch, yaw, 0}, {0, 0, 0});
+        float landDist = -1, endDist = -1;
+        V3 lastGrenade{};
+        bool heardSameFrame = false, live = true;
+        iw2::game::MpBot* mb = g.w.mpBot(g.bots[0]);
+        const float away = std::atan2(ao[1] - bo[1], ao[0] - bo[0]) * 57.29578f;
+        for (int f = 0; f < 20 * 6; ++f) {
+            a->obj->set("health", Value(100000));
+            // Looking away from the thrower (close: until it hears something; far: all along, so it does not see the thrower).
+            if (s->heard == heard0 || far) mb->yaw = away, mb->pitch = 0;
+            const int before = s->heard;
+            g.w.frame();
+            if (s->heard != before && f == 0) heardSameFrame = true;
+            bool found = false;
+            for (const auto& ep : g.w.entities())
+                if (ep->grenade && !ep->obj->removed) {
+                    found = true;
+                    if (ep->grenade->bounceEvents.empty()) continue;
+                    lastGrenade = ep->obj->get("origin").asVector();
+                    if (landDist < 0) landDist = flat(a->obj->get("origin").asVector(), lastGrenade);
+                }
+            if (live && !found && landDist >= 0) live = false, endDist = flat(a->obj->get("origin").asVector(), lastGrenade); // it went off
+        }
+        std::cout << "grenade " << (far ? "going off far" : "landing close") << ": heard " << s->heard - heard0 << " (landed "
+                  << s->heardCue[int(BotCue::GrenadeLanded)] << ", went off " << s->heardCue[int(BotCue::Explosion)] << "), flees "
+                  << s->grenadeFlees << ", distance to it on landing " << landDist << ", when it went off " << endDist << "\n";
+        CHECK(!heardSameFrame);
+        if (far) {
+            CHECK(s->heardCue[int(BotCue::Explosion)] == 1);
+            CHECK(s->grenadeFlees == 0);
+        } else {
+            CHECK(s->heardCue[int(BotCue::GrenadeLanded)] >= 1);
+            CHECK(s->grenadeFlees == 1);
+            CHECK(landDist > 0 && endDist > landDist + 150.0f); // it got away from the live grenade
+        }
+    }
+    // e. The sounds of one fight: three enemies out of sight 900..1300 units away, close together, fire in turn every
+    //    150 ms. The bot becomes aware (the shots of the others do not put off the cue it waits for), walks towards
+    //    them, and keeps the way it planned, not planning anew for every sound.
+    {
+        Game g(vfs, "mp_toujane", "dm", 4, 1);
+        run(g.w, 40);
+        Entity* a = g.w.mpClientEntity(g.bots[0]);
+        for (int k = 1; k < 4; ++k) g.w.mpBotSetCombat(g.bots[size_t(k)], false);
+        auto& inv = g.w.inventory(*a); // no grenades: the walk is the thing measured
+        for (const std::string& w : inv.owned)
+            if (!field(g.w, w, "offhandclass").empty() && field(g.w, w, "offhandclass") != "none")
+                inv.clip[field(g.w, w, "clipname")] = 0, inv.ammo[field(g.w, w, "ammoname")] = 0;
+        V3 pa{}, pb{};
+        CHECK(nodePair(g.w, 900, 1300, false, pa, pb));
+        place(a, pa, pb);
+        for (int k = 1; k < 4; ++k) { // the shooters stand close together at pb (a goal there keeps each in its place)
+            const V3 at = iw2::game::navDropToFloor(g.w.collision(), {pb[0] + float(k - 2) * 40.0f, pb[1], pb[2] + 20});
+            g.w.mpClientEntity(g.bots[size_t(k)])->obj->set("origin", Value(iw2::script::Vec3{at[0], at[1], at[2]}));
+            g.w.mpBotSetGoal(g.bots[size_t(k)], at, 64.0f);
+        }
+        run(g.w, 2);
+        iw2::game::MpBot* mb = g.w.mpBot(g.bots[0]);
+        const float d0 = flat(a->obj->get("origin").asVector(), pb);
+        int plans = 0, f = 0;
+        int64_t lastPlan = mb->planMs;
+        for (; f < 20 * 8; ++f) {
+            for (int k = 1; k < 4; ++k) {
+                Entity* s2 = g.w.mpClientEntity(g.bots[size_t(k)]);
+                const V3 at = s2->obj->get("origin").asVector();
+                if (f % 9 == (k - 1) * 3) g.w.debugFireBulletFrom(*s2, {at[0], at[1], at[2] + 60}, {at[0], at[1], at[2] + 400});
+            }
+            const V3 ao = a->obj->get("origin").asVector();
+            mb->yaw = std::atan2(ao[1] - pb[1], ao[0] - pb[0]) * 57.29578f, mb->pitch = 0; // looking away: only the sounds lead it
+            g.w.frame();
+            if (mb->planMs != lastPlan) ++plans, lastPlan = mb->planMs;
+        }
+        const float d1 = flat(a->obj->get("origin").asVector(), pb);
+        std::cout << "the sounds of one fight " << d0 << " units away: after 8 s " << d1 << " units away, heard " << g.w.mpBotStats(g.bots[0])->heard
+                  << ", plans " << plans << "\n";
+        CHECK(g.w.mpBotStats(g.bots[0])->heard >= 4);
+        CHECK(d1 < d0 - 400.0f);
+        CHECK(plans <= 2); // planning anew for every sound: one plan for each (5 here)
+    }
 }
 
 // A client that is no bot and stands where the test puts it (the target of the behaviour scenarios); it cannot die.
@@ -776,6 +1042,119 @@ struct Dummy {
         e->obj->set("health", Value(100000));
     }
 };
+
+// 20. Giving way (docs/spec/mp-bots.md "Giving way"): on the rubble of mp_dawnville where the ctf carriers stood stuck
+//     (the passage north of -336 -16784 is one body wide), a team mate parked on its objective in the way steps aside and
+//     the bot walks through; an enemy that stands there (combat off, so nobody fights) is not asked. A player (no bot) of
+//     the team whose command moves into the parked bot is given way too.
+void giveWayTest(iw2::fs::Vfs& vfs) {
+    const V3 from{-335, -16781, 55}, park{-336, -16730, 52}, to{-320, -16500, 40};
+    for (const bool mates : {true, false}) {
+        Game g(vfs, "mp_dawnville", "tdm", 3, 2);
+        run(g.w, 60);
+        // Two bots of one team (autoassign splits three as 2 / 1), or one of each.
+        int a = -1, b = -1;
+        for (int i : g.bots)
+            for (int j : g.bots) {
+                if (i == j || a >= 0) continue;
+                const bool same = g.w.mpClientEntity(i)->obj->get("sessionteam").toString() == g.w.mpClientEntity(j)->obj->get("sessionteam").toString();
+                if (same == mates) a = i, b = j;
+            }
+        CHECK(a >= 0 && b >= 0);
+        if (a < 0 || b < 0) return;
+        for (int c : g.bots) g.w.mpBotSetCombat(c, false);
+        for (int c : g.bots)
+            if (c != a && c != b) g.w.mpClientEntity(c)->obj->set("origin", Value(iw2::script::Vec3{1000, -15200, 0})), g.w.mpBotSetGoal(c, {1000, -15200, 0}, 400.0f);
+        Entity* ea = g.w.mpClientEntity(a);
+        Entity* eb = g.w.mpClientEntity(b);
+        ea->obj->set("origin", Value(iw2::script::Vec3{from[0], from[1], from[2]}));
+        eb->obj->set("origin", Value(iw2::script::Vec3{park[0], park[1], park[2]}));
+        g.w.mpBotSetGoal(b, park, 300.0f); // reached: it stands
+        g.w.mpBotSetGoal(a, to, 32.0f);
+        int f = 0;
+        for (; f < 20 * 15 && flat(ea->obj->get("origin").asVector(), to) > 48.0f; ++f) g.w.frame();
+        const bool arrived = flat(ea->obj->get("origin").asVector(), to) <= 48.0f;
+        std::cout << "give way (" << (mates ? "team mate" : "enemy") << " in the passage): " << (arrived ? "through after " : "not through in ") << f / 20.0f
+                  << " s, steps aside " << g.w.mpBotStats(b)->giveWays << "\n";
+        if (mates) {
+            CHECK(arrived && f < 20 * 8);
+            CHECK(g.w.mpBotStats(b)->giveWays >= 1);
+        } else {
+            CHECK(g.w.mpBotStats(b)->giveWays == 0);
+        }
+    }
+    // A player (no bot) of the bot's team presses into it: its command moves forward towards the bot.
+    {
+        Game g(vfs, "mp_dawnville", "tdm", 3, 2);
+        Dummy d(g.w);
+        run(g.w, 60);
+        int b = -1;
+        for (int c : g.bots)
+            if (g.w.mpClientEntity(c)->obj->get("sessionteam").toString() == d.e->obj->get("sessionteam").toString()) b = c;
+        CHECK(b >= 0);
+        if (b < 0) return;
+        for (int c : g.bots) g.w.mpBotSetCombat(c, false);
+        for (int c : g.bots)
+            if (c != b) g.w.mpClientEntity(c)->obj->set("origin", Value(iw2::script::Vec3{1000, -15200, 0})), g.w.mpBotSetGoal(c, {1000, -15200, 0}, 400.0f);
+        Entity* eb = g.w.mpClientEntity(b);
+        eb->obj->set("origin", Value(iw2::script::Vec3{park[0], park[1], park[2]}));
+        g.w.mpBotSetGoal(b, park, 300.0f);
+        const V3 behind{park[0], park[1] - 32, park[2]};
+        for (int f = 0; f < 20 * 2 && g.w.mpBotStats(b)->giveWays == 0; ++f) {
+            d.hold(behind, park);
+            if (iw2::game::MpPlayerInput* pi = g.w.mpPlayerInput(d.client)) pi->valid = true, pi->move.forwardMove = 1, pi->move.rightMove = 0;
+            g.w.frame();
+        }
+        std::cout << "give way to a player pressing into the bot: steps aside " << g.w.mpBotStats(b)->giveWays << "\n";
+        CHECK(g.w.mpBotStats(b)->giveWays >= 1);
+    }
+}
+
+// 21. A turret whose use place was off the graph (docs/spec/mp-bots.md "Turrets"): the machine gun in the loft of
+//     mp_farmhouse, reached by a ladder only. A bot at the foot of the ladder that knows of an enemy out where the gun
+//     overlooks (heard, not seen) climbs up and gets on the gun through the use search of its client.
+void turretLoftTest(iw2::fs::Vfs& vfs) {
+    Game g(vfs, "mp_farmhouse", "dm", 1, 2);
+    Dummy d(g.w);
+    d.e->obj->set("sessionstate", Value(std::string("spectator"))); // out of sight: only known
+    run(g.w, 60);
+    int gun = -1;
+    for (size_t i = 0; i < g.w.mpBotTurrets().size(); ++i)
+        if (flat(g.w.mpBotTurrets()[i].origin, V3{-2236, 1329, 293}) < 32) gun = int(i);
+    CHECK(gun >= 0);
+    if (gun < 0) return;
+    const iw2::game::BotTurret& t = g.w.mpBotTurrets()[size_t(gun)];
+    CHECK(t.node >= 0);
+    // A place the gun overlooks: a main node 600..1500 units out inside its arcs with a clear line from the gun.
+    const NavGraph& nav = g.w.mpNav();
+    V3 out{};
+    bool found = false;
+    for (size_t i = 0; i < nav.mainCount && !found; i += 7) {
+        const V3 q = nav.nodes[i];
+        const float dd = flat(q, t.origin);
+        if (dd < 600 || dd > 1500 || !iw2::game::botTurretCovers(t, q, -10.0f)) continue;
+        found = g.w.collision().trace({t.origin[0], t.origin[1], t.origin[2] + 16}, {q[0], q[1], q[2] + 40}, {0, 0, 0}, {0, 0, 0},
+                                      iw2::game::Contents::SightMaskNoCharacters, -1).fraction >= 0.999f;
+        if (found) out = q;
+    }
+    CHECK(found);
+    Entity* a = g.w.mpClientEntity(g.bots[0]);
+    a->obj->set("origin", Value(iw2::script::Vec3{-2296, 1430, -1.875f}));
+    run(g.w, 1);
+    iw2::game::MpBot* mb = g.w.mpBot(g.bots[0]);
+    mb->turretCooldownMs = 0; // the turret check rests 5 s after a spawn (or a move by script)
+    int f = 0;
+    for (; f < 20 * 40 && !g.w.mpClientOnTurret(g.bots[0]); ++f) {
+        mb->enemy = d.e->number, mb->enemySeenMs = g.w.debugTimeMs(), mb->enemyLastPos = out, mb->enemyHeardOnly = true;
+        g.w.frame();
+    }
+    const auto o = a->obj->get("origin").asVector();
+    std::cout << "loft turret: " << (g.w.mpClientOnTurret(g.bots[0]) ? "on the gun after " : "not on the gun in ") << f / 20.0f << " s, at " << o[0] << " "
+              << o[1] << " " << o[2] << ", mounts " << g.w.mpBotStats(g.bots[0])->turretMounts << "\n";
+    CHECK(g.w.mpClientOnTurret(g.bots[0]));
+    CHECK(g.w.mpBotStats(g.bots[0])->turretMounts == 1);
+    CHECK(o[2] > 250); // up in the loft
+}
 
 // The humanlike behaviour scenarios (docs/spec/mp-bots.md): one veteran bot and a dummy on mp_toujane.
 int behaviourTests(iw2::fs::Vfs& vfs) {
@@ -1626,6 +2005,93 @@ int behaviourTests(iw2::fs::Vfs& vfs) {
         std::cout << "smoke: the enemy behind it seen " << (seenFrame + 40) / 20.0f << " s after the grenade went off\n";
         CHECK(seenFrame >= 20 * 17 && seenFrame <= 20 * 19); // the cloud hides it until 20 s after the grenade
     }
+    // 22. The hit counter (docs/spec/mp-bots.md "Measurement"): a shot that hits counts once, whatever the pellets, and a
+    //     killing hit once (its damage comes before the death); a team mate in the line of fire is no hit.
+    {
+        // a. A shotgun 150..250 units from the dummy: its pellets are one shot, at most one hit.
+        {
+            Scene sc(vfs);
+            World& w = sc.g.w;
+            V3 pa{}, pb{};
+            CHECK(nodePair(w, 150, 250, true, pa, pb));
+            sc.noGrenades();
+            const std::string wn = "shotgun_mp";
+            sc.inv->owned.insert(wn);
+            sc.inv->slot[1] = wn, sc.inv->slot[2].clear();
+            sc.clip(wn) = 6, sc.reserve(wn) = 60;
+            sc.a->obj->set("$weapon", Value(wn));
+            w.mpBotSetGoal(sc.g.bots[0], pa, 64.0f);
+            sc.stand(pa, pb, 1);
+            for (int f = 0; f < 20 * 8; ++f) {
+                sc.d.hold(pb, pa);
+                w.frame();
+            }
+            const MpBotStats& st = sc.stats();
+            std::cout << "hit counter, shotgun: shots " << st.shots << " hits " << st.hits << " (shotgun shots " << st.classShots[5] << ")\n";
+            CHECK(st.shots >= 3 && st.hits >= 1 && st.hits <= st.shots);
+            CHECK(st.classShots[5] == st.shots);
+        }
+        // b. The dummy dies of the first hit: one hit, one kill.
+        {
+            Scene sc(vfs);
+            World& w = sc.g.w;
+            V3 pa{}, pb{};
+            CHECK(nodePair(w, 300, 500, true, pa, pb));
+            sc.noGrenades();
+            w.mpBotSetGoal(sc.g.bots[0], pa, 64.0f);
+            sc.stand(pa, pb, 1);
+            place(sc.d.e, pb, pa);
+            sc.d.e->obj->set("health", Value(1));
+            for (int f = 0; f < 20 * 15 && sc.stats().kills == 0; ++f) w.frame();
+            std::cout << "hit counter, a kill: shots " << sc.stats().shots << " hits " << sc.stats().hits << " kills " << sc.stats().kills << "\n";
+            CHECK(sc.stats().kills == 1);
+            CHECK(sc.stats().hits == 1);
+        }
+        // c. tdm: a team mate stands just in front of the enemy the bot fires at (no friendly fire: the bullets stop at
+        //    the mate).
+        {
+            Game g(vfs, "mp_toujane", "tdm", 3, 3);
+            Dummy d(g.w);
+            run(g.w, 60);
+            const std::string dt = d.e->obj->get("sessionteam").toString();
+            int a = -1, b = -1;
+            for (int c : g.bots) {
+                if (g.w.mpClientEntity(c)->obj->get("sessionteam").toString() == dt) continue;
+                (a < 0 ? a : b) = c;
+            }
+            CHECK(a >= 0 && b >= 0);
+            if (a >= 0 && b >= 0) {
+                for (int c : g.bots)
+                    if (c != a) g.w.mpBotSetCombat(c, false);
+                V3 pa{}, pb{};
+                CHECK(nodePair(g.w, 400, 600, true, pa, pb));
+                const float l = flat(pa, pb);
+                const V3 mate{pb[0] + (pa[0] - pb[0]) / l * 40, pb[1] + (pa[1] - pb[1]) / l * 40, pb[2]};
+                Entity* ea = g.w.mpClientEntity(a);
+                Entity* eb = g.w.mpClientEntity(b);
+                auto& inv = g.w.inventory(*ea);
+                for (const std::string& w : inv.owned)
+                    if (!field(g.w, w, "offhandclass").empty() && field(g.w, w, "offhandclass") != "none")
+                        inv.clip[field(g.w, w, "clipname")] = 0, inv.ammo[field(g.w, w, "ammoname")] = 0;
+                for (int c : g.bots)
+                    if (c != a && c != b) g.w.mpBotSetGoal(c, g.w.mpClientEntity(c)->obj->get("origin").asVector(), 400.0f);
+                g.w.mpBotSetGoal(a, pa, 64.0f);
+                g.w.mpBotSetGoal(b, mate, 300.0f);
+                place(ea, pa, pb), place(eb, mate, pa);
+                for (int f = 0; f < 20 * 8; ++f) {
+                    d.hold(pb, pa);
+                    eb->obj->set("health", Value(100000));
+                    g.w.frame();
+                }
+                const MpBotStats* st = g.w.mpBotStats(a);
+                std::cout << "hit counter, a team mate in the line of fire: shots " << st->shots << " hits " << st->hits << "\n";
+                CHECK(st->shots >= 5);
+                CHECK(st->hits * 4 < st->shots); // the old counter took every bullet into the mate for a hit
+            }
+        }
+    }
+    giveWayTest(vfs);
+    turretLoftTest(vfs);
     return 0;
 }
 
@@ -1708,13 +2174,22 @@ int statsRun(iw2::fs::Vfs& vfs, const std::string& map, const std::string& gt, i
     }
     const double alive = std::max(1, s.aliveFrames) / 20.0;
     std::cout << "STATS " << map << " " << gt << " bots " << nbots << " skill " << iw2::game::botSkill(skill).name << " " << secs << " s"
-              << (scripted ? " +scripted" : "") << "\n"
+              << (scripted ? " +scripted" : "") << "; rounds " << g.w.mpState().restarts + 1 << "\n"
               << "  kills " << kills << " (own deaths " << own << ", by turret " << turret << ", melee " << melee << ", grenade " << grenade << ")"
               << "; bots killed the scripted player " << ofScripted << " times, it killed bots " << byScripted << " times (its shots "
               << (sp ? sp->shots : 0) << ")\n"
               << "  bot shots " << s.shots << " hits " << s.hits << " accuracy " << (s.shots ? 100.0 * s.hits / s.shots : 0.0) << "%; reloads "
               << s.reloads << " weapon switches " << s.weaponSwitches << " grenades " << s.grenades << " (hits " << s.grenadeHits << ") melee swings "
               << s.melees << "\n"
+              << "  accuracy by class:";
+    static const char* kClass[7] = {"rifle", "bolt", "sniper", "smg", "mg", "shotgun", "pistol"};
+    for (int k = 0; k < 7; ++k)
+        if (s.classShots[k]) std::cout << " " << kClass[k] << " " << 100.0 * s.classHits[k] / s.classShots[k] << "% of " << s.classShots[k];
+    std::cout << "; by distance:";
+    static const char* kBand[3] = {"<500", "500-1000", ">1000"};
+    for (int k = 0; k < 3; ++k)
+        if (s.bandShots[k]) std::cout << " " << kBand[k] << " " << 100.0 * s.bandHits[k] / s.bandShots[k] << "% of " << s.bandShots[k];
+    std::cout << "\n"
               << "  defenceless " << s.defencelessFrames / 20.0 << " s (" << 100.0 * (s.defencelessFrames / 20.0) / alive << "% of " << alive
               << " s alive); all weapons empty " << s.emptyFrames / 20.0 << " s\n"
               << "  pickups: weapons " << s.weaponPickups << " ammunition " << s.ammoPickups << "; turrets: mounts " << s.turretMounts << " time "
@@ -1815,6 +2290,9 @@ int main(int argc, char** argv) {
     else if (mode == "stats" && argc > 6)
         statsRun(vfs, argv[2], argv[3], std::atoi(argv[4]), std::atoi(argv[5]), std::atoi(argv[6]), argc > 7 && std::string(argv[7]) == "scripted");
     else if (mode == "behaviour") behaviourTests(vfs);
+    else if (mode == "giveway") giveWayTest(vfs);
+    else if (mode == "hearing") hearingTests(vfs);
+    else if (mode == "turretloft") turretLoftTest(vfs);
     else if (mode == "weapons") weaponTests(vfs);
     else combatTests(vfs);
     return failures ? 1 : 0;

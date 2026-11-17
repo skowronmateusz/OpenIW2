@@ -778,6 +778,8 @@ Entity* World::fireBullet(Entity& shooter, const Vec3& start, const Vec3& end, i
     }
     // 0x5314ac: the trigger_damage brushes the shot crosses (start -> impact) are hit with the weapon's damage.
     triggerDamageSegment(attacker ? attacker : &shooter, start, tr.endPos, damageAmount, rifle ? 2 : 1);
+    // A client's bullet that passes close by a bot is heard (a near miss, docs/spec/mp-bots.md "Hearing").
+    if (mp_ && depth == 0 && attacker && attacker->isPlayer) mpBotBulletPassed(*attacker, start, Vec3{tr.endPos[0], tr.endPos[1], tr.endPos[2]}, hit);
     bulletImpact(shooter, def, start, end, tr, hit);
     if (depth == 0) { // a pass-through or penetration continuation is the same shot
         ++stats.shots;

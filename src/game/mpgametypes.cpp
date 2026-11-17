@@ -447,12 +447,20 @@ void World::mpFastRestart() {
         bots_->itemsMs = -100000;
         bots_->smokes.clear();
         for (MpBot& b : bots_->bots) {
-            const int skill = b.skill, client = b.client;
-            const BotTrait trait = b.trait;
-            b = MpBot{};
-            b.client = client;
-            b.skill = skill;
-            b.trait = trait;
+            // What belongs to the bot rather than to the level goes on: its skill, traits, role, weapon class, a goal at
+            // a place (an entity goal names an entity of the old level) and its counters (docs/spec/mp-bots.md
+            // "Measurement": an sd game is many rounds).
+            MpBot keep;
+            keep.client = b.client;
+            keep.skill = b.skill;
+            keep.trait = b.trait;
+            keep.role = b.role;
+            keep.weaponClass = b.weaponClass;
+            keep.forceAds = b.forceAds;
+            keep.combat = b.combat;
+            if (b.goal.active && b.goal.entity < 0) keep.goal = b.goal;
+            keep.stats = b.stats;
+            b = std::move(keep);
             b.joinStep = 2; // the gametype puts a client that already has a team back in the game itself
         }
     }

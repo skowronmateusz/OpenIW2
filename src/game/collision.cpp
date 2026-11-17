@@ -1800,6 +1800,16 @@ void CollisionWorld::setEntityClips(std::vector<EntityClip> clips) {
     if (d_) d_->entityClips = std::move(clips);
 }
 
+void CollisionWorld::moveEntityClip(int id, const Vec& origin, float maxsZ) {
+    if (!d_) return;
+    for (EntityClip& c : d_->entityClips)
+        if (c.id == id && c.model == 0) {
+            c.origin = origin;
+            c.maxs[2] = maxsZ;
+            return;
+        }
+}
+
 // FUN_00417c20 with zero angles → FUN_00417640 for model 0x3ff.
 TraceResult CollisionWorld::traceBox(const Vec& origin, const Vec& boxMins, const Vec& boxMaxs, uint32_t boxContents, const Vec& start,
                                      const Vec& end, const Vec& mins, const Vec& maxs, uint32_t mask) const {

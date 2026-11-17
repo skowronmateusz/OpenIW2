@@ -86,7 +86,9 @@ Generated from the collision world (docs/spec/collision.md), never stored in the
 2b. **Ladder, mantle and leap links**, found by running pmove (docs/spec/pmove.md) with the controller's own traversal
    input from the node, standing still, in 50 ms steps:
    - *Ladder* (flag 4): from every node the box 6 units narrower than the player, feet at +8 (the box of the ladder grab
-     0x50bd90), is swept 24 units in the 8 flat directions; a hit on a surface with flag 0x8 (ladder) that is not a
+     0x50bd90), is swept 24 units (on a grid coarser than 16 units 1.5 cells: the column nearest a ladder can stand
+     farther from it; on mp_farmhouse, a 24-unit grid, the ladder up to the loft with the machine gun at about
+     −2300 1430 0 was found from no column) in the 8 flat directions; a hit on a surface with flag 0x8 (ladder) that is not a
      floor gives a ladder face, its view yaw facing into the face (−normal). Input up: that yaw, forward, view pitch −60
      (the climb speed follows how far the view looks up, 0x50c070); the step-up of the slide move (0x54f409) gets the
      player off at the top. When pmove used the ladder and stands again, the node within 32 units of the end, if it is
@@ -147,8 +149,8 @@ The generation takes 4–40 s per map (Release build) and is cached.
 
 ### Cache file
 
-`<cache dir>/<mapname>.nav`, little-endian: magic `IW2NAV\0\0`, uint32 version (3), uint64 key, float cell, float
-grid origin x, y, uint32 node count, the nodes (3 floats each), then per node uint32 link count and per link uint32
+`<cache dir>/<mapname>_<crc>.nav`, little-endian: magic `IW2NAV\0\0`, uint32 version (4), uint64 key, float cell, float
+grid origin x, y, uint32 node count, uint32 main node count, the nodes (3 floats each), then per node uint32 link count and per link uint32
 target, float distance, uint8 flags (1 jump, 2 drop, 4 ladder, 8 mantle, 16 leap), float view yaw. The key is the generator version (high 32 bits) and the CRC-32
 of the map's BSP file (low 32 bits); a file whose magic, version or key differs is ignored and the graph is generated
 again (about 2 s for mp_toujane). The cache directory is `$IW2_NAV_CACHE`, else `~/Library/Caches/openiw2/nav` on
@@ -163,7 +165,10 @@ Runs in the multiplayer frame step (after the scripts of the server frame) for e
   more than 64 units, the state restarts at the entity's origin and view yaw with the spawn slide of ClientSpawn
   (pm_time 100, docs/spec/pmove.md). After the move the entity's origin, yaw and velocity are written back, so the
   bullet traces and the entity clip box see it where pmove put it. Bots collide with each other and the local player
-  (pmove skips only the bot's own entity).
+  (pmove skips only the bot's own entity). The bot's clip box is moved there at once, with the top of its stance (70
+  standing, 50 crouched, 30 prone, as a network client's `$clipheight`, docs/spec/mp-pmove.md "Players against each
+  other"): the clips are otherwise rebuilt once per server frame, so a bot moved later in the same frame collided with
+  where an earlier one had stood, and two bots stepping into one place in one frame ended up inside each other.
 - **Perception.** An enemy is any other active, living, playing client (dm: everybody; team gametypes: the other
   session team). The bot notices what is inside the view of its screen at the current zoom with a clear line, after a
   time; what it hears or is hit by gives it a believed place only. See "Perception" and "Hearing" below.
@@ -280,14 +285,48 @@ What a bot hears or feels gives it a believed place, never the source's place, a
 - **Steps.** An enemy running (faster than 130 units/s) on its feet, not crouched or prone and not aiming, within the
   skill's step distance, checked every fourth frame: the same with an error of up to 30°–45°. Steps are not followed
   while another enemy was known in the last 4 s.
+- **A reload.** An enemy whose reload begins (the reload events of its weapon state, for a bot, the listen server's
+  player and a network client alike: `MpClient::lastReloadMs`) within the skill's step distance: as steps (30°–45°, the
+  same delay), and like steps not followed while another enemy is known.
+- **A grenade that lands.** An enemy's grenade bouncing within 500 units of the bot (the bounce sound): the thrower is
+  known at a place in the direction the grenade came from, up to 30°–45° off and 0.6–1.4 times its distance, after 1.2 ×
+  the reaction time plus 0–199 ms; not while the bot fights an enemy in sight. A frag grenade heard landing is also a
+  danger (an enemy's, the bot's own, or one whose thrower is dead or gone; not a team mate's): from the reaction time
+  plus 0–149 ms after the bounce until it goes off, the bot runs from where the grenade lies while it is within 350
+  units of it, standing and without aiming, also in a fight (not while planting or defusing, not on a traversal):
+  straight away from it when a main graph node lies within 40 units of the point 40 units ahead and the body (knee to
+  head) gets 32 units that way, else 45°, 90° or 135° to either side. So a walk towards the thrower does not lead over
+  the grenade.
+- **A grenade that goes off.** An enemy's frag grenade exploding within the skill's hearing distance: an enemy is
+  known at the place of the blast, as imprecise as gunfire. The thrower is not where its grenade went off; the bot looks
+  and goes where the fight is.
+- **A near miss.** An enemy's bullet that passes within 40 units of the bot's eye without hitting it (the closest point
+  of the bullet's way from the muzzle to its first impact, more than 64 units from the muzzle): the crack shows where it
+  came from about as a hit does, less precisely: after 120 ms plus half the reaction time the shooter is known at a place
+  up to 12°–25° off and 0.7–1.3 times its distance, whatever that distance (a shot from beyond the hearing distance is
+  noticed this way only).
 - **A hit.** The bot dodges at once (its strafe side flips). The hit shows where it came from, as the damage indicator
   does: after 120 ms plus half its reaction time the attacker is known at a place within 8°–15° of its direction and
   0.8–1.2 times its distance. A bot that fights another enemy in sight turns to the attacker on every second hit; for
   1.5 s, or until it sees the attacker, it then fights nobody else.
-- A bot that fights an enemy in sight does not turn to fire or steps of others.
+- A bot that fights an enemy in sight does not turn to fire, steps, reloads, grenades or near misses of others.
+- **Which one.** A bot holds one pending cue. A new one replaces it only when it is more urgent: a hit before gunfire,
+  grenades and near misses, these before steps and reloads (`BotCue`, `botCueUrgency`); in a fight the shots of several
+  enemies come one after another, and an equal one replacing it would put the pending cue off again and again. Another
+  cue of the source of the pending one (the next bullet of a burst, the next bounce of a grenade) is not taken. A team
+  mate's sounds are never taken for an enemy's (team gametypes).
+- **The walk.** A cue makes the bot plan its way to the believed place, unless the way it walks already ends within 300
+  units of it, or within a third of its distance (the sounds of one fight each carry their own error; planning anew for
+  each sent bots to and fro: on mp_carentan a bot stood 17 s within 64 units, hearing 46 shots).
 
 Tests: `test_mpbotcombat` (an enemy out of sight fires: not known in the same frame, known 150–700 ms later at a
-place up to 13° and a quarter of the distance off, not the shooter's place); `behaviour` scenario 9 (a scoped bot with
+place up to 13° and a quarter of the distance off, not the shooter's place; "more sounds": a veteran hears an enemy out
+of sight 250–450 units away reload, later than the reload began, up to 30° off; a recruit looking away is told by a near
+miss from 1300–2000 units, beyond its hearing of gunfire, 150–700 ms later, up to 26° and 35% off, and not by a team
+mate's, and three bullets 100 ms apart are one cue; a frag grenade landing 100 units in front of a bot is heard, the bot
+runs and is more than 150 units farther from it when it goes off; one going off 650–950 units away is heard; three
+enemies out of sight 900–1300 units away firing in turn every 150 ms are heard at least four times in 8 s, the bot walks
+more than 400 units towards them and plans its way at most twice); `behaviour` scenario 9 (a scoped bot with
 an enemy at 60° that fires: heard, then seen 1.3–4 s after the start; a bot hit from behind sees the attacker 5–40
 frames after the hit), 15 (an enemy 250–350 units behind the bot is not heard standing or crouched, and is heard
 running, at a place up to 30° off, after which the bot turns and sees it) and 17 (a bot that fights an enemy in front
@@ -475,7 +514,9 @@ and has the rounds without pressing use; a bot whose main weapon has no round wa
   units of the turret's box centre, a clear sight line to it. The coverage is the number of sampled main nodes (about
   600 per map) 200–3000 units from the gun inside its arcs with a clear line from the gun. A turret without such a place,
   or with fewer than 12 covered samples, is not used; after two bots stood at the place and were not offered the turret
-  it is given up for the map.
+  it is given up for the map. Every usable turret of the 15 shipped maps has a place (`test_navmaps` checks it): the one
+  that had none, the gun in the loft of mp_farmhouse (−2236 1329 293), stood above floor nodes the graph had pruned,
+  because the ladder up to the loft was not found on that map's coarse grid ("Ladder, mantle and leap links").
 - **When a bot goes for one** (checked once a second; not for 5 s after a spawn, not for 20–30 s after getting off,
   not the turret it just left for 60 s; only a free turret, and in a team game one no team mate is on its way to),
   within 600 units:
@@ -497,9 +538,10 @@ and has the rounds without pressing use; a bot whose main weapon has no round wa
   under 35; an enemy in sight where the gun cannot turn to for more than a second; nobody seen for the hold time (12–25
   s, a guard 30–60 s); on the gun for three hold times. The server puts the bot back where it got on.
 
-Tests (`behaviour` scenarios 7, 8): a bot near a turret that overlooks an enemy gets on with one press of use, fires 20
+Tests (`behaviour` scenarios 7, 8, 21): a bot near a turret that overlooks an enemy gets on with one press of use, fires 20
 shots within 10 s and hits, fires no hand weapon meanwhile, gets off within 3 frames of a bullet from outside the
-arcs and stands where it got on; alone on a gun it gets off after 11–27 s without a shot.
+arcs and stands where it got on; alone on a gun it gets off after 11–27 s without a shot; at the foot of the ladder of
+the mp_farmhouse loft, knowing an enemy out where the loft gun overlooks, a bot climbs up and gets on that gun.
 
 ### Cover
 
@@ -527,33 +569,69 @@ chest every 150 ms with an aim error of up to about 1.5°; it is the same before
 clip, or no weapon; not a reload, a weapon change, a melee or a throw). *Outside the view* is the share of the enemies
 noticed by sight that were outside the picture of the bot's screen at that moment.
 
-Before = the first controller (omniscient within its cone, hit or miss by a die), after = this page.
+*Hit rate* is the share of the bots' hand-weapon shots that hit an enemy (`MpBotStats::hits` / `shots`): a shot counts
+once whatever its pellets or passes, a killing hit once, a team mate hit not at all; `classShots` / `classHits` and
+`bandShots` / `bandHits` split it by weapon class and by the distance to the enemy fought (under 500, 500–1000, over
+1000 units). Until this counting, every bullet damage of a hand weapon counted as a hit: a shotgun's pellets each, a
+killing bullet twice (its damage and the death) and team mates too. On the same mp_carentan game (440 kills, 4085 shots)
+that gave 1284 hits (31.4%) where 646 shots (15.8%) hit an enemy; the rates of 31–51% that looked too strong were this.
+The runs print the number of rounds: an sd game is many rounds, and a round's restart (a fast restart of the level)
+keeps what belongs to a bot: its counters, skill, traits, role, weapon class and a goal at a place
+(`World::mpFastRestart`). Tests: `behaviour` scenario 22 (a shotgun blast is one shot and at most one hit; a dummy that
+dies of the first hit gives one hit and one kill; a team mate just in front of the enemy takes the bullets and they are
+no hits); `test_mpbotcombat` (in three minutes of sd with at least one round restart the counters only grow and every
+bot keeps its weapon class).
+
+Before = the first controller (omniscient within its cone, hit or miss by a die; its hit rates by the old counting,
+marked *), after = this page.
 
 | run | | kills | hit rate | defenceless | weapons / ammunition picked up | turret: mounts, time, kills | noticed outside the view | stuck events, longest still |
 |---|---|---|---|---|---|---|---|---|
-| mp_toujane dm, 8 recruits + scripted, 600 s | before | 161 | 8.1% | 0 s | 0 / 3 | 0 | 19% | 0, 11.8 s |
-| | after | 197 | 10.9% | 0 s | 58 / 9 | 13, 229 s, 11 | 0% | 0, 9.1 s |
-| mp_toujane dm, 8 regulars + scripted, 600 s | before | 226 | 17.2% | 0 s | 0 / 2 | 0 | 26% | 0, 8.5 s |
-| | after | 230 | 17.6% | 0 s | 67 / 1 | 9, 69 s, 3 | 0% | 0, 9.3 s |
-| mp_toujane dm, 8 veterans + scripted, 600 s | before | 360 | 24.0% | 0 s | 0 / 1 | 0 | 43% | 0, 10.5 s |
-| | after | 319 | 36.1% | 0 s | 73 / 2 | 6, 37 s, 3 | 0% | 0, 8.4 s |
-| mp_brecourt dm, 3 recruits, 3600 s | before | 51 | 2.8% | 3371 s (31.6% of the time alive) | 0 / 13 | 0 | 14% | 0, 8.8 s |
-| | after | 177 | 13.4% | 0 s | 53 / 32 | 3, 64 s, 2 | 0% | 0, 7.7 s |
-| mp_carentan tdm, 12 regulars, 900 s | before | 335 (190 by grenade) | 20.1% | 0 s | 0 / 12 | 0 | 14% | 3, 29.9 s |
-| | after | 440 (91 by grenade) | 31.4% | 0 s | 204 / 17 | 8, 259 s, 25 | 0% | 0, 7.3 s |
-| mp_dawnville ctf, 10 hardened, 900 s | before | 139 | 15.1% | 0 s | 0 / 12 | 0 | 13% | 2, 27.4 s |
-| | after | 151 | 36.1% | 0 s | 112 / 13 | 12, 192 s, 3 | 0% | 5, 36.5 s |
-| mp_decoy dm, 31 regulars, 300 s | before | 278 | 23.6% | 0 s | 0 / 2 | 0 | 31% | 0, 6.5 s |
-| | after | 287 | 22.5% | 0 s | 69 / 6 | 19, 76 s, 15 | 0% | 0, 6.0 s |
+| mp_toujane dm, 8 recruits + scripted, 600 s | before | 161 | 8.1%* | 0 s | 0 / 3 | 0 | 19% | 0, 11.8 s |
+| | after | 188 | 9.3% | 0 s | 62 / 5 | 10, 135 s, 5 | 0% | 0, 7.0 s |
+| mp_toujane dm, 8 regulars + scripted, 600 s | before | 226 | 17.2%* | 0 s | 0 / 2 | 0 | 26% | 0, 8.5 s |
+| | after | 232 | 12.5% | 0 s | 76 / 5 | 6, 50 s, 4 | 0% | 0, 7.7 s |
+| mp_toujane dm, 8 veterans + scripted, 600 s | before | 360 | 24.0%* | 0 s | 0 / 1 | 0 | 43% | 0, 10.5 s |
+| | after | 309 | 25.0% | 0 s | 66 / 1 | 9, 56 s, 6 | 0% | 0, 9.8 s |
+| mp_brecourt dm, 3 recruits, 3600 s | before | 51 | 2.8%* | 3371 s (31.6% of the time alive) | 0 / 13 | 0 | 14% | 0, 8.8 s |
+| | after | 166 | 10.1% | 0 s | 40 / 26 | 4, 47 s, 1 | 0% | 0, 6.2 s |
+| mp_carentan tdm, 12 regulars, 900 s | before | 335 (190 by grenade) | 20.1%* | 0 s | 0 / 12 | 0 | 14% | 3, 29.9 s |
+| | after | 381 (54 by grenade) | 13.7% | 0 s | 217 / 30 | 11, 282 s, 29 | 0% | 0, 10.5 s |
+| mp_dawnville ctf, 10 hardened, 900 s | before | 139 | 15.1%* | 0 s | 0 / 12 | 0 | 13% | 2, 27.4 s |
+| | after | 162 | 19.1% | 0 s | 106 / 7 | 9, 205 s, 1 | 0% | 0, 12.0 s |
+| mp_decoy dm, 31 regulars, 300 s | before | 278 | 23.6%* | 0 s | 0 / 2 | 0 | 31% | 0, 6.5 s |
+| | after | 283 | 15.4% | 0 s | 58 / 2 | 14, 49 s, 10 | 0% | 0, 5.7 s |
+| mp_toujane sd, 10 hardened, 900 s (14 rounds) | after | 88 | 21.8% | 0 s | 27 / 1 | 8, 134 s, 1 | 0% | 0, 7.8 s |
+| mp_matmata sd, 10 regulars, 900 s (15 rounds) | after | 86 | 14.7% | 0 s | 28 / 1 | 1, 12 s, 0 | 0% | 1, 24.8 s |
+| mp_farmhouse tdm, 12 hardened, 900 s | after | 373 | 18.3% | 0 s | 225 / 17 | 1, 13 s, 0 | 0% | 0, 6.8 s |
 
-Against the scripted player on mp_toujane (bots killed it / it killed bots): recruits 4 / 80 before and 6 / 102 after,
-regulars 15 / 78 and 12 / 82, veterans 34 / 51 and 31 / 66: the bots no longer know of it before they see it. No bot
-was trapped in any run. The stuck events on mp_dawnville, before and after, are a flag carrier on the rubble at one
-place of the graph (a fault of the graph there, not of this page's behaviour; TODO). The hit rate counts the bullets
-of hand weapons that hit an enemy (a shotgun's pellets each). Hit rates by skill on mp_toujane, 8 bots and the scripted
-player: recruit 10.9%, regular 17.6%, hardened 25.3%, veteran 36.1%. With scoped rifles only (`IW2_BOT_CLASS=sniper`)
-regulars hit 31% and veterans 51% of far fewer shots, with about as many kills. The runs differ by a few percent from
+Against the scripted player on mp_toujane (bots killed it / it killed bots): recruits 4 / 80 before and 3 / 88 after,
+regulars 15 / 78 and 13 / 101, veterans 34 / 51 and 28 / 63: the bots do not know of it before they see it. No bot was
+trapped in any run. The stuck events of mp_dawnville ctf (before 2, then 5 with the longest spell 36.5 s) were flag
+carriers behind escorts on the rubble ("Giving way"); none now. The one on mp_matmata sd is a bot that fell into a
+crevice at about 4913 7695 37, 8 units under a node, where it stands in the air on steep faces with no speed (pmove's
+slide stops it; it cannot jump) until the 20 s watch sends it elsewhere (TODO). The runs differ by a few percent from
 one version of the controller to the next: every change shifts the game's random numbers.
+
+### Hit rates
+
+Targets, from what people hit in this kind of game: a typical player hits roughly 15–30% of the shots of a rifle (a
+weak player below that, a good one at the top), fewer with an smg at range. Measured (all hand weapons; rifles alone;
+by the distance to the enemy fought):
+
+| skill | mp_toujane dm, 8 bots + scripted | mp_carentan tdm, 12 bots | rifles (toujane / carentan) | toujane: < 500, 500–1000, > 1000 units |
+|---|---|---|---|---|
+| recruit | 9.3% | 11.1% | 9.4% / 10.3% | 8.2%, 10.2%, 13.5% |
+| regular | 12.5% | 13.7% | 11.2% / 13.0% | 12.9%, 14.5%, 9.4% |
+| hardened | 18.5% | 20.4% | 22.4% / 19.1% | 18.7%, 21.8%, 14.5% |
+| veteran | 25.0% | 24.6% | 22.5% / 25.0% | 27.9%, 27.7%, 21.5% |
+
+An smg hits less than a rifle of the same skill in every run (toujane: 7.9%, 8.8%, 15.5%, 20.8%; carentan: 8.0%, 10.4%,
+16.6%, 18.5%), and beyond 1000 units every skill hits less than closer (carentan regulars 17.7% under 500 units,
+10.4% beyond 1000). With scoped rifles only (`IW2_BOT_CLASS=sniper`, the pistol too): regulars 16.4% / 15.7%, veterans
+26.8% / 29.6% (toujane / carentan). The aim errors of the skill presets are unchanged: with the counting above,
+recruit..veteran run from about 9–11% to 25%, hardened and veteran inside the 15–30% of a typical to a good player,
+recruit and regular below it (their rifles 9–13%).
 
 ### Off-graph spawn points
 
@@ -622,6 +700,23 @@ twice is removed as a failed traversal is.
 
 Off the graph (no node within 32 units) for 3 s while not fighting, a bot drops its path, so the next plan starts from
 the nearest node in straight reach (`offGraphReplans`), long before the 20 s watch.
+
+### Giving way
+
+`botPushedBy`, `World::mpBotGiveWay`. In a team gametype a bot steps out of the way of a team mate that wants to walk
+into it: the mate stands within 44 units (flat; heights within 60) and its move points within 60° of the line to the
+bot (a bot's walk of its last frame; a player's command move turned by its view yaw: the listen server's own player, a
+network client). The bot steps across the mate's way on the side it already stands, else the other side, else ahead
+along the mate's way (each when a main node lies within 40 units of the point 40 units ahead and the body, knee to head,
+gets 24 units that way) for a second. A bot that walks itself gives way only to a mate it walks into head-on (its own
+walk within 60° of the line to the mate) and only when its client number is the higher. Not in a fight, on a
+traversal, while holding use or behind cover. Enemies are not asked.
+
+The fault this mends: on the rubble of mp_dawnville (about −340 −16780 50, a passage one body wide) ctf carriers stood
+stuck for 20–37 s: escorts (objective "escort", reached within 200 units of the carrier) stood in the passage ahead of
+it, and a carrier that could not pass planned the same way again. The graph there was sound (its walk links pass pmove).
+Test (`behaviour` scenario 20): there a team mate parked on its objective steps aside and the bot is through within 8 s;
+an enemy parked there is not asked.
 
 
 ## Objectives
@@ -694,9 +789,7 @@ else the `bot_weaponclass` cvar, else any class), the menu's first allowed one w
 - A bot does not hold a place with a long view on its own (a sniper's post), does not peek around a corner step by
   step, and does not act together with its team beyond the role split; the ctf carrier waits at its base while its own
   flag is away. No grenades at the objective.
-- Sounds a bot does not hear: grenades landing, reloads, a team mate's death. A near miss is not noticed (only a hit).
-- A bot uses a turret only where a graph node passes the use's tests; a gun whose use place is off the graph stays
-  unused.
+- Sounds a bot does not hear: a team mate's death, a weapon change.
 - Rendering in iw2view: the bot entity carries its team's body model and head attachment from the gametype's
   character script (`_teams.gsc` setPlayerModels); whether iw2view draws it (it would be in the bind pose) is not
   verified, and there are no player animations (stand / run / death) yet.
