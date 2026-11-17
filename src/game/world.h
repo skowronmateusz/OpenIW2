@@ -584,7 +584,11 @@ public:
         bool hidden = false;   // not playing (spectator): not drawn
         std::string model;                     // body model of the client state ("" keeps the current one)
         std::vector<std::string> attachments;  // attached models of the client state (head, helmet), tag ""
-        int legsAnim = 0;      // the entity state's legsAnim: the server's climb / mantle animation node (0 none)
+        int legsAnim = 0;      // the entity state's legsAnim: the server's climb / mantle / jump animation (node | toggle bit 0x200)
+        // On a map turret (eFlags 0x300; docs/spec/mp-players.md "On a turret"): the turret's position in the map's entity
+        // list (from otherEntityNum, 0 none), and the attack held (eFlags 0x40).
+        int turretMapIndex = 0;
+        bool firing = false;
     };
     void mpStartRemote();
     void mpSetRemotePlayers(const std::vector<RemotePlayer>& players);
@@ -2120,16 +2124,26 @@ private:
     PaContext mpAnimContext(int client);
     // Plays one command of an item on the entity's multiplayer tree; returns its duration in ms.
     int mpPlayCommand(Entity& e, const PaItem& item, bool restart);
+    int mpPlayPaCommand(Entity& e, const PaCommand& cmd, bool restart);
+    void mpTurretPose(Entity& e, Entity& turret, int top);
     // The death event: chooses the body's death animation; its duration in ms, -1 when none (lnxded 0x80d96ee).
     int mpDeathAnim(Entity& e);
     // The move-type node of a climb or mantle move type for the recorded view state `v` of a client (0 for any other).
     int mpServerOnlyLegsNode(int client, const MpViewState& v);
 public:
+    // The move speed of a multiplayer tree node's animation (docs/spec/mp-players.md "Animation numbers on the wire"):
+    // its delta translation from start to end over its length in seconds; 0 for a blend node or an animation without one.
+    float mpAnimMoveSpeed(int node);
+    // The map turret a client uses (docs/spec/mp-players.md "On a turret"): the server's turret use, or for a network
+    // client's puppet the turret its entity state names; nullptr when none.
+    Entity* mpTurretOf(int client);
     // Whether a client entity is drawn in third person (a multiplayer client other than the local one, playing).
     bool mpPlayerDrawn(const Entity& e) const;
-    // What a client's entity state carries in legsAnim (docs/spec/mp-players.md "Ladder and mantle move types"): the
-    // multiplayer tree node of the climb or mantle animation the server plays on its legs, 0 for any other move type.
-    // With `archived` the node is the one of that recorded view state (the killcam's players of an archived frame).
+    // What a client's entity state carries in legsAnim (docs/spec/mp-players.md "Ladder and mantle move types", "Jumps and
+    // landings"): the multiplayer tree node of the climb or mantle animation the server plays on its legs, or of a jump or
+    // landing animation with the toggle bit 0x200 from its event until a move type is chosen again; 0 otherwise.
+    // With `archived` the climb or mantle node of that recorded view state (no jump: the killcam sends
+    // ArchivedClient::legsWire).
     int mpLegsAnimWire(int client, const MpViewState* archived = nullptr);
     // Debug / tests: the bullet's locational trace (default priority map) from `start` to `end` ignoring `pass`; the entity
     // hit (-1 for none) and the hit location name.

@@ -1395,9 +1395,12 @@ Names the scripts register later in the game reach the clients as `d <index> <te
 - Players: entity number = client number, eType 1, clientNum (+0x90) the client, pos.trType 3 with pos.trDuration 50 and the velocity in
   pos.trDelta (section 10 "Commands on a bursty path": pos.trTime is the player state's `commandTime`), apos.trType 1, solid 0x66010f (the packed box: 15 sideways, 1 down, 70 up),
   groundEntityNum 1022 on the ground, the weapon number, the event ring; eFlags as listed below. legsAnim / torsoAnim are
-  the player state's animations (0x80dfe37..0x80dfe4c); openiw2 sends in legsAnim only the multiplayer tree node of a
-  climb or mantle animation, which the client cannot tell from the rest (docs/spec/mp-players.md "Ladder and mantle move
-  types"; `TODO(spec)`: the 1.3 numbering). openiw2 sends the
+  the player state's animations (0x80dfe37..0x80dfe4c): an entry of the multiplayer tree's animation table with the
+  toggle bit 0x200 (docs/spec/mp-players.md "Animation numbers on the wire"; openiw2 uses its own tree node numbers,
+  `TODO(spec)`: the 1.3 entry order). openiw2 sends in legsAnim only what the
+  client cannot derive from the rest of the entity state: a climb or mantle animation and the jump and landing
+  animations with their hold in the air (docs/spec/mp-players.md "Ladder and mantle move types", "Jumps and
+  landings"), 0 otherwise. openiw2 sends the
   snapshot time as pos.trTime, so the trajectory evaluates to the origin and a player is drawn at his origin, where
   the server's hit tests have him, without the original's 50 ms lead (`TODO(spec)`: whether the 1.3 antilag positions
   include that lead).
@@ -1426,11 +1429,22 @@ Names the scripts register later in the game reach the clients as `d <index> <te
   0x80fcc76 at 0x80fcd20; observed 0xa0002, later 0x20002: the body's think, deathAnimDuration ms after the clone, clears 0x80000 (0x80fcc48); openiw2 keeps it that long and its client starts the death animation only with it, docs/spec/mp-hud.md "Bodies in the killcam"). The body's legsAnim and
   torsoAnim are the dead client's player-state animations (ps+0x7c and ps+0x84, copied at 0x80fcf1d..0x80fcf38), so
   the client can pose it in the death animation. openiw2 sends the node number of the death animation in the
-  multiplayer animation tree in both (`TODO(spec)`: the 1.3 animation numbering and its toggle bit). The client draws
-  a body with its client's body model and the attached models of that client state, plays the animation of legsAnim
-  once from the body's first snapshot and keeps its last frame; a dropped weapon has the weapon's world model.
-  `TODO(spec)`: the model of a body whose client has left (no client state) or joined again and not spawned yet (no
-  body model in its client state); openiw2 draws such a body only once its client state has a body model again.
+  multiplayer animation tree in both, without the toggle bit (docs/spec/mp-players.md "Animation numbers on the wire";
+  `TODO(spec)`: the 1.3 entry order). A dropped weapon has the weapon's world model.
+  The model of a body (MP client, VAs in the patch 1.3 MP executable): the client keeps a client-info record of its own
+  for each of the eight body entities (an array of 0x4b8-byte records indexed by entity number, the 64 clients' records
+  being a separate array; freed in the loop at 0x4c0d32). When a body entity is reset (new in the snapshot, or its eFlags
+  bit 2 differs from the drawn state's: the reset at MP 0x4df100 described with the entity events below; its type 2
+  case at 0x4df1f7..0x4df290), it copies the record of the body's client (the client number +0x90) into the body's record
+  (0x4df0b0, the whole record): always while the body has eFlags 0x80000, and otherwise only when the body's record has
+  no body model (byte +0x40) or holds another client (+8, the client number the client-state loop stores at 0x4df7d3).
+  The body is drawn from its own record (0x4dc840 -> 0x4fb250: no model and no attachments without a valid record with
+  a body model). So a body keeps the model and attachments its client had when the body appeared, after the client
+  leaves (whose record the client-state loop clears, 0x4df540..0x4df5a3) or joins again with no body model yet; a body
+  first seen when its client is already gone gets an empty record and is not drawn. The copy drops every attachment
+  whose tag is `J_Spine4` (0x4df0d0..0x4df0eb, string 0x5b6bb8); the client states openiw2 sends carry no tags, so no
+  attachment is dropped there. openiw2: `netgame::BodyInfos` keeps the eight records per wire number and is updated
+  once per applied snapshot.
 - Player eFlags (observed with two test clients): 4 crouched, 8 prone, 0x40 while firing: the movement code clears it every
   command and sets it when the attack button is held, pm_type is not 5, pm_flags has no 0x1000, the weapon state
   (+0xd8) is 0 or 3 and a further check passes (0x80e8bc6..0x80e8c38; `TODO(spec)`: 0x80ed5fc). The bits 0x20 / 0x40

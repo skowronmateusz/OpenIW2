@@ -64,6 +64,10 @@ MpViewState mpViewStateOf(const PlayerWeapon& w, const PlayerState& ps) {
     v.mantling = ps.mantling;
     v.mantleTrans = ps.mantleTrans;
     v.mantleTimeMs = ps.mantleTimeMs;
+    v.onGround = ps.onGround;
+    v.animEvent = ps.animEvent;
+    v.animEventForced = ps.animEventForced;
+    v.animEventSeq = ps.animEventSeq;
     return v;
 }
 
@@ -78,7 +82,20 @@ std::string mpViewStateText(const MpViewState& v) {
 
 void World::mpSetViewState(int client, const MpViewState& v) {
     if (!mp_ || client < 0 || size_t(client) >= mp_->clients.size()) return;
-    mp_->clients[size_t(client)].view = v;
+    MpClient& cl = mp_->clients[size_t(client)];
+    cl.view = v;
+    // The movement's ground state and legs event for the third-person animation (docs/spec/mp-players.md "Jumps and
+    // landings"): an event is kept until the driver plays it; a later forced one replaces it, an unforced one does not
+    // replace a forced one.
+    MpPlayerInput& in = cl.animInput;
+    in.onGround = v.onGround ? 1 : 0;
+    if (v.animEventSeq != in.animEventSeq) {
+        in.animEventSeq = v.animEventSeq;
+        if (v.animEvent != 0 && (v.animEventForced || !in.legsEventForced || in.legsEvent == 0)) {
+            in.legsEvent = v.animEvent;
+            in.legsEventForced = v.animEventForced;
+        }
+    }
 }
 
 void World::mpSetLocalViewState(const MpViewState& v) {
@@ -327,6 +344,7 @@ void World::mpKillcamEndFrame() {
         // velocity, view heights): the recorded view state of the client's mover, and its event ring.
         // A client that is not playing (dead, spectating) has nothing in hand (its mover does not record it any more).
         ac.view = cl.ent->obj->get("sessionstate").toString() == "playing" ? cl.view : MpViewState{};
+        ac.legsWire = mpLegsAnimWire(int(i));
         if (ac.view.weapon == "none") ac.view.weapon.clear();
         if (ac.view.viewWeapon.empty() || !(ac.view.weaponState >= 12 && ac.view.weaponState <= 16)) ac.view.viewWeapon = ac.view.weapon;
         // The weapon in hand is the weapon state machine's (the player state's weapon changes when a raise completes,

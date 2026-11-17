@@ -90,7 +90,11 @@ std::vector<game::World::RemotePlayer> RemoteView::players(const net::ClientSnap
         rp.dead = (flags & kEfDead) != 0;
         rp.hidden = (flags & kEfHidden) != 0;
         rp.viewHeight = (flags & kEfProne) ? 11 : (flags & kEfCrouch) ? 40 : 60;
-        rp.legsAnim = getI(es, 204) & 1023; // the server's climb / mantle animation (docs/spec/mp-players.md)
+        rp.legsAnim = getI(es, 204) & 1023; // the server's climb / mantle / jump animation (docs/spec/mp-players.md)
+        // On a map turret: eFlags 0x300 and the turret's number in otherEntityNum (lnxded 0x80dfe76..0x80dfe91).
+        if (const int other = getI(es, 116) & 1023; (flags & 0x300) && other >= kFirstMapEntity && other < 1022)
+            rp.turretMapIndex = other - kFirstMapEntity + 1;
+        rp.firing = (flags & kEfFiring) != 0;
         // solid (+156): x/y half size, down, up + 32 in three bytes (docs/spec/net.md section 11)
         if (const int solid = getI(es, 156); solid && solid != 0xffffff) rp.boxHeight = float(((solid >> 16) & 0xff) - 32);
         if (const auto cs = b.clients.find(e.clientNum); cs != b.clients.end()) {
@@ -421,6 +425,8 @@ void RemoteView::apply(game::World& w, const net::ClientSnapshot& snap, const st
     }
     w.mpSetRemoteObjectives(objs);
 
+    // The bodies' own copies of their clients' info (docs/spec/net.md section 11 "Entities").
+    bodies_.update(snap, cs);
     // Entities: obituary events (once each) and script models.
     std::vector<game::World::RemoteModel> models;
     std::set<std::pair<int, int>> live;
@@ -460,9 +466,13 @@ void RemoteView::apply(game::World& w, const net::ClientSnapshot& snap, const st
             if (type == kEtCorpse) {
                 // The body model and the attached models (head, helmet) of the client's client state, and the death
                 // animation in legsAnim (docs/spec/net.md section 11).
-                if (const auto c = snap.clients.find(getI(es, 144) & 63); c != snap.clients.end())
-                    clientModels(c->second, cs, m.model, m.attachments);
-                if (const int la = getI(es, 204) & 1023; la > 0) m.animNode = la;
+                // The model and attachments come from the client's own copy of its client's info, taken when the body
+                // appeared (BodyInfos), not from the live client state: they stay after the client leaves.
+                if (const BodyInfos::Info* bi = bodies_.find(number); bi && bi->valid) {
+                    m.model = bi->model;
+                    m.attachments = bi->attachments;
+                }
+                if (const int la = getI(es, 204) & 0x1ff; la > 0) m.animNode = la; // without the toggle bit 0x200
                 m.animFlip = getI(es, 8) & 2;
                 m.animDone = (getI(es, 8) & kEfBodyNew) == 0;
             } else if (const std::string wn = weaponNameFromList(cs, getI(es, 140)); !wn.empty()) {
@@ -694,6 +704,34 @@ void RemoteView::missileEvents(game::World& w, const std::vector<const net::Clie
         it->second = seq;
     }
     std::erase_if(missileSeq_, [&](const auto& m) { return !present.count(m.first); });
+}
+
+void BodyInfos::update(const net::ClientSnapshot& snap, const std::map<int, std::string>& configstrings) {
+    std::map<int, int> drawn;
+    for (const auto& [number, es] : snap.entities) {
+        if ((getI(es, 4) & 0xff) != kEtCorpse) continue;
+        const int flags = getI(es, 8), client = getI(es, 144) & 63;
+        drawn[number] = flags & 2;
+        // A reset: new in the snapshot, or its eFlags bit 2 differs from the drawn state's (MP 0x4dfb40, 0x4df100).
+        const auto prev = drawn_.find(number);
+        if (prev != drawn_.end() && prev->second == (flags & 2)) continue;
+        Info& info = infos_[number];
+        // Copied always while the body is new (eFlags 0x80000); otherwise only into a record without a body model or of
+        // another client (MP 0x4df227..0x4df27d).
+        if ((flags & kEfBodyNew) == 0 && info.valid && !info.model.empty() && info.client == client) continue;
+        info = Info{};
+        info.client = client;
+        if (const auto c = snap.clients.find(client); c != snap.clients.end()) {
+            info.valid = true;
+            clientModels(c->second, configstrings, info.model, info.attachments);
+        }
+    }
+    drawn_ = std::move(drawn);
+}
+
+const BodyInfos::Info* BodyInfos::find(int wire) const {
+    const auto it = infos_.find(wire);
+    return it == infos_.end() ? nullptr : &it->second;
 }
 
 std::string sayCommand(bool team, const std::string& text) {

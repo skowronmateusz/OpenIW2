@@ -1076,8 +1076,7 @@ void World::mpBotFrame(MpBot& b) {
     cl.animInput.move.rightMove = in.right;
     cl.animInput.move.slow = b.ps.adsSlow || b.ps.lean != 0;
     cl.animInput.ads = b.ps.ads;
-    cl.animInput.jumped |= in.jump;
-    cl.view = mpViewStateOf(b.weapon, b.ps); // the recorded view state (the killcam view of this bot)
+    mpSetViewState(b.client, mpViewStateOf(b.weapon, b.ps)); // the recorded view state (the killcam view of this bot), its ground and legs event
 }
 
 // Measures how long a bot that wants to walk stays on the spot (docs/spec/mp-bots.md "Stuck watch").

@@ -219,6 +219,9 @@ struct NetClient {
     };
     std::vector<Gone> goneItems;        // items that left the live snapshots, not yet explained
     int killcams = 0, deaths = 0, kills = 0, evictions = 0, absentBodies = 0, lostInFlight = 0, liveSnaps = 0, bodiesChecked = 0, itemsChecked = 0;
+    // checkDrawn's copy of each body's client and model ("" none), and the eFlags bit 2 of the bodies of the last snapshot.
+    std::map<int, std::pair<int, std::string>> bodyModels;
+    std::map<int, int> bodiesShown;
 };
 
 void respondMenu(NetClient& c, const std::string& response) {
@@ -288,6 +291,20 @@ bool drawn(game::World& w, const std::string& model, const float* o, float slack
         if (std::fabs(p[0] - o[0]) + std::fabs(p[1] - o[1]) + std::fabs(p[2] - o[2]) <= slack) return true;
     }
     return false;
+}
+
+// The models drawn within `slack` of `o` (for a violation's message).
+std::string modelsNear(game::World& w, const float* o, float slack) {
+    std::string out;
+    for (const auto& e : w.entities()) {
+        if (e->obj->removed || e->isPlayer) continue;
+        const script::Value ov = e->obj->get("origin");
+        if (!ov.isVector()) continue;
+        const auto p = ov.asVector();
+        if (std::fabs(p[0] - o[0]) + std::fabs(p[1] - o[1]) + std::fabs(p[2] - o[2]) <= slack)
+            out += " " + e->obj->get("model").toString() + (e->obj->get("$hidden").truthy() ? "(hidden)" : "");
+    }
+    return out.empty() ? std::string(" nothing") : out;
 }
 
 void observe(NetClient& c, const net::ClientSnapshot& s) {
@@ -386,21 +403,37 @@ void observe(NetClient& c, const net::ClientSnapshot& s) {
 
 // After the World's frame: every body and item of the newest live snapshot is drawn.
 void checkDrawn(NetClient& c, const net::ClientSnapshot& s) {
+    // The body's model (docs/spec/net.md section 11 "Entities", bodies): the client copies its client's body model when the
+    // body is reset (new in the snapshot or its eFlags bit 2 changed), always while it has eFlags 0x80000, otherwise only
+    // into a copy without a model or of another client; a killcam's snapshots included.
+    std::map<int, int> present;
+    for (const auto& [n, es] : s.entities) {
+        if ((getI(es, 4) & 0xff) != netgame::kEtCorpse) continue;
+        const int flags = getI(es, 8), client = getI(es, 144) & 63;
+        present[n] = flags & 2;
+        if (const auto p = c.bodiesShown.find(n); p != c.bodiesShown.end() && p->second == (flags & 2)) continue;
+        auto& rec = c.bodyModels[n];
+        if ((flags & netgame::kEfBodyNew) == 0 && !rec.second.empty() && rec.first == client) continue;
+        std::string live;
+        if (const auto cs = s.clients.find(client); cs != s.clients.end())
+            if (const int mi = getI(cs->second, 8) & 0xff; mi > 0)
+                if (const auto m = c.gc->configstrings.find(netgame::kModelConfigstrings + mi - 1); m != c.gc->configstrings.end()) live = m->second;
+        rec = {client, live};
+    }
+    c.bodiesShown = std::move(present);
     if (netgame::RemoteView::following(s)) return;
     for (const auto& [n, es] : s.entities) {
         const int type = getI(es, 4) & 0xff;
         if (type != netgame::kEtCorpse && type != netgame::kEtItem) continue;
         std::string model;
         if (type == netgame::kEtCorpse) {
-            // The body of a client that has left (no client state) or joined again and has not spawned yet (no body model in
-            // its client state) has nothing to draw it with until the slot's client spawns; not counted.
-            const auto cs = s.clients.find(getI(es, 144) & 63);
-            if (cs == s.clients.end() || (getI(cs->second, 8) & 0xff) == 0) {
+            // The body keeps the model its client had when it appeared (later spawns pick another character, the client may
+            // leave); a body first seen when its client had no body model has nothing to draw it with; not counted.
+            model = c.bodyModels[n].second;
+            if (model.empty()) {
                 ++c.absentBodies;
                 continue;
             }
-            if (const int mi = getI(cs->second, 8) & 0xff; mi > 0)
-                if (const auto m = c.gc->configstrings.find(netgame::kModelConfigstrings + mi - 1); m != c.gc->configstrings.end()) model = m->second;
             ++c.bodiesChecked;
         } else {
             const std::string wn = netgame::weaponNameFromList(c.gc->configstrings, getI(es, 140));
@@ -418,7 +451,8 @@ void checkDrawn(NetClient& c, const net::ClientSnapshot& s) {
             netgame::evaluateTrajectory(tr, s.serverTime, o);
         if (!drawn(*c.view, model, o, 64.0f))
             violation(type == netgame::kEtCorpse ? "draw.body" : "draw.item", c.name + " snap " + std::to_string(s.serverTime) + ": entity " + std::to_string(n) + " " + model +
-                                                                                  " at " + std::to_string(int(o[0])) + "," + std::to_string(int(o[1])) + "," + std::to_string(int(o[2])) + " not drawn");
+                                                                                  " at " + std::to_string(int(o[0])) + "," + std::to_string(int(o[1])) + "," + std::to_string(int(o[2])) + " not drawn; drawn there:" +
+                                                                                  modelsNear(*c.view, o, 64.0f));
     }
 }
 

@@ -470,7 +470,8 @@ frame of its death (the client entity leaves the snapshot in the frame `clonepla
 kill), its body from that frame on, and a body that the queue of 8 reused since is still shown (with many players a
 slot turns over within the 9 s of a replay; the live list then no longer has the victim's body). openiw2 archives each
 body's slot, client, death animation, reuse bit and birth time and sends them with the live body's wire form in the
-frame's time. The body's model is the one of its client's live client state. A client starts the death animation when
+frame's time. The body's model is the client's own copy of its client's info, taken when the body was reset
+(docs/spec/net.md section 11 "Entities", bodies). A client starts the death animation when
 it first sees a body with eFlags 0x80000 and shows the last frame otherwise, so a body older than the replay's first
 frame does not die again; openiw2 sets the bit for the first 500 ms of a body (TODO(spec): the bit's real meaning
 and when the 1.3 server clears it, and how the 1.3 client poses a body it first sees late). The local killcam already

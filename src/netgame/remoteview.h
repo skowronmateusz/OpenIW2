@@ -18,6 +18,28 @@
 
 namespace iw2::netgame {
 
+// A network client's own copy of the client info of each body of the body queue (docs/spec/net.md section 11
+// "Entities", MP 0x4df1f7..0x4df290): taken from the body's client state when the body is reset (new in the snapshot or
+// its eFlags bit 2 changed), always while it has eFlags 0x80000, otherwise only when the copy has no body model or is of
+// another client. A body is drawn from it, so it keeps its model after its client leaves or joins again.
+class BodyInfos {
+public:
+    struct Info {
+        bool valid = false; // the client had a client state when it was copied
+        int client = -1;
+        std::string model;
+        std::vector<std::string> attachments;
+    };
+    // Once per applied snapshot.
+    void update(const net::ClientSnapshot& snap, const std::map<int, std::string>& configstrings);
+    // The copy of the body with that wire number, nullptr when none was taken.
+    const Info* find(int wire) const;
+
+private:
+    std::map<int, Info> infos_;
+    std::map<int, int> drawn_; // wire number -> eFlags bit 2 of the bodies of the last snapshot
+};
+
 class RemoteView {
 public:
     // The remote world keeps the local view in client slot 0; the server's client 0 takes our own number's slot.
@@ -123,6 +145,7 @@ public:
     static int stance(const net::ClientSnapshot& snap);
 
 private:
+    BodyInfos bodies_;
     std::set<std::pair<int, int>> seenEvents_;  // (entity number, server time) of the events already played
     int lastSnapshot_ = -1;
     std::array<int, 3> shock_{0, 0, 0}; // shockType, shockStartTime (server time), shockDuration of the last applied player state

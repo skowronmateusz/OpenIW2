@@ -223,6 +223,39 @@ const PaItem* PlayerAnimScript::event(const std::string& name, const PaContext& 
     return nullptr;
 }
 
+const PaCommand* PlayerAnimScript::legsCommand(const std::string& anim, const std::vector<std::string>& events) const {
+    for (const std::string& name : events) {
+        const auto it = events_.find(name);
+        if (it == events_.end()) continue;
+        for (const PaItem& i : it->second)
+            for (const PaCommand& c : i.commands)
+                for (const PaPart& p : c.parts)
+                    if (p.body != PaBody::Torso && p.anim == anim) return &c;
+    }
+    return nullptr;
+}
+
+bool PlayerAnimScript::ladderAnimation(const std::string& anim) const {
+    for (const char* type : {"climbup", "climbdown"}) {
+        const auto it = anims_.find(type);
+        if (it == anims_.end()) continue;
+        for (const PaItem& i : it->second)
+            for (const PaCommand& c : i.commands)
+                for (const PaPart& p : c.parts)
+                    if (p.anim == anim) return true;
+    }
+    return false;
+}
+
+float paMoveRate(float scale, float moveSpeed, bool ladder) {
+    if (scale < 0.1f) return scale < 0.01f && ladder ? 0.0f : 0.1f;  // too slow: a ladder animation stops below 0.01
+    if (scale <= 2.0f) return scale;
+    if (ladder) return std::min(scale, 4.0f);
+    if (moveSpeed > 150.0f) return 2.0f;
+    if (moveSpeed >= 20.0f) return std::min(scale, 3.0f - (moveSpeed - 20.0f) / 130.0f);
+    return std::min(scale, 3.0f);
+}
+
 std::string paMantleMoveType(int mantleAnim) {
     static const char* const kNames[] = {"mantle_up_57", "mantle_up_51", "mantle_up_45", "mantle_up_39", "mantle_up_33", "mantle_up_27",
                                          "mantle_up_21", "mantle_over_high", "mantle_over_mid", "mantle_over_low"};

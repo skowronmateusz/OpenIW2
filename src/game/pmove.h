@@ -116,6 +116,12 @@ struct PlayerState {
     int mantleTrans = 0;
     uint32_t mantleFlags = 0;
     int stanceEvent = -1;        // client stance set by a mantle event this move (0x8d → 1, 0x8c → 0), else −1
+    // The third-person legs event of this move (docs/spec/mp-players.md "Jumps and landings"): 3 jump, 4 jumpbk, 5 land
+    // (the EVENTS table of playeranim.script), 0 none; cleared at the start of every playerMove. A later forced event
+    // replaces an earlier one, an unforced one does not replace a forced one. animEventSeq counts the events added.
+    int animEvent = 0;
+    bool animEventForced = false;
+    int animEventSeq = 0;
     int64_t lastFoliageMs = 0;   // ps+0x44: time of the last foliage event, 0 after the reset interval at low speed
     int landSeq = 0;             // landings so far (PM_CrashLand 0x508fe0 reached the ground from the air)
     float landHeight = 0;        // the last landing's fall height

@@ -1062,8 +1062,8 @@ void WorldGame::writePlayerEntity(std::vector<uint8_t>& es, int client, const En
     if (client >= 0 && size_t(client) < w_->mpState().clients.size()) flags |= game::mpTeleportBit(w_->mpState().clients[size_t(client)].spawnCount);
     putI(es, 8, flags);
     putI(es, 200, weaponNumber(e.obj->get("$weapon").toString()));
-    // legsAnim (+204): the climb or mantle animation the server plays, which the client cannot tell from the rest
-    // (docs/spec/mp-players.md "Ladder and mantle move types"; TODO(spec): the 1.3 numbering, as for the body).
+    // legsAnim (+204): the climb, mantle, jump or landing animation the server plays, which the client cannot tell from
+    // the rest (docs/spec/mp-players.md "Ladder and mantle move types", "Jumps and landings"; node | toggle bit 0x200).
     if (const int la = w_->mpLegsAnimWire(client); la > 0 && la < 1024) putI(es, 204, la);
     // The weapon events of a player (docs/spec/net.md section 13): the event ring, and the lean of a network player.
     if (auto o = otherRings_.find(client); o != otherRings_.end()) {
@@ -1443,7 +1443,7 @@ net::SnapshotView WorldGame::snapshot(int slot) {
             else if (ac.view.viewHeightTarget <= 40) flags |= kEfCrouch;
             putI(es, 8, flags);
             putI(es, 200, weaponNumber(ac.weapon));
-            putI(es, 204, w_->mpLegsAnimWire(int(n), &ac.view) & 1023); // its climb or mantle of that frame
+            putI(es, 204, ac.legsWire & 1023); // the legsAnim the server sent in that frame (a climb, a mantle, a jump)
             putF(es, 212, ac.view.lean);
             putI(es, 164, ac.ring.sequence & 0xff);
             for (int i = 0; i < 4; ++i) {
@@ -1464,8 +1464,8 @@ net::SnapshotView WorldGame::snapshot(int slot) {
     // Bodies of the body queue: number 64 + slot, eType 2, the client, eFlags with bit 2 toggled on each reuse of the slot
     // (VAs in the 1.3 Linux dedicated server: 0x811eaa4, cloneplayer 0x80fcc76; observed 0xa0002 / 0x20002).
     // legsAnim (+204) / torsoAnim (+208): the dead client's animations (cloneplayer copies ps+0x7c / ps+0x84, 0x80fcf1d).
-    // openiw2 sends the death animation's node in the multiplayer tree in both; TODO(spec): the 1.3 animation numbering
-    // and its toggle bit.
+    // openiw2 sends the death animation's node in the multiplayer tree in both, without the toggle bit; TODO(spec): the
+    // 1.3 entry order of the animation table (docs/spec/mp-players.md "Animation numbers on the wire").
     auto sendBody = [&](int slot, int client, const script::Vec3& o, const script::Vec3& a, int anim, int flip, bool animating, const Trajectory* fall = nullptr) {
         if (slot < 0 || slot > 7) return;
         std::vector<uint8_t> es(size_t(net::kEntityStateSize), 0);

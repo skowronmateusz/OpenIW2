@@ -70,6 +70,12 @@ struct MpViewState {
     bool mantling = false;
     int mantleTrans = 0;
     int mantleTimeMs = 0;
+    // The ground state and the legs event of the move (PlayerState::animEvent, docs/spec/mp-players.md "Jumps and
+    // landings"), for the third-person body as well.
+    bool onGround = true;
+    int animEvent = 0;
+    bool animEventForced = false;
+    int animEventSeq = 0;
     bool operator==(const MpViewState& o) const {
         return weapon == o.weapon && viewWeapon == o.viewWeapon && weaponState == o.weaponState && animKey == o.animKey && animMs == o.animMs &&
                adsFrac == o.adsFrac && adsHeld == o.adsHeld && bobCycle == o.bobCycle && velocity == o.velocity &&
@@ -151,6 +157,7 @@ struct ArchivedClient {
     // (stats[5]): the copy of the followed client's player state carries them, so the replay shows his red flashes and kicks.
     int damageEvent = 0, damageYaw = 0, damagePitch = 0, damageCount = 0, spawnCount = 0;
     MpViewState view;          // the recorded view state (the weapon field above is the same as view.weapon)
+    int legsWire = 0;          // the legsAnim the server sent for the client in that frame (World::mpLegsAnimWire)
     MpEventRing ring;          // the client's event ring at the end of the frame
 };
 

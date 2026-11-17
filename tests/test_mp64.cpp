@@ -285,6 +285,13 @@ void soak(const char* mainDir, int seconds) {
             }
         }
         if (sec == seconds / 2) client.addReliableCommand("score");
+        // Client 63 standing at its spawn is not always found by the bots (their paths depend on every hit); when it is
+        // still alive at two thirds of the soak a bot's shot kills it, so its body and killcam always run.
+        if (sec == seconds * 2 / 3)
+            if (game::Entity* h = w.mpClientEntity(63); h && h->obj->get("sessionstate").toString() == "playing") {
+                const auto d = h->obj->get("deaths");
+                if (!d.isInt() || d.asInt() == 0) w.mpDebugDamage(63, 0, 1000, "MOD_RIFLE_BULLET", "torso_upper");
+            }
     }
     const double cpu = cpuSeconds() - cpu0;
     const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();

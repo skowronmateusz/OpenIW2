@@ -59,6 +59,13 @@ public:
     const PaItem* event(const std::string& name, const PaContext& ctx) const;
 
     bool holds(const PaItem& item, const PaContext& ctx) const;
+    // The first command of the named events' blocks (in that order, every item) that plays `anim` on the legs, or nullptr:
+    // the blend and body of an animation a network client gets from the server (docs/spec/mp-players.md "Jumps and
+    // landings").
+    const PaCommand* legsCommand(const std::string& anim, const std::vector<std::string>& events) const;
+    // An animation named in the climbup or climbdown block (lnxded 0x80d7d5a..0x80d7dd8; the ladder flag also needs a
+    // non-zero move speed, docs/spec/mp-players.md "Animation numbers on the wire").
+    bool ladderAnimation(const std::string& anim) const;
     size_t animationCount() const { return anims_.size(); }
     size_t eventCount() const { return events_.size(); }
 
@@ -92,6 +99,10 @@ std::string paMoveType(const PaMovement& m, float moveThreshold = 10.0f);
 std::string paMantleMoveType(int mantleAnim);
 // A climb or mantle move type: the ones the network client cannot tell from the entity state (it gets their animation).
 bool paServerOnlyMoveType(const std::string& moveType);
+// The rate of a body part's animation from the body's speed (MP 0x4f9de5..0x4f9f80, docs/spec/mp-players.md "Animation rate
+// from the movement"): `scale` is the measured speed over the animation's move speed, `ladder` an animation of the
+// climbup / climbdown blocks.
+float paMoveRate(float scale, float moveSpeed, bool ladder);
 // TODO(spec): the strafing value (docs/spec/mp-players.md).
 std::string paStrafing(const PaMovement& m);
 

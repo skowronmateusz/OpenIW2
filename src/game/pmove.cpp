@@ -40,6 +40,7 @@ struct Pml {
     float prevOriginZ = 0, prevVelZ = 0; // pml+0x64 / +0x70: origin z and vertical speed at the start of the step
     float gravity = 800.0f;
     bool dead = false; // pm_type >= 4
+    bool backMove = false; // the command's forward move is negative (command +0x1c): jumpbk instead of jump
     float fallMinHeight = 200.0f, fallMaxHeight = 350.0f; // bg_fallDamageMinHeight / MaxHeight
 };
 
@@ -251,6 +252,18 @@ void addPlayerEvent(PlayerState& ps, int event, int parm) {
 }
 
 namespace {
+// A call of the player animation's event function from the movement (lnxded 0x80d96ee; docs/spec/mp-players.md "Jumps and
+// landings"): kept for the third-person animation driver.
+constexpr int kAnimEventJump = 3, kAnimEventJumpBack = 4, kAnimEventLand = 5;
+void addAnimEvent(PlayerState& ps, int event, bool forced) {
+    if (ps.animEvent != 0 && ps.animEventForced && !forced) return;
+    ps.animEvent = event;
+    ps.animEventForced = forced;
+    ++ps.animEventSeq;
+}
+} // namespace
+
+namespace {
 
 // Applies PM_CrashLand: the landing report the cgame turns into the view dip, the speed loss and the event.
 // The pml fields are the origin/velocity copy at 0x50c67f..0x50c6c4 (before any movement), as the port does. The pm_time of a damaging landing
@@ -271,6 +284,7 @@ void crashLand(PlayerState& ps, const Pml& pml) {
     }
     if (o.velScale != 1.0f) ps.velocity = scale(ps.velocity, o.velScale);
     addPlayerEvent(ps, o.event, o.eventParm);
+    if (h > 12.0f) addAnimEvent(ps, kAnimEventLand, true); // lnxded 0x80e326b..0x80e32ec
 }
 
 // 0x507c20 and the inline copies: v − n·(d − |d|·0.001) with d = v·n.
@@ -348,11 +362,19 @@ void groundTrace(const CollisionWorld& w, PlayerState& ps, Pml& pml) {
         pml.groundTrace = tr;
     }
     if (tr.fraction == 1.0f) {
+        // Ground lost with nothing within 64 units below (lnxded 0x80e36aa): the jump animation, forced.
+        if (ps.onGround) {
+            const Vec below{ps.origin[0], ps.origin[1], ps.origin[2] - 64.0f};
+            if (w.trace(ps.origin, below, pml.mins, pml.maxs, pml.mask, pml.passEntity).fraction == 1.0f)
+                addAnimEvent(ps, pml.backMove ? kAnimEventJumpBack : kAnimEventJump, true);
+        }
         noGround(ps, pml);
         return;
     }
-    // Moving up and away from the plane: a jump, not ground.
+    // Moving up and away from the plane: a jump, not ground. Off a ladder this plays the jump animation, not forced
+    // (lnxded 0x80e3ad6..0x80e3b72).
     if (ps.velocity[2] > 0 && dot(ps.velocity, tr.normal) > 10.0f) {
+        if (!ps.onLadder) addAnimEvent(ps, pml.backMove ? kAnimEventJumpBack : kAnimEventJump, false);
         noGround(ps, pml);
         return;
     }
@@ -821,6 +843,7 @@ bool checkJump(PlayerState& ps, Pml& pml, const PlayerInput& in, const MoveParam
     ps.onGround = false;
     ps.lastJumpMs = ps.timeMs;
     ps.jumpOriginZ = ps.origin[2];
+    addAnimEvent(ps, pml.backMove ? kAnimEventJumpBack : kAnimEventJump, true); // lnxded 0x80dcdd2..0x80dce1e
     ps.pmTimeMs = 0;
     ps.jumping = true;
     // A jump while the previous landing's slowdown runs (flag 0x80000, pm_time <= 1800) divides 2·g·h by the slowdown factor
@@ -1070,6 +1093,7 @@ void mantleMove(PlayerState& ps, const MantleAnims& m, int ms) {
     if (ps.mantleTimeMs == total) {
         ps.mantling = false;
         if (ps.mantleFlags & 4) ps.stanceEvent = 0;
+        if (ps.mantleFlags & 1) addAnimEvent(ps, kAnimEventJump, true); // over the top: the jump animation (lnxded 0x80de404..0x80de42f)
     }
 }
 
@@ -1519,6 +1543,7 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     if (in.dead) fwdMove = rightMove = 0; // 0x50c733: pm_type ≥ 4 clears the command's moves
     proneAimCancel(ps, cmdFwd, cmdRight, in.weaponState); // 0x50c4f6
     if ((ps.ads || ps.proneAimLatch) && ps.viewHeightTarget == 11) fwdMove = rightMove = 0; // 0x50c5d4, 0x50c750
+    pml.backMove = fwdMove < 0;
     ps.prevCmdFwd = cmdFwd; // the next step's previous command (raw, before the zeroing above)
     ps.prevCmdRight = cmdRight;
     updateAimSpread(ps, in, fwdMove, rightMove, pml.frametime, mp);
@@ -1746,6 +1771,8 @@ float mantleClampYaw(const PlayerState& ps, float yaw) {
 
 void playerMove(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, float dt, const MoveParams& mp) {
     ps.stanceEvent = -1;
+    ps.animEvent = 0;
+    ps.animEventForced = false;
     // Pmove (0x50cc10) runs steps of at most 66 ms; PmoveSingle (0x50c4a0) clamps a step to 1..200 ms.
     int ms = std::max(1, int(std::lround(dt * 1000.0f)));
     while (ms > 0) {

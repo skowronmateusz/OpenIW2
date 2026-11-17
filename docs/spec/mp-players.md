@@ -65,7 +65,7 @@ nothing (`playeranim.script:839-842`: firing on a mounted MG plays no torso anim
 
 A command line is `<body part> <animation> [modifiers]`, body part `legs`, `torso` or `both` (table at MP 0x5d8c88).
 Modifiers seen in the file: `duration <ms>` (how long a torso event holds the torso), `blendtime <ms>`, `turretanim`
-(MG42 aim, not used here), `sound <alias>`.
+(the turret pose, "On a turret"), `sound <alias>`.
 When an item lists several commands, one is chosen at random each time the item is played (lnxded 0x80d96ee:
 `rand() % count` over the item's 16-byte commands, then 0x80d92e8 plays it).
 
@@ -95,7 +95,10 @@ Condition values for a client:
 - `strafing`: TODO(spec) (computed in the script player 0x4f9190, not decoded): this port uses `left` / `right` when
   the command moves only sideways, else `not`; the file's own note says it is never left or right when moving
   backwards (`playeranim.script:80`).
-- `mounted`, `firing`, `underhand`, `crouching`: no MG mounting here; these hold false.
+- `mounted`: `mg42` while the client uses a map turret (eFlags 0x300; lnxded 0x80d9afc..0x80d9b5d in the condition
+  update 0x80d9a1c, which the movement runs every command); `firing`: the command's attack button (0x80d9b9f..0x80d9bfb).
+  Only the mounted items of the move-type blocks test `firing` (`playeranim.script:102-108`).
+- `underhand`, `crouching`: these hold false.
 
 ## Move type from the movement (MP 0x518740, the MP footsteps step)
 
@@ -139,20 +142,111 @@ over animation (0x80dd1b2). The move types are named by the table at 0x81848c0 (
 `playeranim.script` blocks of 18, 19 and 21..30 play `pb_climbup`, `pb_climbdown` and the `mp_mantle_*` animations on both
 body parts (`playeranim.script:703-806`). A mantle is in the air, so the footsteps step chooses nothing over it.
 
-openiw2 applies the climb and the mantle types and the 300 ms hold after a jump on a ladder; a client on a turret does
-not move, so the ground rule gives it the same idle; the airborne hold (no new type in the air) is not applied
-(`TODO(spec)`: it would need the puppets' ground state, which the network client does not get), so a jump shows the
-types of the speed it has.
+openiw2 applies the climb and the mantle types, the 300 ms hold after a jump on a ladder and the airborne hold: the
+server's clients carry their ground state in the recorded view state (`MpViewState::onGround`, from the movement of
+bots, network clients and the host alike), and while it is false and the client neither climbs nor mantles the driver
+keeps the move type it chose last. openiw2's movement sets the stance and its view height target together, so the
+stance-change exception never applies there. A client on a turret does not move, so the ground rule gives it the same
+idle.
 
 What reaches the other clients: the player state's legs and torso animations (ps +0x7c, ps +0x84) go into the
 entity state's legsAnim and torsoAnim (0x80dfe37..0x80dfe4c, the player state to entity state copy), so every client
 plays the server's choice. openiw2's clients choose the move type themselves from the entity state (stance flags,
-velocity, docs/spec/net.md section 11), which carries nothing about a ladder or a mantle: the server sends in legsAnim
-the node number in the multiplayer animation tree of the animation it plays for a climb or mantle move type (0 for
-any other), and the client uses the move type whose animation that is. TODO(spec): the 1.3 numbering of legsAnim and
-its toggle bit (as for the body). The killcam's archived players carry it from their recorded view state.
-TODO(spec): how the client advances a move type's animation (a climb on the spot is still played at the animation's
-own rate, as walking is).
+velocity, docs/spec/net.md section 11), which carries nothing about a ladder, a mantle, a jump or a landing, so the
+server sends in legsAnim (number and toggle bit as in "Animation numbers on the wire") what the client cannot derive:
+the animation it plays for a climb or mantle move type, and the jump or landing animation from its event until the
+driver chooses a move type again (so for the whole time in the air); 0 for anything else. A climb or mantle number makes
+the client use the move type whose animation that is; any other number is played on the legs as it is (restarted when
+the number or its toggle bit changes) and no move type is chosen while it lasts. The killcam's archived players carry
+the value the server sent in the archived frame.
+
+## Animation numbers on the wire
+
+The animation list the player animation code works with has one entry per entry of the multiplayer tree's animation
+table: the setup (lnxded 0x80d72e6) takes the table's entry count (0x80d7309 -> 0x80c0ff0, stored at +0xc000 of the
+shared animation data) and fills list entry i from table entry i (0x80d7369..0x80d75c2; entry 0 is the root; 8-byte table
+entries, a leaf's name from its animation, 0x80c0ee0). legsAnim and torsoAnim are a list entry number plus a toggle bit
+0x200: the client strips the bit before it uses the number (MP 0x4f98af, 0x4fb180, 0x4fb1c8), sets the part's animation
+anew when the whole value differs from the one it plays (0x4f9db0 -> 0x4f9850), so a flipped bit starts the same
+animation again, and rejects a number at or above the entry count (0x4f98b5). `TODO(spec)`: when the 1.3 server flips
+the bit; openiw2 flips it at every jump or landing animation it sends. Observed on the 1.3 server: legsAnim 650 and 639 (0x200 +
+138, 0x200 + 127) next to 153. The table's entry order is the tree builder's (children in reverse file order, a node's
+children in consecutive entries, docs/spec/animtree.md "Child order"), not the file order openiw2's `AnimTree` keeps;
+`TODO(spec)`: the exact entry order (no simple ordering of `multiplayer.atr` tried puts a standing idle at 153 and a run
+at 127). openiw2 sends its own tree node numbers with the toggle bit, so its server and client agree with each other.
+For each entry the setup also keeps (0x80d747f..0x80d75b4): the length in ms (at least 500), and the move speed, the
+length of the animation's delta translation from its start to its end divided by its length in seconds (0 for a node
+without an animation or of length 0). While parsing `playeranim.script` every animation named in a `climbup` or
+`climbdown` block with a non-zero move speed is flagged as a ladder animation (move type 18 or 19, flag 2,
+0x80d7d5a..0x80d7dd8).
+
+## Jumps and landings
+
+VAs in the 1.3 Linux dedicated server. The movement code calls the event function (0x80d96ee) with the player state
+and an event number from the `EVENTS` table (jump 3, jumpbk 4, land 5); the last argument says whether the call is
+forced (docs/spec/mp-players.md "Events"):
+- a jump (the jump check 0x80dcca8): `jump`, or `jumpbk` when the command's forward move (command +0x1c) is negative,
+  forced (0x80dcdd2..0x80dce1e);
+- losing the ground with nothing below: when the ground trace finds nothing (0x80e3acc) while the player still had
+  ground, a second trace 64 units down (0x80e36aa, constant 0x8155048) that also finds nothing plays `jump` / `jumpbk`
+  the same way, forced (0x80e3762..0x80e37ae);
+- leaving the ground upwards: the ground trace's case of a player moving up and away from the plane (vertical velocity
+  above 0, velocity along the normal above 10, 0x80e3ae7..0x80e3b24), not on a ladder (pm_flags 0x20, 0x80e3ad6):
+  `jump` / `jumpbk`, not forced (0x80e3b26..0x80e3b72);
+- the end of a mantle over the top (mantle flag 1, when the mantle time reaches its total, 0x80de3eb..0x80de42f):
+  `jump`, forced;
+- a landing (the crash land 0x80e30c4, 0x80e326b..0x80e32ec): `land`, forced, when the fall height is above 12 (0x8155030).
+These calls happen inside the move, before the footsteps step chooses the move type, so the items' `movetype`
+conditions see the move type of the previous step. The `jump` items play their takeoff animation with `duration 5`
+(`playeranim.script:1127-1173`): the legs hold ends at once, and what keeps the takeoff on the legs is the airborne
+hold of the footsteps step until the landing. openiw2: the movement keeps the strongest event of each move in the player
+state (`PlayerState::animEvent`; a later forced event replaces an earlier one, an unforced one does not replace a
+forced one) with a sequence number; the recorded view state carries it to the animation driver, which plays it before
+the move type with the previous move type.
+
+## Animation rate from the movement
+
+MP client 0x4f9d80 (the same routine serves the server's copy of the player animation, MP 0x5012eb -> 0x4fb150), for
+the legs and for the torso part each: when the part plays an entry with a non-zero move speed, it measures how fast the
+entity moved since its last sample and sets the animation's rate to that speed over the move speed:
+- the sample is the entity state's origin (+0x18) and the time of the newest snapshot (MP 0x15cf978, set in
+  CG_ProcessSnapshots at 0x4dfdde); a new rate is computed only when that time differs from the sample's; without a
+  sample or with a move speed of 0 the rate is 1 and the sample is taken (0x4f9f55..0x4f9f79);
+- distance: the change of the origin's height for a ladder animation, else the 3D distance (0x426960); rate =
+  distance / (elapsed ms x 0.001) / move speed (0x4f9e41..0x4f9e5c);
+- below 0.1: 0.1, except below 0.01 a ladder animation stops (rate 0) (0x4f9e7c..0x4f9eb0);
+- above 2: a ladder animation at most 4; otherwise a move speed above 150 gives 2, a move speed of at least 20 at most
+  3 - (move speed - 20) / 130, a smaller one at most 3 (0x4f9ebc..0x4f9f4c);
+- the rate goes into the part's animation in the tree (0x4f9f81..0x4f9f9c).
+So a climb on the spot stops the climb animation and walking slower or faster than the animation plays it slower or
+faster. openiw2 applies it in the driver to the legs and torso nodes of every client each world frame (50 ms on the
+server; on a network client from the puppet's origin as the snapshots place it), a node's move speed from its
+animation's delta translation (a blend node has none).
+
+## On a turret
+
+VAs: lnxded and MP as above. A client on a map turret has the turret bits 0x300 in its player state's eFlags; the player
+state to entity state copy puts them into the entity state's eFlags and, with them set, the player state's
+viewLockEntity (ps +0x594) into otherEntityNum (+0x74; 0x80dfe76..0x80dfe91). The footsteps step plays the idle of the
+stance (see "Ladder and mantle move types"), and with the condition `mounted` the idle blocks choose `standMG42_aim`, or
+`standMG42_fire` while the attack is held (`proneMG42_*` prone), on both body parts with the `turretanim` modifier
+(`playeranim.script:100-196`); `fireweapon` plays nothing then (`playeranim.script:839-842`).
+- No hand weapon: the client builds the body's model without the weapon of the entity state while eFlags has 0x300
+  (MP 0x4fb258..0x4fb273, in the routine that builds the model from the client info, 0x4fb250).
+- The pose: after the animation update a client with eFlags 0x300 is posed from its turret (MP 0x4dc789..0x4dc797 ->
+  0x4dbe60): only while its legs play an animation flagged as a turret animation (animation entry +0x50 bit 4,
+  0x4dbec1; `TODO(spec)`: where the flag is set, taken to be the `turretanim` modifier), with the turret entity of otherEntityNum present (otherEntityNum 64..1022) and its model
+  having `tag_weapon` (0x4ccd00; a warning otherwise). Inputs as in the single-player gunner pose step
+  (docs/spec/turrets.md "Gunner pose step"): the yaw of `tag_weapon` with the turret's bone controls, the turret
+  weapon's `animHorRotateInc` (+0x564), and h = the client's height in the turret's frame minus the tag's. The probe
+  over the node's height children and their yaw grandchildren and the final weights are the same (0x4dc030..0x4dc4f0;
+  children in the tree builder's order), the blend times reach the goals within one frame (constant over the frame
+  time, 0x4dc22e..0x4dc265), and when the probe stops at the first or after the last child that child alone gets
+  weight 1 (0x4dc502..0x4dc55f); the actor's pitch bound has no counterpart. `TODO(spec)`: what 0x4dc567..0x4dc6bb does
+  with the node's delta (the drawn place of the client); openiw2 draws the client where the server put it.
+openiw2: `World::mpTurretOf` (the server's turret use, or for a network client's puppet the map entity that the entity
+state's otherEntityNum names), `World::mpTurretPose` once per world frame (blend time for one 50 ms frame), the weapon
+model cleared while mounted.
 
 ## Events
 
@@ -174,6 +268,8 @@ own rate, as walking is).
 `cloneplayer(deathAnimDuration)` leaves a body entity where the player died (`dm.gsc:381`, `_deathicons.gsc` reads its
 origin). Port: the body copies the player's model and attachments and plays the death animation chosen at the death,
 holding its last frame; the player entity itself is not drawn while its `sessionstate` is not `playing`.
+A network client draws a body with the model and attachments its client had when the body appeared, from a copy it
+keeps per body (docs/spec/net.md section 11, "Entities", bodies), so a body stays drawn after its client leaves.
 The body (cloneplayer 0x80fcc76 in the 1.3 Linux dedicated server) is an entity of handler class 12 in entity slot 64 + (counter % 8).
 It lives until a later cloneplayer takes its slot; no timer removes it. Its think runs deathAnimDuration ms after the clone
 and clears eFlags 0x80000. cloneplayer drops no weapon: a dropped weapon is the gametype script's own call.
@@ -198,5 +294,5 @@ SP G_Damage (combat.cpp `hitLocationMultiplier`). TODO(spec): the server site th
 
 Torso pitch to the view (the bone list initialised with `J_Spine4` at MP 0x4df0d0; the strings `fTorsoPitch` /
 `fWaistPitch` at 0x5aa600 / 0x5aa60c name tunables): the body is drawn with the animation pose only. Leg yaw against
-the torso, the turning node, MG42 mounting, flinches, stumbles, the transition events
+the torso, the turning node, the drawn place of a client on a turret (below), flinches, stumbles, the transition events
 (stand_to_crouch ...), sounds of commands.
