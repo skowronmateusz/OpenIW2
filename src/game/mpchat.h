@@ -2,6 +2,7 @@
 // The server side (say / say_team, sayAll / sayTeam) is in World (src/game/mpchat.cpp).
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -24,6 +25,9 @@ inline float mpChatFieldBaseline(float sayY, float textScale) { return float(int
 // First row (top) of the history line `i` (newest 0): cg_hudChatPosition.y - 10 * (i + 1) (0x4c7760).
 inline float mpChatLineTop(float chatY, int i) { return chatY - 10.0f * float(i + 1); }
 
+// A message broken into display lines the way the client chat buffer does (the same rules as MpChatBuffer::add, below).
+std::vector<std::string> mpChatWrap(const std::string& msg);
+
 // Client chat lines (add 0x4d0e10, draw 0x4c7760). Times are cg times in ms.
 class MpChatBuffer {
 public:
@@ -45,6 +49,29 @@ private:
     std::string text_[kMaxHeight];
     int64_t time_[kMaxHeight] = {};
     int pos_ = 0, last_ = 0;
+};
+
+// OpenIW2 addition, not in the original (docs/spec/mp-chat.md "Chat history"): the recent chat lines of the session, shown
+// in a scrollable panel while the message field is open. Lines are kept wrapped like the chat lines; the oldest drop out
+// beyond kCapacity. scroll() counts lines back from the newest (0 = the newest line is at the bottom).
+class MpChatHistory {
+public:
+    static constexpr int kCapacity = 50; // lines kept
+    static constexpr int kVisible = 10;  // lines shown at once
+    void add(const std::string& msg);
+    void clear() { lines_.clear(); scroll_ = 0; }
+    int size() const { return int(lines_.size()); }
+    int scroll() const { return scroll_; }
+    // Moves the view by `delta` lines (positive = towards older lines), clamped to what exists.
+    void scrollBy(int delta);
+    void resetScroll() { scroll_ = 0; }
+    int maxScroll() const { return std::max(0, size() - kVisible); }
+    // The lines in view, oldest first (at most kVisible); the newest is last when scroll() is 0.
+    std::vector<MpChatBuffer::Line> view() const;
+
+private:
+    std::vector<std::string> lines_;
+    int scroll_ = 0;
 };
 
 } // namespace iw2::game

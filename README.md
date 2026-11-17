@@ -74,6 +74,9 @@ quality, sound card, the console, and the multiplayer connection speed.
   weapon classes are allowed.
 - **Join game** lists servers on your local network and joins the one you pick. To join another server, add it to
   **Favorites** by IP address or DNS name (default port 28960).
+- **Chat history** (an OpenIW2 addition): while the chat field is open (T / Y), a panel above it shows the last chat lines
+  of the session, which PgUp / PgDn and the mouse wheel scroll. The history is kept across map changes on the same
+  server. Set the cvar `iw2_chatHistory` to 0 to turn it off.
 - A listen server uses UDP port 28960, or the next free one up to 28969. The server list on other computers looks at
   28960 to 28963.
 - If the macOS firewall asks whether OpenIW2 may accept incoming connections, choose **Allow**. After **Deny**, others

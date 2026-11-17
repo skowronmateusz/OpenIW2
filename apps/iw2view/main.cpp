@@ -4688,6 +4688,8 @@ int main(int argc, char** argv) {
         int64_t mpCrossMs = -1;
         // MP chat (docs/spec/mp-chat.md): the chat lines (client 0x4d0e10) and the message field (chatmodepublic / chatmodeteam).
         game::MpChatBuffer chatBuffer;
+        // OpenIW2 addition: the session's chat history panel (docs/spec/mp-chat.md "Chat history"); kept across level loads, cleared on disconnect.
+        game::MpChatHistory chatHistory;
         struct ChatField { bool open = false, team = false; std::string text; } chatField;
         // Death screen client state (docs/spec/campaign.md "Death screen"): opendeadscreen start (world time,
         // 0xf7966c), time_slow (real ms, 0xf7965c..0xf79668 → frame scale 0x747edc).
@@ -6181,6 +6183,7 @@ int main(int argc, char** argv) {
             log::Event("net") << "connected as client " << nc->clientNum << ", map " << map;
             netClient = std::move(nc);
             ++netConnection;
+            chatHistory.clear();
             if (frontPtr) frontPtr->closeAll();
             execText("map " + map);
         };
@@ -6621,6 +6624,7 @@ int main(int argc, char** argv) {
             if (name == "h" && cvarInt("cg_teamChatsOnly", 0) != 0) return;
             const std::string text = game::mpChatReceived(game::localizeTextMessage(arg, [&](const std::string& k) { return loc.find(k); }));
             chatBuffer.add(text, cgNowMs(), cvarInt("cg_chatHeight", 8), cvarInt("cg_chatTime", 12000));
+            chatHistory.add(text);
             std::cout << "[chat] " << game::mpCleanString(text) << "\n";
         };
         auto menuCommand = [&](const std::string& name, const std::string& arg) {
@@ -6668,6 +6672,7 @@ int main(int argc, char** argv) {
                     chatField.team = c == "chatmodeteam";
                     chatField.text.clear();
                     chatField.open = !chatField.open;
+                    chatHistory.resetScroll();
                 }
                 // mp_QuickMessage (0x4c1680): the UI menu "quickmessage" (ui_mp/wm_quickmessage.menu, listed in ui_mp/ingame.txt), only
                 // with the local player's pm_flags 0x800000 (playing or dead and not following, 0x501068). The port loads the menu
@@ -7734,10 +7739,14 @@ int main(int argc, char** argv) {
                         return std::nearbyint(tw);
                     };
                     const auto cp = vec2("cg_hudChatPosition", 5.0f, 150.0f);
-                    const auto lines = chatBuffer.frame(cgNowMs(), cvarInt("cg_chatHeight", 8), cvarInt("cg_chatTime", 12000));
+                    // While the message field is open and iw2_chatHistory is on, the history panel (OpenIW2 addition) takes the place of the
+                    // fading chat lines: the same rows, bar colours and font, the last kVisible lines of the session, scrolled with
+                    // PgUp / PgDn / the wheel. Otherwise the chat lines are drawn as in the original.
+                    const bool historyPanel = chatField.open && cvarInt("iw2_chatHistory", 1) != 0;
+                    const auto lines = historyPanel ? chatHistory.view() : chatBuffer.frame(cgNowMs(), cvarInt("cg_chatHeight", 8), cvarInt("cg_chatTime", 12000));
                     for (size_t i = 0; i < lines.size(); ++i) {
                         const auto& l = lines[i];
-                        const float y = game::mpChatLineTop(cp[1], int(i));
+                        const float y = game::mpChatLineTop(cp[1], historyPanel ? int(lines.size() - 1 - i) : int(i)); // the panel lists oldest first
                         // Strip colour: the line's first ^N (0x4032e0: 8 g_TeamColor_Allies, 9 g_TeamColor_Axis), rgb x 0.25, alpha x 0.6.
                         static const float kTab[10][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}, {0, 0, 1}, {0, 1, 1}, {1, 0, 1}, {1, 1, 1}, {0.5f, 0.5f, 1}, {1, 0.5f, 0.5f}};
                         const float* col = l.code >= 0 ? kTab[l.code] : kTab[7];
@@ -7748,6 +7757,11 @@ int main(int argc, char** argv) {
                         out.push_back(bar);
                         const uint8_t white[4] = {255, 255, 255, uint8_t(std::clamp(l.alpha, 0.0f, 1.0f) * 255.0f)};
                         hudText(out, l.text, left43 + cp[0] * sc, (y + 9.0f) * sc, gs, *f, white, 0.0f, 1.0f, 3);
+                    }
+                    if (historyPanel && chatHistory.scroll() > 0) { // a scrolled-back view is marked with the number of newer lines below
+                        const uint8_t grey[4] = {200, 200, 200, 255};
+                        const std::string mark = "(+" + std::to_string(chatHistory.scroll()) + ")";
+                        hudText(out, mark, left43 + (cp[0] + 400.0f) * sc, (game::mpChatLineTop(cp[1], int(lines.size()) - 1) + 9.0f) * sc, gs, *f, grey, 0.0f, 1.0f, 3);
                     }
                     // The field: "<EXE_SAY>: " or "<EXE_SAYTEAM>: " and the text, below the history (docs/spec/mp-chat.md). TODO(spec): the label colour, the cursor.
                     if (chatField.open) {
@@ -9922,6 +9936,7 @@ int main(int argc, char** argv) {
             mpCrossMs = -1;
             chatBuffer = {};
             chatField = {};
+            if (std::string(why) == "disconnect") chatHistory.clear(); // a level load keeps the history, a new session starts empty
             mpSb = {};
             mpIntermissionView = false;
             invalidCmdState = 0;
@@ -10250,6 +10265,14 @@ int main(int argc, char** argv) {
             while (SDL_PollEvent(&ev)) {
                 // The message field (0x40ade0) takes the keys: Escape closes it, Enter sends `say` / `say_team` "\x15<text>" when the
                 // field is not empty, both clear it; other keys edit it. Key releases still reach the bindings.
+                // The history panel scrolls with PgUp / PgDn and the wheel (OpenIW2 addition, cvar iw2_chatHistory).
+                if (chatField.open && cvarInt("iw2_chatHistory", 1) != 0) {
+                    if (ev.type == SDL_EVENT_KEY_DOWN && (ev.key.scancode == SDL_SCANCODE_PAGEUP || ev.key.scancode == SDL_SCANCODE_PAGEDOWN)) {
+                        chatHistory.scrollBy((ev.key.scancode == SDL_SCANCODE_PAGEUP ? 1 : -1) * (game::MpChatHistory::kVisible - 1));
+                        continue;
+                    }
+                    if (ev.type == SDL_EVENT_MOUSE_WHEEL && ev.wheel.y != 0) { chatHistory.scrollBy(ev.wheel.y > 0 ? 3 : -3); continue; }
+                }
                 if (chatField.open && ev.type == SDL_EVENT_KEY_DOWN) {
                     const auto sc2 = ev.key.scancode;
                     if (sc2 == SDL_SCANCODE_ESCAPE || sc2 == SDL_SCANCODE_RETURN || sc2 == SDL_SCANCODE_KP_ENTER) {

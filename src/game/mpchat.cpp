@@ -64,14 +64,10 @@ std::string mpChatReceived(const std::string& localized) {
     return out;
 }
 
-void MpChatBuffer::add(const std::string& msg, int64_t now, int height, int chatTime) {
-    height = std::min(height, kMaxHeight);
-    if (height <= 0 || chatTime <= 0) {
-        pos_ = last_ = 0;
-        return;
-    }
-    std::string* cur = &text_[pos_ % height];
-    cur->clear();
+std::vector<std::string> mpChatWrap(const std::string& msg) {
+    constexpr int kLineChars = MpChatBuffer::kLineChars;
+    std::vector<std::string> lines;
+    std::string cur;
     int count = 0;
     char colour = '7';
     size_t spaceOut = std::string::npos, spaceIn = 0;
@@ -79,33 +75,64 @@ void MpChatBuffer::add(const std::string& msg, int64_t now, int height, int chat
     while (i < msg.size()) {
         if (count > kLineChars - 1) {
             if (spaceOut != std::string::npos) { // break at the last space, which is dropped
-                cur->resize(spaceOut);
+                cur.resize(spaceOut);
                 i = spaceIn + 1;
             }
-            time_[pos_ % height] = now;
-            ++pos_;
-            cur = &text_[pos_ % height];
-            *cur = std::string("^") + colour;
+            lines.push_back(cur);
+            cur = std::string("^") + colour;
             count = 0;
             spaceOut = std::string::npos;
             if (i >= msg.size()) break;
         }
         const char c = msg[i];
         if (c == '^' && i + 1 < msg.size() && msg[i + 1] != '^' && msg[i + 1] >= '0' && msg[i + 1] <= '9') {
-            *cur += c;
-            *cur += msg[i + 1];
+            cur += c;
+            cur += msg[i + 1];
             colour = msg[i + 1];
             i += 2;
             continue;
         }
-        if (c == ' ') spaceOut = cur->size(), spaceIn = i;
-        *cur += c;
+        if (c == ' ') spaceOut = cur.size(), spaceIn = i;
+        cur += c;
         ++i;
         ++count;
     }
-    time_[pos_ % height] = now;
-    ++pos_;
+    lines.push_back(cur);
+    return lines;
+}
+
+void MpChatBuffer::add(const std::string& msg, int64_t now, int height, int chatTime) {
+    height = std::min(height, kMaxHeight);
+    if (height <= 0 || chatTime <= 0) {
+        pos_ = last_ = 0;
+        return;
+    }
+    for (std::string& line : mpChatWrap(msg)) {
+        text_[pos_ % height] = std::move(line);
+        time_[pos_ % height] = now;
+        ++pos_;
+    }
     if (pos_ - last_ > height) last_ = pos_ - height;
+}
+
+void MpChatHistory::add(const std::string& msg) {
+    for (std::string& line : mpChatWrap(msg)) lines_.push_back(std::move(line));
+    if (int(lines_.size()) > kCapacity) lines_.erase(lines_.begin(), lines_.begin() + (lines_.size() - kCapacity));
+    scroll_ = std::min(scroll_, maxScroll());
+}
+
+void MpChatHistory::scrollBy(int delta) { scroll_ = std::clamp(scroll_ + delta, 0, maxScroll()); }
+
+std::vector<MpChatBuffer::Line> MpChatHistory::view() const {
+    std::vector<MpChatBuffer::Line> out;
+    const int end = size() - scroll_, begin = std::max(0, end - kVisible);
+    for (int i = begin; i < end; ++i) {
+        MpChatBuffer::Line l;
+        l.text = lines_[size_t(i)];
+        if (l.text.size() >= 2 && l.text[0] == '^' && l.text[1] != '^' && l.text[1] >= '0' && l.text[1] <= '9') l.code = l.text[1] - '0';
+        out.push_back(std::move(l));
+    }
+    return out;
 }
 
 std::vector<MpChatBuffer::Line> MpChatBuffer::frame(int64_t now, int height, int chatTime) {

@@ -136,6 +136,21 @@ movement and buttons keep working, and the menu takes only its execKey keys and 
   on the player and calls `sayTeam` (or `sayAll`), then `pingPlayer`.
 - TODO(spec): `pingPlayer` (method 0x52add0, compass ping of the player for its team); a no-op here.
 
+## Deviations from the original: chat history (OpenIW2 addition)
+Not in the original, which shows only the last `cg_chatHeight` lines for `cg_chatTime` ms and clears them at every map load.
+- Cvar `iw2_chatHistory` (default 1; 0 turns the feature off and leaves the original behaviour). The closed field is
+  unchanged: the chat lines look and fade exactly as described above.
+- While the message field is open (t / y) the panel replaces the fading chat lines: the newest 10 history lines (at most
+  `MpChatHistory::kVisible`), in the chat lines' rows (bottom row at `cg_hudChatPosition`.y - 10, so it sits above the field,
+  growing upward), with the same font, text scale, strip bars (colour of the line's first `^N`, alpha 0.6) and no fading.
+- The history keeps the last 50 display lines of the session (messages are wrapped by the same rules as the chat buffer,
+  so a long message takes several lines). It is filled by every shown chat command (`h` unless `cg_teamChatsOnly`, `i`),
+  independent of `cg_chatHeight` / `cg_chatTime`. It survives level loads (map change, map rotation) within one server
+  session and is cleared on disconnect or when connecting to a server.
+- PgUp / PgDn scroll by 9 lines, the mouse wheel by 3, towards older lines and back; the view is clamped to the lines
+  that exist and returns to the newest line each time the field is opened. A scrolled-back view shows `(+N)`, N being the number of newer lines below.
+- Tests: tests/test_mpchat.cpp (wrap, capacity, scroll clamp, view).
+
 ## Bots
 openiw2's bots (docs/spec/mp-bots.md) neither chat nor react to chat or quick messages. A possible extension (not
 from the original): a bot that hears a team quick command such as "follow me" or "regroup" could move toward the

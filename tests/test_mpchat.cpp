@@ -61,6 +61,44 @@ int main() {
     CHECK(mpChatReceived(std::string("a\x19") + "b") == "ab");
     CHECK(mpChatReceived(std::string(200, 'y')).size() == 149);
 
+    // Chat history (OpenIW2 addition): wrapping like the chat buffer, capacity, scroll clamp, the view.
+    {
+        const std::string longMsg = "^8" + std::string(60, 'a') + " " + std::string(60, 'b');
+        const auto w = mpChatWrap(longMsg);
+        CHECK(w.size() == 2 && w[1].rfind("^8", 0) == 0); // the colour carries into the second line
+        MpChatBuffer cb;
+        cb.add(longMsg, 0, 8, 12000);
+        const auto fr = cb.frame(0, 8, 12000);
+        CHECK(fr.size() == w.size() && fr[0].text == w[1] && fr[1].text == w[0]); // the buffer uses the same wrap
+        MpChatHistory h;
+        CHECK(h.size() == 0 && h.view().empty() && h.maxScroll() == 0);
+        h.scrollBy(5);
+        CHECK(h.scroll() == 0);
+        for (int i = 0; i < 4; ++i) h.add("^7line " + std::to_string(i));
+        CHECK(h.view().size() == 4 && h.view().back().text == "^7line 3" && h.view().back().code == 7);
+        h.scrollBy(3); // fewer lines than the panel shows: nothing to scroll
+        CHECK(h.scroll() == 0);
+        for (int i = 4; i < 70; ++i) h.add("line " + std::to_string(i));
+        CHECK(h.size() == MpChatHistory::kCapacity); // the oldest are dropped
+        auto v = h.view();
+        CHECK(int(v.size()) == MpChatHistory::kVisible && v.back().text == "line 69" && v.front().text == "line 60" && v.front().code == -1);
+        h.scrollBy(3);
+        v = h.view();
+        CHECK(h.scroll() == 3 && v.back().text == "line 66" && v.front().text == "line 57");
+        h.scrollBy(1000);
+        CHECK(h.scroll() == MpChatHistory::kCapacity - MpChatHistory::kVisible);
+        CHECK(h.view().front().text == "line 20" && h.view().back().text == "line 29");
+        h.scrollBy(-1000);
+        CHECK(h.scroll() == 0);
+        h.scrollBy(10);
+        h.resetScroll();
+        CHECK(h.scroll() == 0);
+        h.add(longMsg); // a long message is two lines
+        CHECK(h.view().back().text == w[1]);
+        h.clear();
+        CHECK(h.size() == 0 && h.view().empty());
+    }
+
     // Chat buffer (0x4d0e10 / 0x4c7760).
     {
         MpChatBuffer b;
