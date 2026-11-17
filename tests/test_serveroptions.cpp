@@ -159,6 +159,13 @@ void commandLine() {
     CHECK(o.settings.port == 30000 && o.settings.seconds == 9 && o.settings.timeLimit == 7.5 && o.settings.roundLimit == 3);
     CHECK(!o.settings.readStdin && o.settings.cvars.size() == 1 && o.settings.cvars[0].second == "A b");
     CHECK(o.settings.startup.size() == 2 && o.settings.startup[0] == "exec server.cfg" && o.settings.startup[1] == "map_rotate");
+    // The original's sv_maxclients range 1..64 (docs/spec/mp.md "sv_maxclients"); bots fill at most all but one slot.
+    {
+        netgame::ServerArgs m;
+        CHECK(parse({"/main", "mp_toujane", "dm", "--maxclients", "64", "--bots", "63"}, m) && m.settings.maxClients == 64 &&
+              m.settings.bots == 63);
+        CHECK(netgame::serverUsage().find("1..64") != std::string::npos && netgame::serverUsage().find("0..63") != std::string::npos);
+    }
     netgame::ServerArgs h;
     CHECK(parse({"--help"}, h) && h.help);
     CHECK(netgame::serverUsage().find("--weapons") != std::string::npos);
@@ -170,10 +177,10 @@ void commandLine() {
         {{"/m", "mp_toujane", "tdm", "--bogus"}, "unknown option --bogus"},
         {{"/m", "mp_toujane", "tdm", "--bots"}, "needs a value"},
         {{"/m", "mp_toujane", "tdm", "--bots", "x"}, "whole number"},
-        {{"/m", "mp_toujane", "tdm", "--bots", "20"}, "0..19"},
+        {{"/m", "mp_toujane", "tdm", "--bots", "64"}, "0..63"},
         {{"/m", "mp_toujane", "tdm", "--bot-skill", "4"}, "0..3"},
-        {{"/m", "mp_toujane", "tdm", "--maxclients", "0"}, "1..20"},
-        {{"/m", "mp_toujane", "tdm", "--maxclients", "21"}, "1..20"},
+        {{"/m", "mp_toujane", "tdm", "--maxclients", "0"}, "1..64"},
+        {{"/m", "mp_toujane", "tdm", "--maxclients", "65"}, "1..64"},
         {{"/m", "mp_toujane", "tdm", "--port", "70000"}, "0..65535"},
         {{"/m", "mp_toujane", "tdm", "--scorelimit", "-1"}, "0..100000"},
         {{"/m", "mp_toujane", "tdm", "--scorelimit", "5x"}, "whole number"},

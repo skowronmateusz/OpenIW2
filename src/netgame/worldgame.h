@@ -152,6 +152,9 @@ public:
 
     // A new map: the old world's clients are gone; network clients connect again through clientConnect.
     void setWorld(game::World* w, std::string map, std::string gametype, int serverId);
+    // sv_maxclients of the server info (a map load can change it, docs/spec/mp.md "sv_maxclients"); before setWorld.
+    void setMaxClients(int n) { maxClients_ = n; }
+    int maxClients() const { return maxClients_; }
     std::string hostname = "openiw2";
     // network slot -> MP client
     const std::map<int, int>& slots() const { return mp_; }

@@ -71,6 +71,7 @@ public:
         }
         console->cvars["g_gametype"] = gametype;
         std::printf("------ Server Initialization ------\nServer: %s (%s)\n", map.c_str(), gametype.c_str());
+        applyMaxClients();
         auto w = std::make_unique<World>(vfs_, map, true);
         w->print = [](const std::string& s) { std::cout << "[script] " << s << "\n"; };
         w->vm().setLoopGuardIterations(200000u);
@@ -117,8 +118,26 @@ public:
     }
     void restartMap(bool fast) override {
         // TODO(spec): fast_restart keeps the loaded level in the original; openiw2 reloads in both cases.
-        (void)fast;
-        if (!map_.empty()) loadMap(map_);
+        // The shared restart (0x808be3e) spawns the server anew, which applies a waiting sv_maxclients, for map_restart,
+        // for a changed g_gametype and when sv_maxclients is marked modified (its byte +7, which the latched set does not
+        // touch); a fast_restart of the same gametype keeps the slots (docs/spec/mp.md "sv_maxclients").
+        if (map_.empty()) return;
+        std::string gt = console->cvar("g_gametype");
+        if (gt.empty() || iequals(gt, "random")) gt = "dm";
+        keepMaxClients_ = fast && iequals(gt, gametype_);
+        loadMap(map_);
+        keepMaxClients_ = false;
+    }
+    // sv_maxclients at a map load (SV_SpawnServer 0x8093520 -> 0x8092eee): a waiting console value is applied, then the
+    // count is bounded to 1..64 and raised to the highest network slot in use + 1, so no connected client loses its
+    // slot; the cvar shows the result. Bots are added again after the network clients and get what is left.
+    void applyMaxClients() {
+        if (!keepMaxClients_) console->applyLatched("sv_maxclients");
+        const int wanted = std::clamp(std::atoi(console->cvar("sv_maxclients").c_str()), 1, 64);
+        const int n = server ? server->changeMaxClients(wanted) : wanted;
+        console->cvars["sv_maxclients"] = std::to_string(n);
+        maxClients_ = n;
+        if (game) game->setMaxClients(n);
     }
 
     std::vector<iw2::net::ConsoleClient> clients() override {
@@ -263,6 +282,7 @@ private:
 
     iw2::fs::Vfs& vfs_;
     int maxClients_;
+    bool keepMaxClients_ = false; // a fast_restart of the same gametype: a waiting sv_maxclients stays waiting
     std::unique_ptr<World> world_;
     std::unique_ptr<iw2::audio::SoundAliases> aliases_;
     std::string map_, gametype_;
@@ -396,7 +416,9 @@ int runDedicated(fs::Vfs& vfs, const DedicatedSettings& s) {
         }
     }
 
-    const int maxClients = std::max(1, std::min(20, std::atoi(console.cvar("sv_maxclients").c_str())));  // World has 20 slots
+    // sv_maxclients 1..64 (docs/spec/mp.md "sv_maxclients"); every map load applies it again (Dedicated::applyMaxClients).
+    const int maxClients = std::clamp(std::atoi(console.cvar("sv_maxclients").c_str()), 1, 64);
+    console.cvars["sv_maxclients"] = std::to_string(maxClients);
     host.setMaxClients(maxClients);
     host.bots = s.bots;
     host.botSkill = s.botSkill;

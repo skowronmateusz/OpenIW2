@@ -96,6 +96,10 @@ public:
     void sendOutOfBand(const NetAddress& to, const std::string& text);
     // A new map: every client goes back to connected and gets the gamestate of the new serverId.
     void newMap(int newServerId);
+    // sv_maxclients at a map load (docs/spec/mp.md "sv_maxclients"): the slot count becomes `wanted` (1..64), but never
+    // less than the highest slot in use + 1; the clients in use keep their slots. Returns the new count. Before open()
+    // only maxClients is set.
+    int changeMaxClients(int wanted);
     int maxClients = 8;
     int frameMs = 50;            // sv_fps 20
     // sv_snaps (openiw2): the snapshots a second offered to a client that asks for more than 30 (userinfo `snaps`).
@@ -164,6 +168,10 @@ public:
         int lastSnapshotServerTime = -1;  // the server time of the last snapshot sent (one per game frame)
         int64_t lastSnapshotMs = 0;
         int ping = 999;  // mean round trip of the acknowledged snapshots; 999 when not active or none (section 4a)
+        // openiw2 measurement counters (tests, docs/spec/mp.md "64 clients"): the snapshots sent and their sizes on the
+        // wire (compressed, before the netchan header).
+        int64_t snapshotsSent = 0, snapshotBytes = 0;
+        int maxSnapshotBytes = 0;
     };
     const Client& client(int slot) const { return clients_[static_cast<size_t>(slot)]; }
 

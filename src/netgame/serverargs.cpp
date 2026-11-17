@@ -108,13 +108,13 @@ bool parseServerArgs(const std::vector<std::string>& args, ServerArgs& out) {
             if (!value("--port", v) || !parseInt("--port", v, 0, 65535, n, out.error)) return false;
             s.port = int(n);
         } else if (a == "--maxclients") {
-            if (!value("--maxclients", v) || !parseInt("--maxclients", v, 1, 20, n, out.error)) return false;
+            if (!value("--maxclients", v) || !parseInt("--maxclients", v, 1, 64, n, out.error)) return false;
             s.maxClients = int(n);
         } else if (a == "--seconds") {
             if (!value("--seconds", v) || !parseInt("--seconds", v, 0, 31536000, n, out.error)) return false;
             s.seconds = int(n);
         } else if (a == "--bots") {
-            if (!value("--bots", v) || !parseInt("--bots", v, 0, 19, n, out.error)) return false;
+            if (!value("--bots", v) || !parseInt("--bots", v, 0, 63, n, out.error)) return false;
             s.bots = int(n);
         } else if (a == "--bot-skill") {
             if (!value("--bot-skill", v) || !parseInt("--bot-skill", v, 0, 3, n, out.error)) return false;
@@ -190,8 +190,9 @@ std::string serverUsage() {
         "\n"
         "options:\n"
         "  --port N             UDP port 0..65535 (default 28960; 0 picks a free one)\n"
-        "  --maxclients N       player slots 1..20 including bots (default 8)\n"
-        "  --bots N             add N bots on every map, 0..19 (default 0)\n"
+        "  --maxclients N       player slots 1..64 including bots (default 8); also +set sv_maxclients N.\n"
+        "                       A change while the server runs (set sv_maxclients) waits for the next map\n"
+        "  --bots N             add N bots on every map, 0..63, as many as the slots allow (default 0)\n"
         "  --bot-skill N        bot skill 0..3: recruit, regular, hardened, veteran (default 3)\n"
         "  --weapons LIST       allowed weapon classes, comma separated: rifle, bolt, sniper, smg, mg, shotgun,\n"
         "                       grenades, or all (default: all). At least one weapon class is needed and every\n"

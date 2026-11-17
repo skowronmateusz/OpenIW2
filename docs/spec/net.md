@@ -266,7 +266,14 @@ than a frame apart; before 53 with 6). `SV_SendClientMessages`
 **Reliable server commands** (0x8094857, sender 0x8094a10): after incrementing the sequence, if exactly 129 commands are
 unacknowledged, the server sends the out-of-band text `disconnect`, marks the client to be dropped with
 `EXE_SERVERCOMMANDOVERFLOW` (0x808f2b8, taken at the next send, 0x809ac1e) and replaces the command by
-`w "EXE_SERVERCOMMANDOVERFLOW"`.
+`w "EXE_SERVERCOMMANDOVERFLOW"`. The commands are kept in 128 slots of 1024 bytes (index `sequence & 127`), filled
+by a copy limited to 1024 bytes (0x80949a0..0x80949c7 calling 0x80688e4), so a command of 1024 characters or more is
+cut to its first 1023 and the server prints `WARNING: Reliable command is too long (%i/%i) and will be truncated:
+'%s'` (length, 1024, text); the copy also turns `%` into `.`. The message writer (section 2) therefore never meets
+a string it would replace by an empty one. The longest command a full server makes is the scores list `b`
+(docs/spec/mp-scoreboard.md): its client part stops at 1024 bytes and the header comes before it, so with 64 clients
+and long numbers its last row can be cut. openiw2 stores the commands the same way (`Server::sendServerCommand`;
+tests/test_net_server.cpp).
 
 **Reliable client commands** (0x8090bf8): a sequence not newer than the last is ignored; a gap (more than last + 1)
 drops the client with `EXE_LOSTRELIABLECOMMANDS` and stops the message. Flood protection (0x8090cf0): an active client

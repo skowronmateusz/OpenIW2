@@ -189,6 +189,52 @@ RotationStep rotateMap(std::string& current, const std::string& rotation) {
 
 ServerConsole::ServerConsole(ConsoleHost& host) : host_(host) {
     print = [](const std::string& s) { std::cout << s << std::flush; };
+    // sv_maxclients: int 1..64, flags 0x1025 with the latch bit 0x20 (registered at 0x8093bc2 and again at each map
+    // load by 0x8092d92; docs/spec/mp.md "sv_maxclients").
+    intDvars["sv_maxclients"] = IntDvar{1, 64, true};
+}
+
+void ServerConsole::setFromConsole(const std::string& name, const std::string& value) {
+    const auto d = intDvars.find(name);
+    if (d == intDvars.end()) {
+        setCvar(name, value);
+        return;
+    }
+    // The set function (0x80b2afa) checks the value against the dvar's domain first (0x80b21dc) and refuses it with the
+    // text of 0x814f2a0 and the domain description (0x80b2866). TODO(spec): the text-to-integer conversion
+    // (0x80b187c) of a value that is not a whole number; here such a value is refused.
+    char* end = nullptr;
+    const long v = std::strtol(value.c_str(), &end, 10);
+    if (value.empty() || !end || *end != '\0' || v < d->second.min || v > d->second.max) {
+        out("'" + value + "' is not a valid value for dvar '" + name + "'\n  Domain is any integer from " +
+            std::to_string(d->second.min) + " to " + std::to_string(d->second.max) + "\n");
+        return;
+    }
+    const std::string norm = std::to_string(v);
+    // A latched dvar (flag 0x20, 0x80b2c83) keeps its value while a map runs: the new one waits, and when it differs
+    // from the current one the server prints the text of 0x814f320. Before the first map openiw2 sets it at once (the
+    // original latches there too and the first map load applies it: the same value at the same moment).
+    if (d->second.latched && host_.running()) {
+        latched_[name] = norm;
+        if (norm != cvar(name)) out(name + " will be changed upon restarting.\n");
+        return;
+    }
+    latched_.erase(name);
+    setCvar(name, norm);
+}
+
+std::string ServerConsole::latchedValue(const std::string& name) const {
+    auto it = latched_.find(name);
+    return it == latched_.end() ? std::string() : it->second;
+}
+
+bool ServerConsole::applyLatched(const std::string& name) {
+    auto it = latched_.find(name);
+    if (it == latched_.end()) return false;
+    const std::string v = it->second;
+    latched_.erase(it);
+    setCvar(name, v);
+    return true;
 }
 
 std::string ServerConsole::cvar(const std::string& name) const {
@@ -234,9 +280,10 @@ void ServerConsole::mapRotate() {
     setCvar("sv_mapRotationCurrent", current);
     if (r.gametype) setCvar("g_gametype", *r.gametype);
     if (r.map && host_.loadMap(*r.map)) return;
-    // The forced map_restart is the console command, which needs a running server.
+    // The forced restart is the console command fast_restart (map_rotate calls its handler 0x808c0bc, although the message
+    // says map_restart), which needs a running server. A map that could not be loaded restarts the map as before.
     if (!host_.running()) out("Server is not running.\n");
-    else host_.restartMap(false);
+    else host_.restartMap(!r.map);
 }
 
 void ServerConsole::command(const std::vector<std::string>& a, const std::string& argsText) {
@@ -247,7 +294,7 @@ void ServerConsole::command(const std::vector<std::string>& a, const std::string
             out("USAGE: " + cmd + " <variable> <value>\n");
             return;
         }
-        setCvar(a[1], joinFrom(a, 2));
+        setFromConsole(a[1], joinFrom(a, 2));
     } else if (cmd == "exec") {
         if (a.size() != 2) {
             out("exec <filename> : execute a script file\n");
@@ -407,7 +454,7 @@ void ServerConsole::command(const std::vector<std::string>& a, const std::string
     } else if (a.size() == 1 && cvars.count(a[0])) {
         out("\"" + a[0] + "\" is:\"" + cvar(a[0]) + "^7\"\n");
     } else if (a.size() >= 2 && cvars.count(a[0])) {
-        setCvar(a[0], joinFrom(a, 1));  // a known cvar name followed by a value sets it
+        setFromConsole(a[0], joinFrom(a, 1));  // a known cvar name followed by a value sets it
     } else if (cmd == "unbanuser") {
         // Removes a name from ban.txt in the original; this port writes no ban file, so there is nothing to remove.
         if (a.size() != 2) out("Usage: unban <client name>\n");

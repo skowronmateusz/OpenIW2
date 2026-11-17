@@ -24,8 +24,8 @@ The server registers its console commands in one place (0x808cd00..0x808ce50). T
 
 All server commands except `map_rotate` print `Server is not running.` when no map is loaded. `map_rotate` has no
 such check (0x808c132 goes straight to its prints), so `+exec server.cfg +map_rotate` on the command line starts
-the first map of the rotation. Its forced `map_restart` (below) is the console command and so prints `Server is not
-running.` when no map is loaded.
+the first map of the rotation. Its forced restart (below) is the console command `fast_restart` and so prints `Server
+is not running.` when no map is loaded.
 
 At start the server runs its start-up configuration before the command line (VAs in the 1.3 Linux dedicated
 server): `default_localize_mp.cfg` when that file exists, else `default_mp.cfg` (the choice at 0x80a32d4, kept at
@@ -40,6 +40,26 @@ The server console has no key-binding commands (the table at 0x808cca0 and the e
 registered commands, then a dvar of that name (0x8063054), then, while a game runs, the game's console commands
 (0x80926d6), and has no message for a line none of them takes; the executable has no `Unknown command` string. So
 the `bind` and `unbindall` lines of the default configuration are skipped silently.
+
+### Dvar ranges and latched dvars
+
+A `set` (also `seta`, `sets` and the bare `<dvar> <value>` form, from the console, a config file or rcon) goes
+through the dvar set function (0x80b2afa) with an external source, which checks in this order:
+1. the value against the dvar's domain (0x80b21dc): a value outside it prints `'<value>' is not a valid value for
+   dvar '<name>'` (0x814f2a0) and the domain on the next line, indented by two spaces (0x80b2866, format `  %s`); for
+   an int dvar with both bounds the domain reads `Domain is any integer from <min> to <max>`. The value stays.
+2. read-only (flag 0x40): `<name> is read only.`; write-protected (0x10): `<name> is write protected.`; cheat-protected
+   (0x80, for the console source only, while the bool dvar at 0x85abe10 is off; TODO(spec): taken to be the cheats
+   dvar): `<name> is cheat protected.`. The value stays.
+3. latched (0x20, 0x80b2c83): the value is stored as the waiting one (0x80b29f0); when it differs from the current
+   value the server prints `<name> will be changed upon restarting.` (0x814f320). The current value, and the dvar's
+   modified byte, stay; the next registration of the dvar makes the waiting value current.
+4. otherwise the value is set and the dvar marked modified (byte +7, 0x80b2e4d).
+The server's own sets (an internal source) skip these checks.
+
+openiw2 implements the domain and the latch for `sv_maxclients` (int 1..64, latched; docs/spec/mp.md "sv_maxclients"),
+the only latched dvar of its server console (`ServerConsole::intDvars`, `setFromConsole`). TODO(spec): how the set
+function turns a text that is not a whole number into an int (0x80b187c); openiw2 refuses it with the same message.
 
 say / tell: without an argument (`say`) or with fewer than two (`tell`) they do nothing. The text starts with
 `console: `, followed by the command's argument string; if that string starts with a double quote, the first and the
@@ -82,12 +102,15 @@ of tokens: `gametype <name>` and `map <name>`.
 3. Reads the next token from `sv_mapRotationCurrent` and stores the rest back (helper 0x808c0d0). If there is none,
    `sv_mapRotationCurrent` is set to `sv_mapRotation` again and the token is read once more.
 4. Loop on the token:
-   - none: prints `No map specified in sv_mapRotation - forcing map_restart.` and runs map_restart.
+   - none: prints `No map specified in sv_mapRotation - forcing map_restart.` and, despite the text, runs the
+     `fast_restart` handler (0x808c0bc; calls at 0x808c1db, 0x808c21a, 0x808c2b4), as do the two cases below. With an
+     empty rotation (the default) the end of a match is therefore a fast restart: it keeps the level and the slot count
+     unless the walk changed `g_gametype` (docs/spec/mp.md "sv_maxclients").
    - `gametype` (case-insensitive): reads the next token; none → `No gametype specified after 'gametype' keyword in
-     sv_mapRotation - forcing map_restart.` and map_restart. Else prints `Setting g_gametype: %s.`, sets
+     sv_mapRotation - forcing map_restart.` and the fast restart. Else prints `Setting g_gametype: %s.`, sets
      `g_gametype` and continues with the next token.
    - `map` (case-insensitive): reads the next token; none → `No map specified after 'map' keyword in sv_mapRotation -
-     forcing map_restart.` and map_restart. Else prints `Setting map: %s.`, runs `map <name>` and stops.
+     forcing map_restart.` and the fast restart. Else prints `Setting map: %s.`, runs `map <name>` and stops.
    - anything else: prints `Unknown keyword '%s' in sv_mapRotation.` and continues with the next token.
 
 So the rotation wraps around: after the last `map` the current list is empty and the next rotate starts over.
@@ -145,7 +168,8 @@ A connectionless packet `rcon <password> <command…>`:
   `GAME_INVALIDPASSWORD`; the server answers `error\n<reason>` (0x8149e91) and logs `Game rejected a connection: %s.`
 
 openiw2: test clients (bots) occupy slots of `sv_maxclients` too, so a network client is refused as full when
-network clients plus bots reach it.
+network clients plus bots reach it. `sv_maxclients` is 1..64 as in the original and a change waits for the next map
+load (docs/spec/mp.md "sv_maxclients"); the bots of `--bots` are added again at each map after the network clients.
 
 ## 6. Server queries and LAN
 

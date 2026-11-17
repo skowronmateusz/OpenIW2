@@ -30,8 +30,8 @@ code 2, so nothing starts half configured.
 | `<map>` | name | none | a map of the table below. Without a map, `+map_rotate` (or `+map <name>`) must load one |
 | `<gametype>` | name | `dm` | `dm`, `tdm`, `sd`, `ctf`, `hq`. Only after a map |
 | `--port N` | whole number | 28960 | 0..65535 (0 picks a free port). Also `+set net_port N` |
-| `--maxclients N` | whole number | 8 | 1..20. Players and bots share these slots. Also `+set sv_maxclients N` |
-| `--bots N` | whole number | 0 | 0..19. Added on every map, as many as the slots allow |
+| `--maxclients N` | whole number | 8 | 1..64, as in the original game. Players and bots share these slots. Also `+set sv_maxclients N`; a change while a map runs waits for the next map, see [Player slots](#player-slots) |
+| `--bots N` | whole number | 0 | 0..63. Added on every map, as many as the slots allow |
 | `--bot-skill N` | whole number | 3 | 0..3, see [Bots](#bots) |
 | `--weapons LIST` | list | everything allowed | `rifle`, `bolt`, `sniper`, `smg`, `mg`, `shotgun`, `grenades`, `all`, comma separated. See [Weapon classes](#weapon-classes) |
 | `--scorelimit N` | whole number | 50 dm, 300 tdm, 10 sd, 5 ctf, 600 hq | 0..100000, 0 = no limit. See [Score and time limits](#score-and-time-limits) |
@@ -104,7 +104,7 @@ rotation). `0` switches that limit off for every gametype.
 ## Bots
 
 Bots are an OpenIW2 addition: the original game has none. They count against `--maxclients`; a human who joins
-needs a free slot, so keep a few free (`--maxclients 20 --bots 6`). Bots obey the weapon list, play the objectives of
+needs a free slot, so keep a few free (`--maxclients 20 --bots 6`, or `--maxclients 64 --bots 56` for a big game). Bots obey the weapon list, play the objectives of
 the gametype and use the navigation graph of the map.
 
 | `--bot-skill` | Name | Reaction | Aim | Sight |
@@ -198,6 +198,30 @@ Start it with:
   the output back. Wrong passwords get `Invalid password.`; replies are limited to two per second per address.
 - Set the cvars of the options in the file too if you like (`set sv_maxclients 20`), but the command-line options win.
 
+## Player slots
+
+`sv_maxclients` (`--maxclients`) is the number of player slots, 1..64 as in the original game; players and bots share
+them, and in the team gametypes a team can have at most half of them. A value outside 1..64 is refused with
+`'<value>' is not a valid value for dvar 'sv_maxclients'`.
+
+- Given on the command line or in `server.cfg` it applies to the first map.
+- Changed while a map runs (`set sv_maxclients 32` in the console or by rcon) it waits: the server prints
+  `sv_maxclients will be changed upon restarting.` and keeps the old number until the next map loads (`map`,
+  `map_rotate` or the next map of `sv_mapRotation`, or `map_restart`). `fast_restart` keeps the old number unless the
+  gametype changed, and so does the end of a match without a rotation (the same map starts again as a fast restart). `status` and the server list show the number in force.
+- A smaller number never removes a connected player: the new number is raised to the highest slot in use + 1. The
+  bots are added again after the players, as many as fit.
+
+What 64 players cost, measured with OpenIW2 on an Apple Silicon Mac (mp_toujane, 63 bots, one player):
+
+- Server CPU: about 7 ms per server frame (20 frames a second), 14 % of one core; with 19 bots about 2.5 ms. Memory
+  about 260 MB.
+- Snapshots: about 950 bytes on average for each player (60 a second), the largest few up to about 3.7 KB. A player on
+  the local network gets every snapshot; an internet player needs a `rate` of about 60000 bytes a second for 60
+  snapshots a second (the server allows up to 90000; OpenIW2's own client asks for 90000). With the original game's
+  menu value of 25000 it gets about 26 a second. The upload of the server is the sum over the players: 63 internet
+  players at 60 snapshots a second need about 3.6 MB/s (29 Mbit/s).
+
 ## Log file
 
 `iw2server` inside the app (`/Applications/OpenIW2.app/Contents/MacOS/iw2server`) writes everything it prints to
@@ -219,7 +243,7 @@ and from rcon.
 | `status` | the map and a table of players and bots (number, score, ping, name, address) |
 | `map <name>` | loads a map with the current `g_gametype` (also `devmap`) |
 | `map_rotate` | loads the next entry of `sv_mapRotation` |
-| `map_restart`, `fast_restart` | loads the current map again |
+| `map_restart`, `fast_restart` | loads the current map again (`map_restart` also applies a waiting `sv_maxclients`) |
 | `kick <name>`, `kick all` | removes a player or bot by name (colour codes ignored, case insensitive) |
 | `clientkick <number>` | removes the client with that number from `status` |
 | `say <text>` | message to everybody, shown as `console: <text>` |
@@ -234,7 +258,7 @@ and from rcon.
 | `quit` | stops the server |
 
 `status`, `map_restart`, `kick` and the like print `Server is not running.` before a map is loaded.
-Changing `sv_hostname` takes effect at once. The running match picks up a changed score or time limit and a
+Changing `sv_hostname` takes effect at once; `sv_maxclients` waits for the next map ([Player slots](#player-slots)). The running match picks up a changed score or time limit and a
 changed `scr_allow_<weapon>` within a few seconds; the weapon list (`iw2_weaponclasses`) and `g_gametype` are read
 when a map loads, so they apply from the next map or `map_restart`.
 

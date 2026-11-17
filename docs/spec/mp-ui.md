@@ -229,7 +229,7 @@ with the front end's menu parser):
   settings column (`createserver_serversettings` and `settings_<gametype>`) and opens `iw2_createserver_ext` in its
   place. The original buttons bring their column back (the panel closes when one of them is open). Both close with
   `createserver`.
-- `iw2_createserver_ext`: `ui_iw2_bots` (0–15), `ui_iw2_botskill` (0 easy – 3 veteran, the bot skill of
+- `iw2_createserver_ext`: `ui_iw2_bots` (0–8, 10, 12, 15, 19, 23, 31, 39, 47, 63: up to every slot but the host's of a 64-slot server), `ui_iw2_botskill` (0 easy – 3 veteran, the bot skill of
   docs/spec/mp-bots.md) and one yes/no per weapon class, `ui_iw2_allow_<class>` (rifle = semi-automatic rifles, bolt,
   smg, sniper, mg, shotgun, grenades). Defaults when unset: classes on,
   0 bots, skill 1.

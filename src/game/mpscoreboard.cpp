@@ -348,7 +348,21 @@ MpScoreboardOutput mpScoreboardLayout(const MpScoreboardInput& in) {
         }
     }
     if (totalLines - 1 < out.scroll) out.scroll = std::max(0, totalLines - 1);
+    out.moreBelow = c.full;
     return out;
+}
+
+bool mpScoreboardScrollKey(int key, bool down, bool shown, bool moreBelow, int rows, int step, int& scroll) {
+    if (!down || !shown) return false;
+    if (key == 206 || key == 164 || key == 184) { // MWHEELUP, PGUP, KP_PGUP
+        if (scroll > 0) scroll = std::max(0, scroll - step);
+        return true;
+    }
+    if (key == 205 || key == 163 || key == 190) { // MWHEELDOWN, PGDN, KP_PGDN (0x4dacd0)
+        if (moreBelow) scroll = std::min(scroll + step, rows - 1);
+        return true;
+    }
+    return false;
 }
 
 } // namespace iw2::game

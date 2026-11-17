@@ -111,10 +111,18 @@ struct MpScoreboardOutput {
     int firstTeam = 2;
     bool scrollbar = false;
     int lines = 0;      // lines (banners and rows) counted
+    bool moreBelow = false; // a line did not fit under the list (the flag the scroll-down key reads)
 };
 
 // The layout of 0x4d95a0 (frame and header) and 0x4da980 (list).
 MpScoreboardOutput mpScoreboardLayout(const MpScoreboardInput& in);
+
+// The scroll keys (0x4c6b30, before the key's binding): while the scoreboard is shown, a key press of MWHEELUP, PGUP or
+// KP_PGUP (key numbers 206, 164, 184) moves the first drawn line `step` lines up (not below 0); MWHEELDOWN, PGDN or
+// KP_PGDN (205, 163, 190) moves it `step` down when the last drawn list had a line that did not fit (`moreBelow`), at
+// most to `rows` - 1 (the row count of the scores command). Returns true when the key was taken: its binding does not
+// run. `step` is cg_scoreboardScrollStep.
+bool mpScoreboardScrollKey(int key, bool down, bool shown, bool moreBelow, int rows, int step, int& scroll);
 
 // Column table 0x59e628: kind, width fraction of the list width, header key, right aligned.
 enum class SbColumn { StatusIcon, Voice, Name, Score, Deaths, Ping };

@@ -148,6 +148,52 @@ int main() {
         const SbRect* b = findRect(o, "mpflag_none");
         CHECK(b == nullptr); // scrolled past the banner
     }
+    // 64 clients (docs/spec/mp-scoreboard.md "Scrolling"): the scores command lists them all, the list shows fewer than
+    // 30 rows, and the scroll keys page through the rest; the binding of a taken key does not run.
+    {
+        std::vector<MpScoreClient> all;
+        for (int i = 0; i < 64; ++i) all.push_back({i, 64 - i, i % 7, 120 + i, 0, false, false});
+        mpSortScoreClients(all);
+        const std::string cmd = mpScoresCommand(all, 0, 0);
+        CHECK(cmd.rfind("b 64 0 0 ", 0) == 0 && cmd.size() < 1024);
+        const MpScoreData d = mpParseScores(cmd.substr(2), [](int) { return 0; });
+        CHECK(d.rows.size() == 64 && d.teamCount[0] == 64 && d.rows[0].client == 0 && d.rows[63].client == 63);
+        MpScoreboardInput in;
+        in.data = &d;
+        MpScoreboardOutput o = mpScoreboardLayout(in);
+        CHECK(o.scrollbar && o.moreBelow && o.lines == 65);
+        int drawnRows = 0;
+        for (const auto& it : o.items) drawnRows += !it.isText && it.rect.h == 12 && it.rect.material == "black";
+        CHECK(drawnRows > 5 && drawnRows < 15); // every second row is shaded: 11..14 shaded of fewer than 30 drawn
+        int scroll = 0;
+        const int step = 3;
+        CHECK(!mpScoreboardScrollKey(206, true, false, o.moreBelow, 64, step, scroll));      // not shown: the binding runs
+        CHECK(!mpScoreboardScrollKey(205, false, true, o.moreBelow, 64, step, scroll));      // a release is not taken
+        CHECK(!mpScoreboardScrollKey(32, true, true, o.moreBelow, 64, step, scroll) && scroll == 0); // SPACE
+        CHECK(mpScoreboardScrollKey(206, true, true, o.moreBelow, 64, step, scroll) && scroll == 0); // up at the top: taken
+        CHECK(mpScoreboardScrollKey(205, true, true, o.moreBelow, 64, step, scroll) && scroll == 3); // MWHEELDOWN
+        CHECK(mpScoreboardScrollKey(163, true, true, o.moreBelow, 64, step, scroll) && scroll == 6); // PGDN
+        CHECK(mpScoreboardScrollKey(190, true, true, o.moreBelow, 64, step, scroll) && scroll == 9); // KP_PGDN
+        // Paging on: at the end the whole rest fits, no line is left below and the down keys stop moving it.
+        for (int i = 0; i < 40; ++i) {
+            in.scroll = scroll;
+            o = mpScoreboardLayout(in);
+            scroll = o.scroll;
+            mpScoreboardScrollKey(163, true, true, o.moreBelow, 64, step, scroll);
+        }
+        in.scroll = scroll;
+        o = mpScoreboardLayout(in);
+        CHECK(!o.moreBelow && scroll > 30 && scroll <= 63);
+        const int end = scroll;
+        CHECK(mpScoreboardScrollKey(163, true, true, o.moreBelow, 64, step, scroll) && scroll == end);
+        CHECK(mpScoreboardScrollKey(164, true, true, o.moreBelow, 64, step, scroll) && scroll == end - 3); // PGUP
+        CHECK(mpScoreboardScrollKey(184, true, true, o.moreBelow, 64, 8, scroll) && scroll == end - 11);   // KP_PGUP
+        scroll = 2;
+        CHECK(mpScoreboardScrollKey(206, true, true, o.moreBelow, 64, step, scroll) && scroll == 0);       // not below 0
+        // The down limit is the row count - 1, also with a long step.
+        scroll = 60;
+        CHECK(mpScoreboardScrollKey(205, true, true, true, 64, 8, scroll) && scroll == 63);
+    }
     // Spectator move (pm_type 4): flies along the view with the 2-D command scale, stops without free look.
     {
         CHECK(mpClientPmType(mpSessionStateNumber("spectator")) == 4 && mpClientPmType(mpSessionStateNumber("intermission")) == 5 &&

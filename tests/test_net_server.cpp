@@ -449,6 +449,10 @@ int main() {
     client.run(600);
     {
         server.sendServerCommand(0, "print \"welcome\"");
+        // A command slot holds 1024 bytes (docs/spec/net.md section 4a): a longer command arrives cut to 1023
+        // characters, and `%` arrives as `.` (the message writer would have sent an empty string).
+        server.sendServerCommand(0, "b " + std::string(1100, '7'));
+        server.sendServerCommand(0, "h \"100%\"");
     }
     client.run(1800);
     std::cout << client.summary();
@@ -464,9 +468,21 @@ int main() {
     CHECK(client.clientsInLastSnapshot == 1);
     CHECK(client.lastOrigin[0] > 100.0f);
     CHECK(client.reliableAcknowledged == 1);
-    bool welcome = false;
-    for (auto& c : client.serverCommands) welcome |= c == "print \"welcome\"";
+    bool welcome = false, cut = false, percent = false;
+    for (auto& c : client.serverCommands) {
+        welcome |= c == "print \"welcome\"";
+        cut |= c == "b " + std::string(1021, '7');
+        percent |= c == "h \"100.\"";
+    }
     CHECK(welcome);
+    CHECK(cut);
+    CHECK(percent);
+    // sv_maxclients at a map load (docs/spec/mp.md "sv_maxclients"): the count never drops below the highest slot in use
+    // + 1, the connected client keeps its slot, and a larger table keeps it too.
+    CHECK(server.changeMaxClients(64) == 64 && server.maxClients == 64 && server.client(0).state != ServerClientState::Free);
+    CHECK(server.changeMaxClients(1) == 1 && server.client(0).state != ServerClientState::Free);
+    CHECK(server.changeMaxClients(100) == 64 && server.changeMaxClients(0) == 1);
+    CHECK(server.changeMaxClients(4) == 4);
     {
         CHECK(game.begins == 1);
         CHECK(game.thinks > 10);

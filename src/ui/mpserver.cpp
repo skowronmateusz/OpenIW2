@@ -432,7 +432,7 @@ const char* menuSource() {
 			text " "
 			type 12
 			dvar "ui_iw2_bots"
-			dvarFloatList { "0" 0 "1" 1 "2" 2 "3" 3 "4" 4 "5" 5 "6" 6 "7" 7 "8" 8 "10" 10 "12" 12 "15" 15 }
+			dvarFloatList { "0" 0 "1" 1 "2" 2 "3" 3 "4" 4 "5" 5 "6" 6 "7" 7 "8" 8 "10" 10 "12" 12 "15" 15 "19" 19 "23" 23 "31" 31 "39" 39 "47" 47 "63" 63 }
 			rect 50 120 320 13
 			textalignx 170
 			textaligny 11

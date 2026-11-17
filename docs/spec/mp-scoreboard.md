@@ -46,9 +46,16 @@ row client numbers are the server's. Implemented: iw2view reads the name and tea
   full alpha (0x4cbca0 -> 0x4cb810): no HUD, no crosshair, no script HUD elements. Before it, unless a fullScreen menu is
   open, the same function sends ESC to the UI three times, which closes the in-game menu (docs/spec/mp-ui.md "Escape at
   intermission"); the UI paints what is still open after the cgame pass, over the scoreboard.
-- Scrolling: while the scoreboard is shown, three keys move the first drawn line up and three down by
-  `cg_scoreboardScrollStep` lines (0x4c6b30). TODO(spec): the key numbers (0xce / 0xa4 / 0xb8 up, 0xcd / 0xa3 / 0xbe
-  down) in this port's key names; scrolling is not bound here.
+- Scrolling (0x4c6b30, called by the key event handler at 0x40b9aa while a level runs, before the key's binding): on a
+  key press while the scoreboard is shown (the flag that `+scores` sets and `-scores` clears, 0x4c14ec / 0x4c149e, and
+  that the intermission draw sets, 0x4cb848), key numbers 0xce, 0xa4 and 0xb8 (MWHEELUP, PGUP, KP_PGUP of the key-name
+  table at 0x59a0e0) move the first drawn line up by `cg_scoreboardScrollStep` lines when it is above 0, not below 0;
+  0xcd, 0xa3 and 0xbe (MWHEELDOWN, PGDN, KP_PGDN) move it down by the step (0x4dacd0) when the last drawn list had a
+  line that did not fit (the flag the banner and row code set, cleared at the list start 0x4da99b), at most to the row
+  count of the last scores command minus one. Either way the key is taken and its binding does not run; other keys
+  and releases go on as usual. The list then pulls a position past the last line back (below). With 64 clients
+  (fewer than 30 rows fit) this is the only way to see the rest. Implemented: `game::mpScoreboardScrollKey`, called by
+  iw2view for key presses and the wheel (tests/test_mpspectate.cpp).
 
 Dvars (registered at 0x4bee8e..0x4bef7b): `cg_scoreboardScrollStep` 3 (1..8), `cg_scoreboardBannerHeight` 24 (1..100),
 `cg_scoreboardItemHeight` 18 (1..100; the drawing code uses a fixed row height of 12 and does not read it).

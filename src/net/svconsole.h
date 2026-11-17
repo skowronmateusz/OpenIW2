@@ -75,7 +75,24 @@ public:
 
     std::map<std::string, std::string, CaseLess> cvars;
     std::string cvar(const std::string& name) const;
+    // Sets a cvar as the server does (no range or latch check; start-up values, the rotation, the map load).
     void setCvar(const std::string& name, const std::string& value);
+
+    // Integer dvars the server registers with a range, some of them latched (docs/spec/dedicated.md section 1 "Dvar
+    // ranges and latched dvars"): `set` refuses a value outside the range; while a map runs, a latched dvar keeps its
+    // value and the new one waits (printed as "<name> will be changed upon restarting.") until applyLatched. By default
+    // sv_maxclients 1..64, latched.
+    struct IntDvar {
+        int min = 0, max = 0;
+        bool latched = false;
+    };
+    std::map<std::string, IntDvar, CaseLess> intDvars;
+    // The `set` command's path (console, rcon, config files): the checks above, then setCvar.
+    void setFromConsole(const std::string& name, const std::string& value);
+    // The value a latched dvar waits with ("" when none).
+    std::string latchedValue(const std::string& name) const;
+    // A map load: the waiting value of a latched dvar becomes its value. True when there was one.
+    bool applyLatched(const std::string& name);
 
     // Runs a command buffer: commands separated by newlines or ';' outside quotes.
     void execute(const std::string& text);
@@ -97,6 +114,7 @@ private:
     int64_t lastRconMs_ = 0;
     bool haveRcon_ = false;
     int execDepth_ = 0;
+    std::map<std::string, std::string, CaseLess> latched_;
 };
 
 } // namespace iw2::net

@@ -4509,7 +4509,7 @@ int main(int argc, char** argv) {
         // MP scoreboard state (docs/spec/mp-scoreboard.md): scroll line, the team block drawn first on equal scores (0x5ddad0,
         // initially allies), the release time for the 100 ms fade, the last "b" command of a network server and the time of
         // the last "score" request (sent at most every 2000 ms while shown, 0x4dabf0).
-        struct MpScoreboardState { int scroll = 0, firstTeam = 2; bool shown = false; int64_t hiddenAt = -1000000; std::string netScores; game::MpScoreRequest request; } mpSb;
+        struct MpScoreboardState { int scroll = 0, firstTeam = 2; bool shown = false, moreBelow = false; int rows = 0; int64_t hiddenAt = -1000000; std::string netScores; game::MpScoreRequest request; } mpSb;
         bool netControlsFrozen = false; // network client: the server set pm_flags 0x8000 (freezecontrols): no look, no move or weapon buttons
         bool mpIntermissionView = false; // the local client's session state is intermission (pm_type 5)
         std::map<std::string, std::string> uiCvars; // client-side (menu) cvars, kept across levels and handed to each new world
@@ -6871,6 +6871,13 @@ int main(int argc, char** argv) {
                 if (const auto* g = f->find(ch)) width += float(g->dx) * gs;
             return width;
         };
+        // The scoreboard's scroll keys (0x4c6b30, called by the key event handler before the binding while a level runs):
+        // true when the key press was taken.
+        auto mpScoreboardScroll = [&](const std::string& key) {
+            if (!world || !world->multiplayer() || !frontStack.empty()) return false;
+            return game::mpScoreboardScrollKey(game::ClientInput::keyNumber(key), true, mpSb.shown, mpSb.moreBelow, mpSb.rows,
+                                               std::clamp(cvarInt("cg_scoreboardScrollStep", 3), 1, 8), mpSb.scroll);
+        };
         // MP scoreboard (0x4dabf0): layout from src/game/mpscoreboard.cpp, drawn on the 640x480 screen of the 4:3 area.
         auto drawMpScoreboard = [&](std::vector<Quad2D>& out, uint32_t w, uint32_t h) {
             if (!world || !world->multiplayer() || menuEnv.getCvar("cl_paused") == "1") return;
@@ -6978,6 +6985,8 @@ int main(int argc, char** argv) {
             const game::MpScoreboardOutput lay = game::mpScoreboardLayout(in);
             mpSb.scroll = lay.scroll;
             mpSb.firstTeam = lay.firstTeam;
+            mpSb.moreBelow = lay.moreBelow;
+            mpSb.rows = int(data.rows.size());
             auto col = [](const std::array<float, 4>& c, uint8_t o[4]) { for (int k = 0; k < 4; ++k) o[k] = uint8_t(std::clamp(c[size_t(k)], 0.0f, 1.0f) * 255.0f); };
             for (const game::SbItem& it : lay.items) {
                 if (!it.isText) {
@@ -10064,6 +10073,13 @@ int main(int argc, char** argv) {
                     game::World* const listenWorld = world.get();
                     const std::string map = world->cvars["mapname"], gt = world->mpState().gametype;
                     const int serverId = int((netNowMs() + 1 + listenServer->serverId) & 0xff);
+                    // sv_maxclients takes effect at a map load (docs/spec/mp.md "sv_maxclients"): the new level's World
+                    // read it at its start; the network slots follow, never below the highest slot in use + 1.
+                    {
+                        const std::string mcNow = world->cvars["sv_maxclients"];
+                        listenServer->changeMaxClients(mcNow.empty() ? 8 : std::clamp(std::atoi(mcNow.c_str()), 1, 64));
+                        listenGame->setMaxClients(int(world->mpState().clients.size())); // the server info's sv_maxclients
+                    }
                     listenGame->setWorld(listenWorld, map, gt, serverId);
                     listenGame->hostname = menuEnv.getCvar("sv_hostname").empty() ? "openiw2" : menuEnv.getCvar("sv_hostname");
                     listenServer->info().mapname = map;
@@ -10380,7 +10396,10 @@ int main(int argc, char** argv) {
                     if (ev.type == SDL_EVENT_MOUSE_WHEEL && ev.wheel.y != 0) { frontStack.key(ev.wheel.y > 0 ? ui::MenuStack::Key::WheelUp : ui::MenuStack::Key::WheelDown); continue; }
                 }
                 if (ev.type == SDL_EVENT_QUIT) running = false;
-                else if ((ev.type == SDL_EVENT_KEY_DOWN || ev.type == SDL_EVENT_KEY_UP) && !ev.key.repeat) {
+                else if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat && mpScoreboardScroll(keyName(ev.key.scancode))) {
+                    // taken by the scoreboard's scroll keys: no binding runs (docs/spec/mp-scoreboard.md "Visibility")
+                } else if (ev.type == SDL_EVENT_MOUSE_WHEEL && ev.wheel.y != 0 && mpScoreboardScroll(ev.wheel.y > 0 ? "MWHEELUP" : "MWHEELDOWN")) {
+                } else if ((ev.type == SDL_EVENT_KEY_DOWN || ev.type == SDL_EVENT_KEY_UP) && !ev.key.repeat) {
                     input.key(keyName(ev.key.scancode), ev.type == SDL_EVENT_KEY_DOWN);
                     // The bound screenshot commands ask for the capture; the file is written once the frame was drawn.
                     if (ev.type == SDL_EVENT_KEY_DOWN) {

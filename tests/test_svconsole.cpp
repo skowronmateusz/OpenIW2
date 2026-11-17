@@ -143,6 +143,11 @@ void testConsole() {
     con.cvars["sv_mapRotationCurrent"] = "";
     con.execute("map_rotate");  // a map that cannot be loaded restarts the current one
     CHECK(host.restarts == 2 && con.cvar("g_gametype") == "tdm");
+    // No rotation (the default): the forced restart is the fast_restart handler (docs/spec/dedicated.md section 2).
+    con.cvars["sv_mapRotation"] = "";
+    con.cvars["sv_mapRotationCurrent"] = "";
+    CHECK(has(con.capture("map_rotate"), "forcing map_restart."));
+    CHECK(host.restarts == 2 && host.fastRestarts == 2);
 
     ConsoleClient a;
     a.num = 0;
@@ -341,8 +346,46 @@ void testServerHooks() {
     CHECK(game.connects == 2);
     CHECK(server.client(0).state == ServerClientState::Connected && server.client(1).state == ServerClientState::Connected);
 
+    // sv_maxclients at a map load with slots 0 and 1 in use (docs/spec/mp.md "sv_maxclients"): 1 is raised to 2, both
+    // clients keep their slots; a larger count keeps them too.
+    CHECK(server.changeMaxClients(1) == 2 && server.maxClients == 2);
+    CHECK(server.client(0).state == ServerClientState::Connected && server.client(1).state == ServerClientState::Connected);
+    CHECK(server.changeMaxClients(64) == 64 && server.client(1).state == ServerClientState::Connected &&
+          server.client(63).state == ServerClientState::Free);
+    CHECK(server.changeMaxClients(2) == 2);
+
     server.newMap(5);
     CHECK(server.serverId == 5 && server.client(0).gamestateMessageNum == -1);
+}
+
+// sv_maxclients (docs/spec/dedicated.md section 1 "Dvar ranges and latched dvars", docs/spec/mp.md "sv_maxclients"):
+// 1..64; before the first map a set takes effect at once, while a map runs it waits for the next map load.
+void testMaxClients() {
+    FakeHost host;
+    host.run = false;
+    ServerConsole con(host);
+    host.console = &con;
+    con.cvars["sv_maxclients"] = "8";
+    CHECK(con.capture("set sv_maxclients 32").empty() && con.cvar("sv_maxclients") == "32");
+    CHECK(con.capture("set sv_maxclients 65") ==
+          "'65' is not a valid value for dvar 'sv_maxclients'\n  Domain is any integer from 1 to 64\n");
+    CHECK(has(con.capture("sv_maxclients 0"), "is not a valid value") && con.cvar("sv_maxclients") == "32");
+    CHECK(has(con.capture("set sv_maxclients many"), "is not a valid value") && con.cvar("sv_maxclients") == "32");
+    host.run = true;
+    CHECK(con.capture("set sv_maxclients 64") == "sv_maxclients will be changed upon restarting.\n");
+    CHECK(con.cvar("sv_maxclients") == "32" && con.latchedValue("sv_maxclients") == "64");
+    CHECK(has(con.capture("serverinfo"), "sv_maxclients       32"));
+    CHECK(has(con.capture("SV_MAXCLIENTS 64"), "will be changed")); // the bare form, case ignored
+    CHECK(con.capture("set sv_maxclients 32").empty() && con.latchedValue("sv_maxclients") == "32"); // the same value: no text
+    con.execute("set sv_maxclients 48");
+    CHECK(con.applyLatched("sv_maxclients") && con.cvar("sv_maxclients") == "48" && con.latchedValue("sv_maxclients").empty());
+    CHECK(!con.applyLatched("sv_maxclients") && con.cvar("sv_maxclients") == "48");
+    // rcon goes through the same set.
+    con.cvars["rcon_password"] = "pw";
+    const auto r = con.rcon("rcon pw set sv_maxclients 100", "127.0.0.1:5000", 100000);
+    CHECK(r && !r->empty() && has(r->front(), "is not a valid value") && con.cvar("sv_maxclients") == "48");
+    // Other cvars are not checked.
+    CHECK(con.capture("set g_password 999").empty() && con.cvar("g_password") == "999");
 }
 
 } // namespace
@@ -393,6 +436,7 @@ int main() {
     testConsole();
     testRcon();
     testServerHooks();
+    testMaxClients();
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

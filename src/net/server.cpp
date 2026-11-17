@@ -61,7 +61,13 @@ void Server::sendServerCommand(int slot, const std::string& text) {
             c.serverCommands[static_cast<size_t>(c.reliableSequence & 127)] = "w \"EXE_SERVERCOMMANDOVERFLOW\"";
             continue;
         }
-        c.serverCommands[static_cast<size_t>(c.reliableSequence & 127)] = text;
+        // Each command slot holds 1024 bytes (0x8094750 copies with that limit): a longer command is cut to 1023
+        // characters and `%` becomes `.` (docs/spec/net.md section 4a); the message writer would send an empty string instead.
+        if (text.size() > 1023)
+            std::printf("WARNING: Reliable command is too long (%i/%i) and will be truncated: '%s'\n", int(text.size()), 1024, text.c_str());
+        std::string& stored = c.serverCommands[static_cast<size_t>(c.reliableSequence & 127)];
+        stored = text.size() > 1023 ? text.substr(0, 1023) : text;
+        std::replace(stored.begin(), stored.end(), '%', '.');
     }
 }
 
@@ -162,6 +168,18 @@ void Server::newMap(int newServerId) {
         c.lastSnapshotServerTime = -1;
         for (auto& f : c.frames) f = Client::Frame{};
     }
+}
+
+int Server::changeMaxClients(int wanted) {
+    // SV_ChangeMaxClients (0x8092eee): the floor is the highest slot whose client is connected or further, plus one.
+    int floor = 0;
+    for (size_t i = 0; i < clients_.size(); ++i)
+        if (clients_[i].state != ServerClientState::Free) floor = int(i) + 1;
+    const int n = std::max(std::clamp(wanted, 1, 64), floor);
+    maxClients = n;
+    oob_.info.maxClients = n;
+    if (!clients_.empty() && size_t(n) != clients_.size()) clients_.resize(size_t(n));
+    return n;
 }
 
 void Server::poll(int64_t nowMs, int waitMs) {
@@ -286,6 +304,9 @@ void Server::poll(int64_t nowMs, int waitMs) {
              nowMs - c.lastSnapshotMs >= 1000)) {
             const int messageNum = c.chan->outgoingSequence();
             const int bytes = sendSnapshot(i, sub ? subMs : -1);
+            ++c.snapshotsSent;
+            c.snapshotBytes += bytes;
+            c.maxSnapshotBytes = std::max(c.maxSnapshotBytes, bytes);
             if (log::eventsEnabled()) logWatch_.client(i, serverTime - c.lastUsercmdTime, c.ping);
             if (frameTrace_) {  // IW2_NET_TRACE=2: what this snapshot carries of the client's own commands
                 log::tracef("net", "NETTRACE snap slot=%d t=%d bytes=%d cmdlag=%d cmds=%d pkts=%d hold=%d\n", i, serverTime, bytes,

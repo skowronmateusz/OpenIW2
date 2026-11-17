@@ -103,8 +103,8 @@ iw2server <main-dir> [<map> [<gametype>]] [options] [+command args ...]
 |---|---|---|
 | `<gametype>` | `dm` | `dm`, `tdm`, `sd`, `ctf`, `hq` |
 | `--port N` | 28960 | 0-65535 (0 = free port) |
-| `--maxclients N` | 8 | 1-20, players and bots together |
-| `--bots N` | 0 | 0-19 |
+| `--maxclients N` | 8 | 1-64, players and bots together; a change waits for the next map |
+| `--bots N` | 0 | 0-63 |
 | `--bot-skill N` | 3 | 0 recruit ... 3 veteran |
 | `--weapons LIST` | all | `rifle`, `bolt`, `sniper`, `smg`, `mg`, `shotgun`, `grenades` |
 | `--scorelimit N`, `--timelimit MIN`, `--roundlimit N` | per gametype | 0 = no limit |

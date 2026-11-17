@@ -1228,6 +1228,17 @@ if(IW2_TEST_MAIN)
   set_tests_properties(mplanding PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
 endif()
 
+# 64 clients (tests/test_mp64.cpp, docs/spec/mp.md "sv_maxclients"): the latched sv_maxclients through the dedicated
+# server loop, and a soak with 63 bots and one network client that prints the CPU, snapshot and memory measurements.
+add_executable(test_mp64 tests/test_mp64.cpp)
+target_link_libraries(test_mp64 PRIVATE iw2_dedicated iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpmaxclients_e2e COMMAND test_mp64 latch)
+  set_tests_properties(mpmaxclients_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 300)
+  add_test(NAME mp64soak_e2e COMMAND test_mp64 soak 30)
+  set_tests_properties(mp64soak_e2e PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 600)
+endif()
+
 add_executable(test_flakcrew tests/test_flakcrew.cpp)
 target_link_libraries(test_flakcrew PRIVATE iw2_game)
 add_test(NAME flakcrew COMMAND test_flakcrew)

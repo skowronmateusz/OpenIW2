@@ -544,8 +544,69 @@ Bots keep their controllers. Every `Entity*` taken before the restart is invalid
 counts the restarts).
 
 ### sv_maxclients
-An int dvar, default 20, range 1..64 (registered at 0x8092d93). It sets the number of client slots, and
-`_teams.gsc:31-40` limits a team to half of it: with the cvar missing (0) nobody could join a team by name.
+Evidence: VAs in the 1.3 Linux dedicated server; the MP executable registers the same dvar with the same range for the
+create-server screen (docs/spec/mp-ui.md "Server dvars").
+
+An int dvar, default 20, range 1..64, flags 0x1025, among them the latch bit 0x20 (tested at 0x80b2c83; TODO(spec): the
+other bits, taken to be archive 1 and server info 4, as the dvar is in the server info). It is
+registered by the server's init (0x8093bc2) and again by the bound routine 0x8092d92 that every map load runs. It sets
+the number of client slots, and `_teams.gsc:31-40` limits a team to half of it: with the cvar missing (0) nobody could
+join a team by name.
+
+- **Latched.** A `set` from the console, a config file or rcon goes through the dvar set function (0x80b2afa), which
+  first refuses a value outside 1..64 (docs/spec/dedicated.md section 1, "Dvar ranges and latched dvars") and then,
+  for a latched dvar (0x80b2c83), stores the new value as the waiting one, prints `sv_maxclients will be changed upon
+  restarting.` when it differs from the current value, and leaves the current value and its modified byte alone. The
+  server info, `serverinfo` and getstatus show the current value until then.
+- **When it takes effect.** The bound routine 0x8092d92(minimum) registers the dvar again, which makes the waiting
+  value current (the re-registration path calls 0x80b3a40 for a latched dvar), clears the modified byte (0x80b2eec)
+  and raises a value below `minimum` to it. It runs at every server spawn (SV_SpawnServer, 0x8093520, after `------
+  Server Initialization ------`): the first map of the process allocates the slot table through 0x8092dfa (minimum 1);
+  every later map goes through 0x8092eee, whose minimum is the highest slot whose client is connected or further
+  (state above 1; a zombie does not count), plus one. A smaller count therefore never drops a connected client: the
+  clients below the minimum are copied into the new table in their slots, the rest of the table is cleared. An
+  unchanged count leaves the table as it is.
+- **Which commands spawn the server.** `map`, `devmap` and a `map_rotate` that reaches a `map` entry (so the end of a
+  match through `exitLevel` with a rotation) always do; a rotation walk that finds no map runs `fast_restart`
+  (docs/spec/dedicated.md section 2), so with the default empty rotation the end of a match keeps the slot count. The restart routine 0x808be3e behind `map_restart` and `fast_restart` spawns the server
+  anew (0x8093520 with the current `mapname`, persist off) when sv_maxclients is marked modified, when `g_gametype`
+  differs from the running gametype, or when it is not a fast restart; only a `fast_restart` with the same gametype
+  (and the sd rounds, which restart from script) keeps the level and the slot count. Since the latched set does not
+  mark the dvar modified, a waiting value is applied by `map_restart` and not by `fast_restart`.
+- **What scales with it** (every use of the dvar's pointer at 0x849f74c): the slot table (0xb1064 bytes per client,
+  0x8092e31), the loops over the slots (status, kick, say / tell, the client lookup by name or number, timeouts,
+  snapshot sending, the userinfo and command handlers), and the two snapshot rings: entity states for
+  `maxclients * 2048` entries on a dedicated server (`* 256` otherwise) and client states for
+  `maxclients * maxclients * 32` (`* 4`), i.e. 32 snapshots of 64 entities and of every client per client on average
+  (0x8092e6c..0x8092ebd, again at 0x8093149 after a change). A client entity's number is its slot, 0..maxclients-1
+  (the body queue and every other entity come after the 64 client numbers, docs/spec/net.md section 11), so the
+  entity numbers do not move with the count.
+- **A snapshot's lists.** The entities and clients of one snapshot are gathered into lists of at most 1024 numbers
+  (0x8098b4c, 0x8098b72: a full list ignores further adds), so 64 players never meet a per-snapshot limit below the
+  1024 entity numbers of the wire.
+
+openiw2: the dedicated server (src/netgame/dedicated.cpp) keeps sv_maxclients in its console (`ServerConsole::intDvars`)
+with the range check and the latch; each map load runs `Dedicated::applyMaxClients`: the waiting value (not for a
+`fast_restart` of the same gametype), the 1..64 bound, then `net::Server::changeMaxClients` with the floor of the
+highest network slot in use + 1; the World of the new map reads the result at `mpStart` (MP client slots
+0..sv_maxclients-1). Before the first map a `set` takes effect at once (the original latches it there too and the
+first map applies it, which gives the same value at the same moment). openiw2's network slots and MP client numbers
+are separate (bots have a client but no network slot): the network clients take their MP clients first at a map load
+and the bots after them, as many as the slots allow. The port keeps a full copy of each of a client's 32 snapshots
+instead of the shared rings, so their size does not depend on sv_maxclients. A listen server in iw2view reads
+sv_maxclients from its World at each map load and resizes its network slots the same way; its menu value takes effect
+at the next map.
+
+openiw2 with 64 clients (tests/test_mp64.cpp `soak`, mp_toujane dm, 63 bots and one network client that plays,
+standing still, asking for 60 snapshots a second over loopback, Apple Silicon, Release; it gets 60 a second while it
+plays and the 20 of the frames in its killcams): every one of the 64 client states is in each snapshot (the
+6-bit client numbers of the wire, docs/spec/net.md section 11), the network client gets client number 63, about 230
+entities are in use, and the snapshots average about 950 to 980 bytes (95th percentile about 1400 to 1500, the largest about 3.7 KB),
+so a remote client needs a `rate` of about 60000 for 60 a second (the delay of docs/spec/net.md section 4a). The
+server needs about 7 ms of CPU per 50 ms frame with 63 bots and no network client (about 2.4 ms with 19 bots), so the
+bots' cost grows about linearly; peak memory about 260 MB.
+Tests: tests/test_svconsole.cpp (range, latch, apply), tests/test_net_server.cpp (the slot floor),
+tests/test_serveroptions.cpp (`--maxclients` 1..64, `--bots` 0..63), tests/test_mp64.cpp (64 clients).
 
 ## End of the map
 

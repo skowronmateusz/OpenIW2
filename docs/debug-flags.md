@@ -367,7 +367,8 @@ the key shows the localized "cheats not enabled" message. TODO(spec): the origin
   `status`, `serverinfo`, `kick <name>|all`, `clientkick <n>`, `say`, `tell <n>`, `set`/`seta`, `exec`, `quit`,
   `addtestclient [n]`, `<cvar> [value]`. Cvars: `rcon_password`, `g_password`, `sv_privateClients`,
   `sv_privatePassword`, `sv_mapRotation`, `sv_mapRotationCurrent`, `sv_hostname`. `--bots N` adds N bots on every
-  map; bots take slots of `sv_maxclients`. `--weapons LIST` (rifle, bolt, sniper, smg, mg, shotgun, grenades, all) sets
+  map; bots take slots of `sv_maxclients` (1..64; a `set` while a map runs waits for the next map load,
+  docs/spec/mp.md "sv_maxclients"). `--weapons LIST` (rifle, bolt, sniper, smg, mg, shotgun, grenades, all) sets
   `iw2_weaponclasses` and the two grenade cvars after the `+exec` lines, so it wins over `server.cfg`; `--scorelimit`,
   `--timelimit` (minutes, decimals allowed) and `--roundlimit` (sd only) set `scr_<gametype>_scorelimit` /
   `_timelimit` / `scr_sd_roundlimit` of every map's gametype when the map loads. A map without a gametype runs dm. A gametype that calls exitLevel continues with `map_rotate`. stdin is read
@@ -389,7 +390,8 @@ the key shows the localized "cheats not enabled" message. TODO(spec): the origin
 - iw2view listen server (docs/spec/net.md section 11): a local MP game started from the menu (createserver without the
   dedicated choice) always takes network clients; a map started from the command line or console only with env
   `IW2_LISTEN=1`, and `IW2_LISTEN=0` turns it off for menu starts too; UDP port from env `IW2_LISTEN_PORT`, else cvar `net_port`, else
-  28960; slots from `sv_maxclients` (default 8). The dedicated choice uses the same port for its server.
+  28960; slots from `sv_maxclients` (default 8, 1..64, read again at each map load). The dedicated choice uses the same
+  port for its server.
 - `IW2_CONSOLE_SHOT=<file.bmp>` (iw2view dedicated start, docs/spec/mp-ui.md "Dedicated start"): writes the server
   console window once, 3 s after it opened.
 - iw2view join-server list (net.md section 12): `RefreshServers` broadcasts getinfo; env `IW2_LAN_EXTRA=host:port`
