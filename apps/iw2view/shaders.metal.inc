@@ -185,6 +185,9 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
         return float4((1.0 - in.color.a) + t.rgb * in.color.rgb * in.color.a, 1.0);
     }
     float3 light;
+#ifdef IW2_ENHANCED
+    float3 enhExtraSpec = 0.0;
+#endif
     if (u.params.w > 0.5) {
         light = float3(1.0);
     } else if (u.params.y > 2.5) {
@@ -239,13 +242,28 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
         const float2 aoW = ENH_AO(in.position);
         lm *= aoW.x;
         sunVis *= aoW.y;
+        if (du.origin.x > 0.5 && eu.specParams.x > 0.5 && du.origin.w < 0.5) {
+            // reflective surface class without a specular map (water, glass / ice, metal): our own GGX parameters
+            const int cls = int(du.origin.x + 0.5);
+            const float3 f0 = cls == 3 ? base.rgb * 0.6 : float3(0.02);
+            const float pw = cls == 1 ? 600.0 : cls == 2 ? 200.0 : 40.0;
+            const float3 nW = normalize(in.normal), vW = normalize(-in.eyeVec);
+            const float occ = saturate(dot(lm + sunVis * ndl * u.sunColor.rgb, float3(0.333)) * 1.5);
+            enhExtraSpec = enh_ggx_sun(nW, vW, u.sunDirection.xyz, f0, pw) * u.sunColor.rgb * sunVis * eu.specParams.y +
+                           enh_reflection(in.eyeVec + eu.eye.xyz, nW, vW, f0, pw, in.position, ENH_REFLECT, true) * occ * eu.specParams.z;
+            if (cls == 1) base.rgb *= 0.85; // water darkens under its own reflection
+        }
 #endif
         light = lm + sunVis * ndl * u.sunColor.rgb;
     } else {
         float ndl = max(dot(normalize(in.normal), u.sunDirection.xyz), 0.0);
         light = float3(0.45) + ndl * u.sunColor.rgb * 0.6;
     }
+#ifdef IW2_ENHANCED
+    return float4(apply_fog(base.rgb * light + enhExtraSpec, length(in.eyeVec), u), outA);
+#else
     return float4(apply_fog(base.rgb * light, length(in.eyeVec), u), outA);
+#endif
 }
 
 struct SkyOut {
@@ -292,7 +310,11 @@ static float water_turbulance(texture2d<float> normalMap, sampler sm, float2 uv)
 
 fragment float4 fs_water(WaterOut in [[stage_in]], constant FragmentUniforms& u [[buffer(0)]],
                          texturecube<float> cubicEnvMap [[texture(0)]], texture2d<float> normalMap [[texture(1)]],
-                         sampler s [[sampler(0)]], sampler sm [[sampler(1)]]) {
+                         sampler s [[sampler(0)]], sampler sm [[sampler(1)]]
+#ifdef IW2_ENHANCED
+                         , ENH_FS_ARGS(2)
+#endif
+                         ) {
     float3 eyeDir = normalize(in.eyeVector);
     float2 uv = in.uv;
     float h = 0.5; // one parallax iteration
@@ -307,6 +329,11 @@ fragment float4 fs_water(WaterOut in [[stage_in]], constant FragmentUniforms& u 
     float specularDot = max(0.0, dot(r, u.sunDirection.xyz));
     r.z = abs(r.z);
     float4 env = cubicEnvMap.sample(s, r);
+#ifdef IW2_ENHANCED
+    // screen-space reflection of the scene where the ray hits it, the water's own cube elsewhere (docs/render-enhanced.md)
+    if (eu.ssrParams.z > 0.5)
+        env.rgb = enh_reflection_color(in.eyeVector + eu.eye.xyz, normalize(r), 0.05, in.position, eu, cubicEnvMap, s, histTex, histSampler, depthTex, depthSampler);
+#endif
     float3 diffuse = u.ambient.rgb * n.z; // waterColor.rgb
     float3 lit = mix(diffuse, env.rgb, env.a);
     lit += pow(specularDot, 64.0) * u.sunColor.rgb;
@@ -418,7 +445,20 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
     const float4 ss = specularMap.sample(specSampler, in.uv);
     const float nh = dot(normalize(in.halfAngle), n);
     const float3 strength = float3(specularity.sample(specularitySampler, float2(ss.a, nh)).r);
+#ifdef IW2_ENHANCED
+    float3 spec;
+    if (eu.specParams.x > 0.5) { // GGX sun specular and reflections (docs/render-enhanced.md "Materials")
+        const float3 vE = normalize(-in.eyeVec);
+        const float pw = enh_phong_power(ss.a);
+        spec = enh_ggx_sun(n, vE, u.sunDirection.xyz, ss.rgb, pw) * u.sunColor.rgb * vis * u.sunDirection.w * eu.specParams.y;
+        const float occ = saturate(dot(lm + sunDiffuse, float3(0.333)) * 1.5);
+        spec += enh_reflection(in.eyeVec + eu.eye.xyz, n, vE, ss.rgb, pw, in.position, ENH_REFLECT) * occ * eu.specParams.z;
+    } else {
+        spec = mix(0.3, 1.0, vis) * (u.sunColor.rgb * ss.rgb * strength) * u.sunDirection.w;
+    }
+#else
     const float3 spec = mix(0.3, 1.0, vis) * (u.sunColor.rgb * ss.rgb * strength) * u.sunDirection.w; // lightSpecular0 = lightColor0 * r_specularColorScale (sunDirection.w, default 1)
+#endif
     return float4(apply_fog(base.rgb * (lm + sunDiffuse) + spec, length(in.eyeVec), u), outA);
 }
 // Light-probe techniques of the phong_* technique sets for scene entities (lprobe, lprobe_s, lprobe_a*, lprobe_dtl*, lprobe_flag*;
@@ -508,6 +548,15 @@ fragment float4 fs_probe(ProbeVertexOut in [[stage_in]],
         const float nh = dot(normalize(in.halfAngle), n);
         const float3 strength = float3(specularity.sample(specularitySampler, float2(ss.a, nh)).r);
         spec = mix(0.3, 1.0, vis) * (u.sunColor.rgb * ss.rgb * strength) * u.sunColor.w;
+#ifdef IW2_ENHANCED
+        if (eu.specParams.x > 0.5) {
+            const float3 vE = normalize(-in.eyeVec);
+            const float pw = enh_phong_power(ss.a);
+            spec = enh_ggx_sun(n, vE, u.sunDirection.xyz, ss.rgb, pw) * u.sunColor.rgb * vis * u.sunColor.w * eu.specParams.y;
+            const float occ = saturate(dot(probe + sunDiffuse, float3(0.333)) * 1.5);
+            if (du.origin.w < 0.5) spec += enh_reflection(wpE, n, vE, ss.rgb, pw, in.position, ENH_REFLECT) * occ * eu.specParams.z;
+        }
+#endif
     }
     return float4(apply_fog(base.rgb * (probe + sunDiffuse) + spec, length(in.eyeVec), u), outA);
 }
@@ -636,7 +685,11 @@ vertex DLightVertexOut vs_dlight(DLightVertexIn in [[stage_in]], constant Vertex
     o.eyeVec = (u.model * float4(pos, 1.0)).xyz - u.eye.xyz;
     return o;
 }
-fragment float4 fs_dlight(DLightVertexOut in [[stage_in]], constant DLightU& u [[buffer(0)]], texture2d<float> colorMap [[texture(0)]], texture2d<float> normalMap [[texture(1)]], texture2d<float> detailMap [[texture(2)]], sampler s [[sampler(0)]], sampler normalSampler [[sampler(1)]], sampler detailSampler [[sampler(2)]]) {
+fragment float4 fs_dlight(DLightVertexOut in [[stage_in]], constant DLightU& u [[buffer(0)]], texture2d<float> colorMap [[texture(0)]], texture2d<float> normalMap [[texture(1)]], texture2d<float> detailMap [[texture(2)]], sampler s [[sampler(0)]], sampler normalSampler [[sampler(1)]], sampler detailSampler [[sampler(2)]]
+#ifdef IW2_ENHANCED
+                          , constant float4& ls [[buffer(1)]], depth2d<float> lightShadow [[texture(3)]], sampler lightShadowSampler [[sampler(3)]]
+#endif
+                          ) {
     float4 tex = colorMap.sample(s, in.uv);
     if (u.detail.z > 0.5) tex.rgb += detailMap.sample(detailSampler, in.uv * u.detail.xy).rgb - 0.5; // lib/shade.hlsl USE_DETAIL
     const float4 base = tex * in.color;
@@ -651,11 +704,18 @@ fragment float4 fs_dlight(DLightVertexOut in [[stage_in]], constant DLightU& u [
         n += (2.0 * ns.a - 1.0) * in.tangent + (2.0 * ns.g - 1.0) * in.binormal;
     }
     const float ndl = max(dot(normalize(n), delta / max(d, 1e-5)), 0.0);
+#ifdef IW2_ENHANCED
+    const float lsh = ls.x > 0.5 && ndl > 0.0 ? enh_light_shadow(wp - u.light.xyz, normalize(in.normal), ls, lightShadow, lightShadowSampler) : 1.0;
+#endif
     const float x = clamp(saturate(d) * 16.0 - 0.5, 0.0, 15.0);
     const int i0 = int(floor(x)), i1 = min(i0 + 1, 15);
     const float f = mix(u.ramp[i0 >> 2][i0 & 3], u.ramp[i1 >> 2][i1 & 3], x - float(i0));
     // l_point_blend (PRE_ALPHA_BLEND): the light is scaled by the surface alpha.
+#ifdef IW2_ENHANCED
+    return float4(base.rgb * u.color.rgb * (ndl * f * lsh) * (u.params.z > 0.5 ? base.a : 1.0), 1.0);
+#else
     return float4(base.rgb * u.color.rgb * (ndl * f) * (u.params.z > 0.5 ? base.a : 1.0), 1.0);
+#endif
 }
 
 // Technique set "objective" (objective_base.tech / objective_base.hlsl): a pulsing gold silhouette of objective models.

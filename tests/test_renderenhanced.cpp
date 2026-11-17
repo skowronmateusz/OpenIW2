@@ -108,6 +108,35 @@ int main() {
         chk(taaJitter(3, 100, 100) == taaJitter(11, 100, 100), __LINE__);
     }
 
+    // Phong exponent and GGX roughness of a specular map alpha: alpha 0 is broad (45 degree half angle at 0.1, P about 6.6), alpha 1
+    // tight; roughness falls monotonically and stays within its clamp.
+    chk(near(phongPowerOfSpecAlpha(0.0f), std::log(0.1f) / std::log(std::cos(45.0f * 3.14159265f / 180.0f)), 1e-3f), __LINE__);
+    {
+        float prevP = 0.0f, prevA = 2.0f;
+        for (float a = 0.0f; a <= 1.0f; a += 0.05f) {
+            const float p = phongPowerOfSpecAlpha(a), r = ggxAlphaOfPower(p);
+            chk(p >= prevP && r <= prevA && r >= 0.03f && r <= 1.0f, __LINE__);
+            prevP = p, prevA = r;
+        }
+        chk(ggxAlphaOfPower(phongPowerOfSpecAlpha(0.0f)) > 0.45f && ggxAlphaOfPower(phongPowerOfSpecAlpha(1.0f)) == 0.03f, __LINE__);
+        chk(near(ggxAlphaOfPower(98.0f), std::sqrt(0.02f), 1e-6f), __LINE__);
+    }
+
+    // Point light shadow faces: orthonormal right-handed bases, the face of a vector looks along it, depth 0 at near and 1 at far.
+    for (int f = 0; f < 6; ++f) {
+        const CubeFace c = cubeFace(f);
+        auto dot3 = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+        chk(near(dot3(c.fwd, c.fwd), 1.0f) && near(dot3(c.right, c.right), 1.0f) && near(dot3(c.up, c.up), 1.0f), __LINE__);
+        chk(near(dot3(c.fwd, c.right), 0.0f) && near(dot3(c.fwd, c.up), 0.0f) && near(dot3(c.right, c.up), 0.0f), __LINE__);
+        chk(cubeFaceOf(c.fwd) == f, __LINE__);
+    }
+    {
+        const float v1[3] = {0.2f, -3.0f, 1.0f}, v2[3] = {0.0f, 0.1f, -0.5f};
+        chk(cubeFaceOf(v1) == 3 && cubeFaceOf(v2) == 5, __LINE__);
+        chk(near(cubeFaceDepth(2.0f, 2.0f, 500.0f), 0.0f, 1e-6f) && near(cubeFaceDepth(500.0f, 2.0f, 500.0f), 1.0f, 1e-5f), __LINE__);
+        chk(cubeFaceDepth(10.0f, 2.0f, 500.0f) < cubeFaceDepth(20.0f, 2.0f, 500.0f), __LINE__);
+    }
+
     // Tone curve: identity up to the knee, continuous with slope 1 there, monotonic, below white, approaching white.
     for (float x = 0.0f; x <= kToneKnee; x += 0.01f) chk(toneShoulder(x, kToneKnee, 1.0f) == x, __LINE__);
     {

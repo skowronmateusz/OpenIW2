@@ -30,6 +30,7 @@ described in the code that reads them.
 | `IW2_SCREENSHOT_AT=s` | iw2view (window) | Runs the `screenshot` command once, s seconds after the window opens (checks the screenshot path without a key press). |
 | `IW2_BENCH_TURN=deg` | iw2view `--shot` with `IW2_BENCH` | Turns the camera by deg degrees of yaw before every bench frame (and so the shot after them), e.g. to see temporal anti-aliasing under camera motion. |
 | `IW2_ENH_CASCADE_REDRAW=1` | iw2view, `r_enhanced 1` | Re-renders the world sun cascades every frame (the cost of a cascade move, for benchmarks). |
+| `IW2_DLIGHT_TEST=dist,radius` | iw2view | Adds one white dynamic light `dist` units ahead of the camera and 40 up, with the given radius (dynamic light and point light shadow checks). |
 | `IW2_ENH_PREV_CAM=dx,dy,dz,dyaw` | iw2view `--shot`, `r_enhanced 1`, `r_enhMotionDebug 1` | The previous-frame camera of the motion vectors is this camera moved by (dx, dy, dz) and turned by dyaw degrees, so a single shot shows camera motion vectors (docs/render-enhanced.md). |
 | `IW2_SPEC_SCALE=x` | iw2view | r_specularColorScale (DLL dvar 0x101ce638, default 1, clamped 0.01..100): scales lightSpecular0 of the lmap_s path. |
 | `IW2_COS_SHIFT=x` | iw2view | r_cosinePowerMapShift (DLL dvar 0x101ce680, default 0, clamped -1..1): shifts the `$specularity` power ramp (t = clamp(x/30 + shift)). |

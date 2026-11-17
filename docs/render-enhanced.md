@@ -2,7 +2,8 @@
 
 An openiw2 addition with no counterpart in the original game. The default renderer keeps the original look (docs/spec);
 `r_enhanced 1` switches to a second set of pipelines with dynamic sun shadows of moving objects, cached sun shadow cascades of
-the world, ambient occlusion and contact shadows, temporal anti-aliasing, a 16-bit float scene, a highlight tone curve, bloom of
+the world, ambient occlusion and contact shadows, temporal anti-aliasing, GGX specular with sky and screen-space reflections, shadows of
+the effect lights, a 16-bit float scene, a highlight tone curve, bloom of
 the light above display white, mild auto exposure and extended dynamic range (EDR) output.
 Everything here is our own design from public techniques (references at the end). It is not derived from the shipped game
 shaders, and none of it is a specification of the original.
@@ -29,11 +30,16 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhAOStrength` | 0.7 | AO strength (0..1). |
 | `r_enhContactShadows` | preset | Short screen-space rays towards the sun (thin and near contact). |
 | `r_enhTAA` | preset | Temporal anti-aliasing. |
+| `r_enhGGX` | 1 | GGX sun specular and reflections from the spec / gloss maps (else the original Phong). |
+| `r_enhSpecScale` | 1 | Sun specular scale (0..4). |
+| `r_enhEnvScale` | 0.35 | Reflection strength (0..2). |
+| `r_enhSSR` | preset | Screen-space reflections on water and the reflective surface classes (needs TAA). |
+| `r_enhLightShadows` | preset | Shadows of the dynamic (effect) lights, up to four lights. |
 | `r_enhMotionDebug` | 0 | Debug views instead of the frame: 1 the motion vectors, 2 AO (red) and contact shadow (green). |
 
 All are read once when the renderer starts, from the profile's config or `--cvar name=value` (case-insensitive). A per-feature
 cvar that is set overrides the preset. Presets: low = moving-caster shadows 1, no world cascades, no auto exposure, AO, contact
-shadows or TAA; medium = shadows 2, two world cascades; high = shadows 3, three world cascades. The other features are on in
+shadows, TAA, screen-space reflections or light shadows; medium = shadows 2, two world cascades; high = shadows 3, three world cascades. The other features are on in
 every preset. Gameplay, the server and the network are not affected; it is render-only.
 
 ## How it stays apart from the default look
@@ -120,6 +126,34 @@ neither (they are not in the opaque depth).
   restarts after a map change or a resize. A light unsharp mask in the tone pass offsets the softening.
 - Limitations: blended effects have no motion vectors of their own (the clip keeps their ghosting short); MSAA stays on.
 
+## Materials: GGX specular and reflections
+
+- Sun specular: on surfaces whose technique set has a specular map (world lmap_s surfaces and the light-probe model techniques)
+  the original's Phong lobe is replaced by GGX (Walter et al. 2007) with a height-correlated Smith visibility (Heitz 2014) and
+  Schlick's Fresnel. f0 is the specular map colour. The roughness comes from the specular map alpha through the exponent the
+  original's `$specularity` table assigns to it, P = ln 0.1 / ln cos((180 - 175 t) / 4 degrees), and the Blinn-Phong match
+  alpha = sqrt(2 / (P + 2)) (`game::phongPowerOfSpecAlpha`, `game::ggxAlphaOfPower`). The result is scaled by 2 pi / (P + 2), the
+  ratio of the Phong lobe's peak to its energy, so a highlight keeps about the original's brightness at its centre while its
+  shape, tail and grazing Fresnel follow GGX.
+- Reflections: the sky cube, with a box-filtered mip chain made at load for rough surfaces, times the roughness-aware Fresnel,
+  times an occlusion from the surface's own light (the brightness of lightmap + sun, so dark interiors do not reflect the sky)
+  and `r_enhEnvScale`.
+- Reflective surface classes: world materials whose surface type (surfaceFlags bits 20-24) is water, glass, ice or metal get
+  our own GGX parameters even without a specular map (water and glass f0 0.02, nearly smooth; metal f0 from the colour,
+  rougher).
+- Screen-space reflections, for those classes and the water technique only: a 20-step ray in `$floatz` from the surface along
+  the reflection; at a hit, the previous frame's resolved image (the TAA history) at the hit point's previous screen position
+  replaces the sky, faded at the screen edges and with roughness. Needs TAA. On all specular surfaces this cost about 4.7 ms on
+  the bench, hence the restriction.
+- Not done: reflection probes made at load, and specular from the map's baked light entities (both left for later).
+
+## Shadowed effect lights
+
+The dynamic lights (muzzle flashes, explosions; up to the first four of `r_dlightLimit`) get a point light shadow: six 256²
+perspective faces per light in one depth atlas, with our own fixed face axes (`game::cubeFace`), casters being the light's lit
+world pieces and the models it reaches. The l_point pass picks the face by the major axis of the light-to-point vector and
+takes four compare taps, with a normal offset. The baked light and the light's falloff are unchanged.
+
 ## Per-pixel light grid
 
 The original lights an entity from one light-grid sample at its origin (docs/spec/lightgrid.md); a whole tank is in one light.
@@ -186,8 +220,12 @@ the duhoc_assault beach reference spot (docs/debug-flags.md `IW2_BENCH`), yaw 18
 | + tone curve and bloom | 2.45 | +0.17 |
 | + auto exposure | 2.46 | +0.18 |
 | + AO / contact shadows / both | 2.79 / 2.44 / 2.70 | +0.51 / +0.16 / +0.42 |
-| + TAA | 2.87 | +0.59 |
-| preset low / medium / high | 3.00 / 4.89 / 5.46 | |
+| + TAA | 2.92 | +0.62 |
+| + GGX and sky reflections | 2.68 | +0.38 |
+| + GGX, TAA and screen-space reflections | 3.31 | +1.01 |
+| preset medium / high (stage 3) | 5.44 / 6.04 | |
+
+A shadowed effect light (toujane, one light of radius 350): +0.18 ms.
 
 The CPU cost is the shadow pass encode (about +0.2 ms for 483 casters), the lattice lookups (under 0.1 ms with the cache) and,
 in a frame where a world cascade moves, its caster list and draw (about 1 ms CPU and 0.5 ms GPU, `IW2_ENH_CASCADE_REDRAW`).
@@ -197,7 +235,8 @@ in a frame where a world cascade moves, its caster list and draw (about 1 ms CPU
 `tests/test_renderenhanced.cpp`: settings and presets, the tone curve (identity below the knee, C1, monotonic, bounded), the
 sRGB transfer, exposure target and frame-rate independent adaptation, bloom levels and threshold, the sun shadow fit (sphere
 inside the map, depth order towards the sun, texel-stable snapping, a vertical sun), the cascade fade, the world cascade centre
-snapping and caster reach, the GTAO slice integral, the TAA jitter sequence, the probe lattice and the camera motion
+snapping and caster reach, the GTAO slice integral, the TAA jitter sequence, the specular exponent to roughness conversion, the
+point light shadow faces, the probe lattice and the camera motion
 reconstruction.
 
 ## References
@@ -212,5 +251,8 @@ reconstruction.
   course (GTAO).
 - B. Karis, "High quality temporal supersampling", SIGGRAPH 2014 Advances course (TAA); M. Salvi, "An excursion in temporal
   supersampling", GDC 2016 (variance clipping).
+- B. Walter, S. Marschner, H. Li, K. Torrance, "Microfacet models for refraction through rough surfaces", EGSR 2007 (GGX).
+- E. Heitz, "Understanding the masking-shadowing function in microfacet-based BRDFs", JCGT 2014.
+- M. McGuire, M. Mara, "Efficient GPU screen-space ray tracing", JCGT 2014.
 - E. Reinhard et al., "Photographic tone reproduction for digital images", SIGGRAPH 2002 (log-average luminance and key).
 - IEC 61966-2-1 (sRGB transfer function).

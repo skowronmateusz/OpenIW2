@@ -562,6 +562,8 @@ struct Scene {
     game::MarkSystem marks;
     game::OutdoorMap outdoor; // "$outdoor" (game/outdoor.h), built on first use by a Cloud with particle_cloud_outdoor
     std::unique_ptr<assets::LightGrid> grid;
+    std::vector<uint8_t> texReflect; // enhanced: reflective surface class per Scene::textures index (0 none, 1 water, 2 glass / ice, 3 metal)
+    uint32_t skySize = 0; // edge of the sky cube (enhanced reflections build a mip chain of it)
     uint64_t serial = 0; // distinct per loaded scene (caches keyed on a scene, e.g. the enhanced light-grid lattice)
     std::unordered_map<std::string, int> imageIndex;
     std::unordered_map<std::string, MatInfo> matCache;
@@ -680,7 +682,7 @@ SDL_GPUTexture* createTexture(SDL_GPUDevice* dev, SDL_GPUTextureFormat fmt, uint
     return t;
 }
 
-SDL_GPUTexture* loadCubeImage(SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& vfs, const std::string& name) {
+SDL_GPUTexture* loadCubeImage(SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& vfs, const std::string& name, uint32_t* sizeOut = nullptr) {
     const auto data = vfs.read("images/" + name + ".iwi");
     if (!data) return nullptr;
     try {
@@ -689,6 +691,7 @@ SDL_GPUTexture* loadCubeImage(SDL_GPUDevice* dev, Uploader& up, const fs::Vfs& v
         const auto& l0 = img.levels[0];
         SDL_GPUTexture* tex = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, uint32_t(l0.width), uint32_t(l0.height), 1, 6,
                                             SDL_GPU_TEXTURETYPE_CUBE);
+        if (sizeOut) *sizeOut = uint32_t(l0.width);
         for (int f = 0; f < 6; ++f) {
             const auto rgba = assets::decodeToRgba(img, 0, f);
             up.texture(tex, 0, uint32_t(f), uint32_t(l0.width), uint32_t(l0.height), rgba.data(), uint32_t(rgba.size()));
@@ -831,7 +834,7 @@ MatInfo sceneMaterial(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const fs::
                 return it->second;
             };
             if (mi.pass == Pass::Sky) {
-                if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img);
+                if (!scene.sky) scene.sky = loadCubeImage(dev, up, vfs, img, &scene.skySize);
             } else if (!img.empty() && (img == "$black" || (img[0] != '$' && (mi.pass != Pass::Skip || mi.fxKind == 2)))) { // the "black" material (technique set "tools") is a UI background
                 mi.texture = imageSlot(img);
                 // The l_point techniques of every phong_* techset sample material.normalMap; "$identitynormalmap" is the flat default.
@@ -1725,6 +1728,15 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     for (const auto& soup : bsp.soups()) material(bsp.materials()[soup.material].name);
     std::vector<MatInfo> mats;
     for (const auto& bm : bsp.materials()) mats.push_back(material(bm.name));
+    // Enhanced reflections (docs/render-enhanced.md "Materials"): the reflective surface classes of the world's materials (surface
+    // type, surfaceFlags bits 20-24, src/game/playerevents.cpp names), per colour texture: 1 water, 2 glass / ice, 3 metal.
+    for (size_t i = 0; i < mats.size(); ++i) {
+        const int type = int((bsp.materials()[i].surfaceFlags >> 20) & 0x1f);
+        const uint8_t cls = type == 20 ? 1 : (type == 9 || type == 12) ? 2 : type == 13 ? 3 : 0;
+        if (!cls || mats[i].texture < 0) continue;
+        if (scene.texReflect.size() <= size_t(mats[i].texture)) scene.texReflect.resize(size_t(mats[i].texture) + 1, 0);
+        scene.texReflect[size_t(mats[i].texture)] = std::max(scene.texReflect[size_t(mats[i].texture)], cls);
+    }
 
     // Lightmaps.
     const auto lmLump = bsp.lump(assets::BspLump::Lightmaps);
@@ -2466,7 +2478,32 @@ struct Renderer {
         float shadowVP[2][16]; float shadowParams[4]; float shadowSphere[2][4]; float eye[4]; float shadowBias[4];
         float worldVP[3][16]; float worldSphere[3][4]; float worldParams[4]; float worldBias[4];
         float aoParams[4];
+        float viewProj[16]; float prevViewProj[16]; float ssrParams[4]; float specParams[4];
     };
+    // Materials (stage 3): the sky cube with a mip chain for rough reflections, and this frame's history / depth for reflections.
+    SDL_GPUTexture* envCube = nullptr;
+    const SDL_GPUTexture* envFor = nullptr;
+    int envLevels = 1;
+    SDL_GPUTexture* envDummy = nullptr;    // black 1 x 1 cube
+    SDL_GPUTexture* shadowDummyArray = nullptr;
+    SDL_GPUTexture* worldShadowArray = nullptr; // the world cascades, one layer each
+    SDL_GPUTexture* frameHist = nullptr;   // the previous frame's resolved scene while reflections are on, else null
+    SDL_GPUTexture* frameDepth = nullptr;  // $floatz once built this frame, else null
+    void ensureEnvCube(SDL_GPUCommandBuffer* cmd, const Scene& scene);
+    // Shadowed dynamic lights (docs/render-enhanced.md "Shadowed effect lights"): 6 faces of 256^2 per light, up to 4 lights.
+    static constexpr int kLightShadowSize = 256, kLightShadowMax = 4;
+    SDL_GPUTexture* lightShadowAtlas = nullptr;
+    int lightShadowsNow = 0;
+    float lightShadowNear = 2.0f;
+    void renderLightShadows(SDL_GPUCommandBuffer* cmd, const Scene& scene, const std::vector<DrawItem>& items);
+    void enhBindLight(SDL_GPURenderPass* pass, SDL_GPUCommandBuffer* cmd, size_t li) {
+        if (!enh.enabled) return;
+        const bool on = int(li) < lightShadowsNow && lightShadowAtlas;
+        const SDL_GPUTextureSamplerBinding b{on ? lightShadowAtlas : shadowDummy, shadowCmpSampler};
+        SDL_BindGPUFragmentSamplers(pass, 3, &b, 1);
+        const float ls[4] = {on ? 1.0f : 0.0f, lightShadowNear, on ? dlights[li].radius : 1.0f, float(li)};
+        SDL_PushGPUFragmentUniformData(cmd, 1, ls, sizeof ls);
+    }
     SDL_GPUGraphicsPipeline *enhAoPipe = nullptr, *enhAoBlurPipe = nullptr, *enhAoViewPipe = nullptr;
     // TAA: motion vectors from the $floatz pass, the history, the previous frame's skinned vertices and item transforms.
     SDL_GPUGraphicsPipeline* enhFloatzVelPipes[3][3] = {};
@@ -2511,7 +2548,6 @@ struct Renderer {
     // Cached world sun cascades (docs/render-enhanced.md "World sun shadows"): one depth texture each, re-rendered when the snapped
     // centre or the scene changes.
     struct WorldCascade {
-        SDL_GPUTexture* tex = nullptr;
         SDL_GPUBuffer* indices = nullptr;
         uint32_t indexCap = 0;
         std::vector<Batch> batches; // ranges into `indices`
@@ -2688,9 +2724,28 @@ struct Renderer {
                             SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
         {
             const game::WorldShadowQuality wq = game::worldShadowQuality(enh.worldShadows);
-            for (int c = 0; c < wq.cascades; ++c)
-                worldCascades[c].tex = tex(SDL_GPU_TEXTUREFORMAT_D32_FLOAT, uint32_t(wq.resolution), uint32_t(wq.resolution),
-                                           SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
+            if (wq.cascades > 0) {
+                SDL_GPUTextureCreateInfo ti{};
+                ti.type = SDL_GPU_TEXTURETYPE_2D_ARRAY;
+                ti.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+                ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                ti.width = ti.height = uint32_t(wq.resolution);
+                ti.layer_count_or_depth = uint32_t(wq.cascades);
+                ti.num_levels = 1;
+                worldShadowArray = SDL_CreateGPUTexture(dev, &ti);
+                if (!worldShadowArray) sdlFail("world cascade texture");
+            }
+            SDL_GPUTextureCreateInfo di{};
+            di.type = SDL_GPU_TEXTURETYPE_2D_ARRAY;
+            di.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+            di.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            di.width = di.height = 1, di.layer_count_or_depth = 1, di.num_levels = 1;
+            shadowDummyArray = SDL_CreateGPUTexture(dev, &di);
+            envDummy = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 1, 1, 1, 6, SDL_GPU_TEXTURETYPE_CUBE);
+            const uint8_t black[4] = {0, 0, 0, 255};
+            Uploader up(dev);
+            for (uint32_t f = 0; f < 6; ++f) up.texture(envDummy, 0, f, 1, 1, black, 4);
+            if (!shadowDummyArray) sdlFail("dummy shadow array");
         }
         lumLevels = 9; // 256 .. 1
         lumTex = tex(SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT, 256, 256, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, uint32_t(lumLevels));
@@ -2733,28 +2788,29 @@ struct Renderer {
 
     // Binds the enhanced resources of fs_main / fs_spec (shadow map at `shadowSlot`, the lattice buffer) and pushes the draw's lattice.
     void enhBind(SDL_GPURenderPass* pass, SDL_GPUCommandBuffer* cmd, uint32_t shadowSlot, const DrawItem* it, const std::vector<DrawItem>& items,
-                 bool noScreenSpace = false) {
+                 bool noScreenSpace = false, int reflectClass = 0) {
         if (!enh.enabled) return;
-        const SDL_GPUTextureSamplerBinding sb[4] = {
+        const SDL_GPUTextureSamplerBinding sb[6] = {
             {shadowCascadesNow > 0 ? shadowTex : shadowDummy, shadowCmpSampler},
-            {worldCascadesNow > 0 ? worldCascades[0].tex : shadowDummy, shadowCmpSampler},
-            {worldCascadesNow > 1 ? worldCascades[1].tex : shadowDummy, shadowCmpSampler},
-            {worldCascadesNow > 2 ? worldCascades[2].tex : shadowDummy, shadowCmpSampler}};
-        SDL_BindGPUFragmentSamplers(pass, shadowSlot, sb, 4);
-        const SDL_GPUTextureSamplerBinding ab{aoReady ? aoTex[0] : aoWhite, clampSampler};
-        SDL_BindGPUFragmentSamplers(pass, shadowSlot + 4, &ab, 1);
+            {worldCascadesNow > 0 ? worldShadowArray : shadowDummyArray, shadowCmpSampler},
+            {aoReady ? aoTex[0] : aoWhite, clampSampler},
+            {envCube ? envCube : envDummy, clampSampler},
+            {frameHist ? frameHist : aoWhite, clampSampler},
+            {frameDepth ? frameDepth : aoWhite, pointClampSampler}};
+        SDL_BindGPUFragmentSamplers(pass, shadowSlot, sb, 6);
         SDL_BindGPUFragmentStorageBuffers(pass, 0, &latticeBuf, 1);
         EnhDrawUC d{};
         if (it && size_t(it - items.data()) < itemLattice.size()) d = itemLattice[size_t(it - items.data())];
         if (it && it->effects) d.step[3] = 1.0f; // sprites and clouds take no dynamic sun shadow
         // AO / contact shadows come from the opaque depth: not for blended surfaces, sprites or the view model
         if (noScreenSpace || (it && (it->effects || it->depthMax < 1.0f))) d.origin[3] = 1.0f;
+        if (!it) d.origin[0] = float(reflectClass); // world draws: the reflective surface class (EnhDrawU.origin.x)
         SDL_PushGPUFragmentUniformData(cmd, 2, &d, sizeof d);
     }
 
     // Before the scene pass: the sun shadow map of the moving casters, the light-grid lattices of the model items, the per-frame
     // fragment uniforms (slot 1).
-    void enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& cam, const std::vector<DrawItem>& items);
+    void enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& cam, const std::vector<DrawItem>& items, uint32_t w, uint32_t h);
     // After the scene pass: exposure and bloom.
     void enhPost(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam, bool floatzReady);
 
@@ -2790,7 +2846,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo fmain = fs;
         SDL_GPUShader* overlayFsh = nullptr; // enhanced: the HUD keeps the default fs_main (no shadow / lattice resources)
         if (enh.enabled) {
-            fmain.num_samplers = 9;        // + the moving-caster sun shadow map (texture 4), three world cascades, the AO image
+            fmain.num_samplers = 10;       // + moving-caster shadows, world cascades, AO, environment cube, history, $floatz
             fmain.num_uniform_buffers = 3; // + EnhFragU (slot 1) and EnhDrawU (slot 2)
             fmain.num_storage_buffers = 1; // the light-grid lattices
             SDL_GPUShaderCreateInfo plain = fs;
@@ -2827,10 +2883,11 @@ struct Renderer {
         SDL_GPUShaderCreateInfo sfsi = fs;
         sfsi.entrypoint = "fs_spec";
         sfsi.num_samplers = 8;
-        if (enh.enabled) sfsi.num_samplers = 13, sfsi.num_uniform_buffers = 3, sfsi.num_storage_buffers = 1;
+        if (enh.enabled) sfsi.num_samplers = 14, sfsi.num_uniform_buffers = 3, sfsi.num_storage_buffers = 1;
         SDL_GPUShaderCreateInfo dfsi = fs;
         dfsi.entrypoint = "fs_dlight";
         dfsi.num_samplers = 3;
+        if (enh.enabled) dfsi.num_samplers = 4, dfsi.num_uniform_buffers = 2; // + the point light shadow atlas
         SDL_GPUShader* dlightFsh = SDL_CreateGPUShader(dev, &dfsi);
         SDL_GPUShaderCreateInfo dvsi = vs;
         dvsi.entrypoint = "vs_dlight";
@@ -2846,7 +2903,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo pfsi = fs;
         pfsi.entrypoint = "fs_probe";
         pfsi.num_samplers = 5;
-        if (enh.enabled) pfsi.num_samplers = 10, pfsi.num_uniform_buffers = 3, pfsi.num_storage_buffers = 1;
+        if (enh.enabled) pfsi.num_samplers = 11, pfsi.num_uniform_buffers = 3, pfsi.num_storage_buffers = 1;
         SDL_GPUShader* probeVsh = SDL_CreateGPUShader(dev, &pvsi);
         SDL_GPUShader* probeFsh = SDL_CreateGPUShader(dev, &pfsi);
         if (!probeVsh || !probeFsh) sdlFail("probe shaders");
@@ -3198,6 +3255,7 @@ struct Renderer {
             SDL_GPUShaderCreateInfo wfs = fs;
             wfs.entrypoint = "fs_water";
             wfs.num_samplers = 2;
+            if (enh.enabled) wfs.num_samplers = 8, wfs.num_uniform_buffers = 3, wfs.num_storage_buffers = 1;
             wfs.num_uniform_buffers = 1;
             SDL_GPUShader* wv = SDL_CreateGPUShader(dev, &wvs);
             SDL_GPUShader* wf = SDL_CreateGPUShader(dev, &wfs);
@@ -3570,8 +3628,14 @@ struct Renderer {
             cam.jitterX = j[0], cam.jitterY = j[1];
         }
         ensureDepth(w, h);
+        if (const char* dt = std::getenv("IW2_DLIGHT_TEST")) { // debug: one white dynamic light dist units ahead, 40 up, of radius r
+            float d = 120.0f, r = 300.0f;
+            std::sscanf(dt, "%f,%f", &d, &r);
+            const Vec3 at = camIn.pos + camIn.forward() * d + Vec3{0, 0, 40};
+            if (dlights.empty() || dlights.back().radius != r) dlights.push_back({{at.x, at.y, at.z}, r, {1.0f, 0.9f, 0.7f}});
+        }
         cullWorld(cmd, scene, cam, cam.viewProj(float(w) / float(h)));
-        if (enh.enabled) enhPrepare(cmd, scene, cam, items);
+        if (enh.enabled) enhPrepare(cmd, scene, cam, items, w, h);
         {   // gameTime for every vs_main / vs_dlight draw of this command buffer (vertex uniform slot 1)
             const assets::GameTimeConst g = assets::gameTimeConst(renderTimeMs);
             const float gt[4] = {g.x, g.y, g.z, g.w};
@@ -3771,6 +3835,7 @@ struct Renderer {
             SDL_EndGPURenderPass(fp);
             stats.phase = 0;
             }
+            if (enh.enabled) frameDepth = floatzTex; // screen-space reflections read it
             if (enh.enabled && (enh.ao || enh.contactShadows)) enhAO(cmd, w, h, cam);
         }
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &ds);
@@ -3828,6 +3893,7 @@ struct Renderer {
                                                         {scene.textures[size_t(hasNormalMap ? b.pointNormalTex : b.texture)], matSampler(b.pointNormalState)},
                                                         detailBinding(b.detail)};
             SDL_BindGPUFragmentSamplers(pass, 0, tb, 3);
+            enhBindLight(pass, cmd, size_t(&dl - dlights.data()));
             struct DU { float light[4], color[4], params[4], eye[4], ramp[16], detail[4]; } fu{};
             if (b.detail >= 0) fu.detail[0] = scene.details[size_t(b.detail)].scale[0], fu.detail[1] = scene.details[size_t(b.detail)].scale[1], fu.detail[2] = 1.0f;
             std::memcpy(fu.light, dl.pos, 12);
@@ -3969,6 +4035,7 @@ struct Renderer {
                                                         {scene.textures[size_t(hasNormalMap ? b.pointNormalTex : b.texture)], matSampler(b.pointNormalState)},
                                                         detailBinding(b.detail)};
             SDL_BindGPUFragmentSamplers(pass, 0, tb, 3);
+            enhBindLight(pass, cmd, size_t(&dl - dlights.data()));
             struct DU { float light[4], color[4], params[4], eye[4], ramp[16], detail[4]; } fu{};
             if (b.detail >= 0) fu.detail[0] = scene.details[size_t(b.detail)].scale[0], fu.detail[1] = scene.details[size_t(b.detail)].scale[1], fu.detail[2] = 1.0f;
             std::memcpy(fu.light, dl.pos, 12);
@@ -3999,6 +4066,7 @@ struct Renderer {
             // cubicEnvMap: sampler state 0x30 (clamp U/V); normalMap: 0x6 = linear min/mag, point mip filter, repeat (0x1003dd..e1b1).
             SDL_GPUTextureSamplerBinding wsb[2] = {{wm.cube, clampSampler}, {wm.normalMap, waterMapSampler}};
             SDL_BindGPUFragmentSamplers(pass, 0, wsb, 2);
+            enhBind(pass, cmd, 2, nullptr, items);
             FragmentUniforms fu = {
                 {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                 {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -4037,7 +4105,8 @@ struct Renderer {
                                                            {scene.textures[b.detail >= 0 ? size_t(scene.details[size_t(b.detail)].tex) : 0],
                                                             matSampler(b.detail >= 0 ? scene.details[size_t(b.detail)].state : uint8_t(0))}};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 8);
-                    enhBind(pass, cmd, 8, nullptr, items, p == Pass::Blend);
+                    enhBind(pass, cmd, 8, nullptr, items, p == Pass::Blend,
+                            size_t(b.texture) < scene.texReflect.size() ? scene.texReflect[size_t(b.texture)] : 0);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, specColorScale},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -4056,7 +4125,8 @@ struct Renderer {
                     SDL_GPUTextureSamplerBinding tex[4] = {
                         {scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {lm.coeffs, clampSampler}, {lm.sun, clampSampler}, detailBinding(b.detail)};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
-                    enhBind(pass, cmd, 4, nullptr, items, p == Pass::Blend || p == Pass::Additive || p == Pass::Multiply);
+                    enhBind(pass, cmd, 4, nullptr, items, p == Pass::Blend || p == Pass::Additive || p == Pass::Multiply,
+                            size_t(b.texture) < scene.texReflect.size() ? scene.texReflect[size_t(b.texture)] : 0);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -4570,7 +4640,7 @@ struct Renderer {
 
 // ---- enhanced mode passes (docs/render-enhanced.md) ----
 
-void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& cam, const std::vector<DrawItem>& items) {
+void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& cam, const std::vector<DrawItem>& items, uint32_t w, uint32_t h) {
     enhStats = {};
     EnhFragUC f{};
     sunDirForAO[0] = scene.sunDirection.x, sunDirForAO[1] = scene.sunDirection.y, sunDirForAO[2] = scene.sunDirection.z;
@@ -4775,6 +4845,25 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
             SDL_EndGPUCopyPass(cp);
         }
     }
+    lightShadowsNow = 0;
+    if (enh.lightShadows && !dlights.empty()) renderLightShadows(cmd, scene, items);
+    // Materials: GGX, reflections (the sky cube with mips; screen-space from the previous frame while TAA has a history).
+    ensureEnvCube(cmd, scene);
+    {
+        const Mat4 vp = cam.viewProj(float(w) / float(h));
+        std::memcpy(f.viewProj, vp.data(), sizeof f.viewProj);
+        std::memcpy(f.prevViewProj, (taaPrevVPValid ? taaPrevVP : vp).data(), sizeof f.prevViewProj);
+        game::Mat4c cur{};
+        std::memcpy(cur.data(), vp.data(), sizeof(float) * 16);
+        const Vec3 fw = cam.forward();
+        const float eye[3] = {cam.pos.x, cam.pos.y, cam.pos.z}, fwd[3] = {fw.x, fw.y, fw.z};
+        const auto zl = game::clipDepthLine(cur, eye, fwd);
+        const bool ssrOn = enh.ggx && enh.ssr && enh.taa && taaHistValid && taaPrevVPValid && taaHist[taaCur] && taaW == w && taaH == h;
+        f.ssrParams[0] = zl[0], f.ssrParams[1] = zl[1], f.ssrParams[2] = ssrOn ? 1.0f : 0.0f, f.ssrParams[3] = 262144.0f * 2.0f * 1.7f;
+        frameHist = ssrOn ? taaHist[taaCur] : nullptr;
+        frameDepth = nullptr;
+        f.specParams[0] = enh.ggx ? 1.0f : 0.0f, f.specParams[1] = enh.specScale, f.specParams[2] = enh.envScale, f.specParams[3] = float(std::max(envLevels - 1, 0));
+    }
     aoReady = false;
     if (enh.ao || enh.contactShadows) {
         f.aoParams[2] = enh.ao ? enh.aoStrength : 0.0f;
@@ -4850,7 +4939,8 @@ void Renderer::renderWorldCascade(SDL_GPUCommandBuffer* cmd, const Scene& scene,
         SDL_ReleaseGPUTransferBuffer(dev, xfer);
     }
     SDL_GPUDepthStencilTargetInfo dt{};
-    dt.texture = wc.tex;
+    dt.texture = worldShadowArray;
+    dt.layer = uint8_t(c);
     dt.clear_depth = 1.0f;
     dt.load_op = SDL_GPU_LOADOP_CLEAR;
     dt.store_op = SDL_GPU_STOREOP_STORE;
@@ -5106,6 +5196,126 @@ void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Ca
     // the frame's slot-1 uniforms with the frame size, pushed again now that the AO image exists
     enhFragPending.aoParams[0] = 1.0f / float(w), enhFragPending.aoParams[1] = 1.0f / float(h);
     SDL_PushGPUFragmentUniformData(cmd, 1, &enhFragPending, sizeof enhFragPending);
+}
+
+// Point light shadows: per light (first kLightShadowMax), six perspective faces (game::cubeFace axes) into a 3 x 2 tile block of the
+// atlas; casters are the light's lit world pieces (cullWorld) and the model items whose box the light reaches.
+void Renderer::renderLightShadows(SDL_GPUCommandBuffer* cmd, const Scene& scene, const std::vector<DrawItem>& items) {
+    const int S = kLightShadowSize;
+    if (!lightShadowAtlas) {
+        SDL_GPUTextureCreateInfo ti{};
+        ti.type = SDL_GPU_TEXTURETYPE_2D;
+        ti.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+        ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        ti.width = uint32_t(3 * S), ti.height = uint32_t(2 * S * kLightShadowMax), ti.layer_count_or_depth = 1, ti.num_levels = 1;
+        lightShadowAtlas = SDL_CreateGPUTexture(dev, &ti);
+        if (!lightShadowAtlas) return;
+    }
+    const int n = std::min<int>(int(dlights.size()), kLightShadowMax);
+    SDL_GPUDepthStencilTargetInfo dt{};
+    dt.texture = lightShadowAtlas;
+    dt.clear_depth = 1.0f;
+    dt.load_op = SDL_GPU_LOADOP_CLEAR;
+    dt.store_op = SDL_GPU_STOREOP_STORE;
+    dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+    dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    SDL_GPURenderPass* sp = SDL_BeginGPURenderPass(cmd, nullptr, 0, &dt);
+    SDL_BindGPUGraphicsPipeline(sp, enhShadowPipe);
+    struct SVU { float vp[16]; Mat4 model; float p[4]; };
+    for (int li = 0; li < n; ++li) {
+        const DLight& dl = dlights[size_t(li)];
+        const float nr = lightShadowNear, fr = std::max(dl.radius, nr * 2.0f);
+        std::vector<std::pair<const DrawItem*, int>> near; // items within the light's reach
+        for (const DrawItem& it : items) {
+            if (!it.model || it.effects || it.depthMax < 1.0f || !it.model->hasBounds) continue;
+            float mn[3], mx[3];
+            game::transformedBoxBounds(it.model->mins, it.model->maxs, it.transform.data(), mn, mx);
+            if (game::lightTouchesBox(dl.pos, dl.radius, mn, mx)) near.push_back({&it, 0});
+        }
+        for (int f = 0; f < 6; ++f) {
+            const game::CubeFace cf = game::cubeFace(f);
+            const float A = fr / (fr - nr), B = -fr * nr / (fr - nr);
+            auto d3 = [&](const float* v) { return v[0] * dl.pos[0] + v[1] * dl.pos[1] + v[2] * dl.pos[2]; };
+            SVU u{};
+            for (int k = 0; k < 3; ++k) {
+                u.vp[k * 4 + 0] = cf.right[k];
+                u.vp[k * 4 + 1] = cf.up[k];
+                u.vp[k * 4 + 2] = A * cf.fwd[k];
+                u.vp[k * 4 + 3] = cf.fwd[k];
+            }
+            u.vp[12] = -d3(cf.right), u.vp[13] = -d3(cf.up), u.vp[14] = -A * d3(cf.fwd) + B, u.vp[15] = -d3(cf.fwd);
+            const SDL_GPUViewport vp{float((f % 3) * S), float((f / 3 + 2 * li) * S), float(S), float(S), 0.0f, 1.0f};
+            SDL_SetGPUViewport(sp, &vp);
+            if (culledIndexBuf && size_t(li) < culledLightBatches.size()) {
+                const SDL_GPUBufferBinding vb{scene.vertices, 0};
+                SDL_BindGPUVertexBuffers(sp, 0, &vb, 1);
+                const SDL_GPUBufferBinding ib{culledIndexBuf, 0};
+                SDL_BindGPUIndexBuffer(sp, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                u.model = kIdentity;
+                for (const Batch& b : culledLightBatches[size_t(li)]) {
+                    if (!b.indexCount || (b.pass != Pass::Opaque && b.pass != Pass::AlphaTest)) continue;
+                    u.p[0] = b.pass == Pass::AlphaTest ? 1.0f : 0.0f;
+                    SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
+                    const SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
+                    SDL_BindGPUFragmentSamplers(sp, 0, &tb, 1);
+                    drawIndexed(sp, b.indexCount, 1, b.firstIndex, 0, 0);
+                }
+            }
+            for (const auto& [it, unused] : near) {
+                (void)unused;
+                const SDL_GPUBufferBinding vb{it->model->vertices, it->model->vertexOffset};
+                SDL_BindGPUVertexBuffers(sp, 0, &vb, 1);
+                const SDL_GPUBufferBinding ib{it->model->indices, 0};
+                SDL_BindGPUIndexBuffer(sp, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                u.model = it->transform;
+                for (const Batch& b : it->model->batches) {
+                    if ((b.pass != Pass::Opaque && b.pass != Pass::AlphaTest) || b.fxKind != 0 || !b.indexCount) continue;
+                    u.p[0] = b.pass == Pass::AlphaTest ? 1.0f : 0.0f;
+                    SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
+                    const SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
+                    SDL_BindGPUFragmentSamplers(sp, 0, &tb, 1);
+                    drawIndexed(sp, b.indexCount, 1, b.firstIndex, 0, 0);
+                }
+            }
+        }
+    }
+    SDL_EndGPURenderPass(sp);
+    lightShadowsNow = n;
+}
+
+// A copy of the sky cube with a mip chain (box-filtered), so rough surfaces reflect a blurred sky.
+void Renderer::ensureEnvCube(SDL_GPUCommandBuffer* cmd, const Scene& scene) {
+    if (envFor == scene.sky && (envCube || !scene.sky)) return;
+    if (envCube) SDL_ReleaseGPUTexture(dev, envCube), envCube = nullptr;
+    envFor = scene.sky;
+    if (!scene.sky || !enh.ggx) return;
+    // the sky's size is not kept with the texture: read it back from the image record at load (Scene::skySize)
+    const uint32_t size = scene.skySize;
+    if (size == 0) return;
+    envLevels = 1;
+    for (uint32_t s = size; s > 1; s /= 2) ++envLevels;
+    SDL_GPUTextureCreateInfo ti{};
+    ti.type = SDL_GPU_TEXTURETYPE_CUBE;
+    ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    ti.width = ti.height = size;
+    ti.layer_count_or_depth = 6;
+    ti.num_levels = uint32_t(envLevels);
+    envCube = SDL_CreateGPUTexture(dev, &ti);
+    if (!envCube) return;
+    for (uint32_t face = 0; face < 6; ++face) {
+        SDL_GPUBlitInfo bi{};
+        bi.source.texture = scene.sky;
+        bi.source.layer_or_depth_plane = face;
+        bi.source.w = bi.source.h = size;
+        bi.destination.texture = envCube;
+        bi.destination.layer_or_depth_plane = face;
+        bi.destination.w = bi.destination.h = size;
+        bi.load_op = SDL_GPU_LOADOP_DONT_CARE;
+        bi.filter = SDL_GPU_FILTER_NEAREST;
+        SDL_BlitGPUTexture(cmd, &bi);
+    }
+    SDL_GenerateMipmapsForGPUTexture(cmd, envCube);
 }
 
 void Renderer::enhPost(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam, bool floatzReady) {

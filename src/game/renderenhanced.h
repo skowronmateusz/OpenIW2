@@ -80,6 +80,11 @@ struct EnhancedSettings {
     float aoStrength = 0.7f; // r_enhAOStrength (0..1)
     bool contactShadows = true; // r_enhContactShadows: short screen-space rays towards the sun
     bool taa = true;         // r_enhTAA: temporal anti-aliasing (jittered projection, motion vectors, history clamp)
+    bool ggx = true;         // r_enhGGX: GGX sun specular and reflections from the spec / gloss maps
+    float specScale = 1.0f;  // r_enhSpecScale (0..4)
+    float envScale = 0.35f;  // r_enhEnvScale: strength of the sky / screen-space reflections (0..2)
+    bool ssr = true;         // r_enhSSR: screen-space reflections (needs TAA's history)
+    bool lightShadows = true; // r_enhLightShadows: shadows of the dynamic (effect) lights, up to 4 lights
     bool gridPerPixel = true; // r_enhGridPerPixel: light-grid lattice per model instead of one sample
     int motionDebug = 0;     // r_enhMotionDebug: 1 shows the motion vectors, 2 the AO (red) / contact shadow (green) image
     float bloomIntensity = 0.06f; // r_enhBloomIntensity
@@ -100,7 +105,7 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     s.enabled = num("r_enhanced", f) && f != 0.0f;
     if (num("r_enhPreset", f)) s.preset = std::clamp(int(f), 0, 2);
     switch (s.preset) {
-        case 0: s.sunShadows = 1, s.worldShadows = 0, s.bloom = true, s.autoExposure = false, s.gridPerPixel = true, s.ao = false, s.contactShadows = false, s.taa = false; break;
+        case 0: s.sunShadows = 1, s.worldShadows = 0, s.bloom = true, s.autoExposure = false, s.gridPerPixel = true, s.ao = false, s.contactShadows = false, s.taa = false, s.ssr = false, s.lightShadows = false; break;
         case 2: s.sunShadows = 3, s.worldShadows = 2, s.bloom = true, s.autoExposure = true, s.gridPerPixel = true; break;
         default: break;
     }
@@ -115,6 +120,11 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhAOStrength", f)) s.aoStrength = std::clamp(f, 0.0f, 1.0f);
     if (num("r_enhContactShadows", f)) s.contactShadows = f != 0.0f;
     if (num("r_enhTAA", f)) s.taa = f != 0.0f;
+    if (num("r_enhGGX", f)) s.ggx = f != 0.0f;
+    if (num("r_enhSpecScale", f)) s.specScale = std::clamp(f, 0.0f, 4.0f);
+    if (num("r_enhEnvScale", f)) s.envScale = std::clamp(f, 0.0f, 2.0f);
+    if (num("r_enhSSR", f)) s.ssr = f != 0.0f;
+    if (num("r_enhLightShadows", f)) s.lightShadows = f != 0.0f;
     if (num("r_enhMotionDebug", f)) s.motionDebug = std::clamp(int(f), 0, 2);
     if (num("r_enhBloomIntensity", f)) s.bloomIntensity = std::clamp(f, 0.0f, 1.0f);
     if (num("r_enhExposureBias", f)) s.exposureBias = std::clamp(f, -2.0f, 2.0f);
@@ -300,6 +310,44 @@ inline float gtaoSliceVisibility(float n, float h0, float h1) {
     const float b = -std::cos(2.0f * h1 - n) + cn + 2.0f * h1 * sn;
     return 0.25f * (a + b);
 }
+
+// ---- materials ------------------------------------------------------------------------------------------------------------------
+
+// The Phong exponent of a specular map alpha (the $specularity column it selects: t = (32 a - 0.5) / 30, P = ln 0.1 / ln cos((180 - 175 t)
+// / 4 degrees)) and the GGX alpha of the Blinn-Phong match alpha = sqrt(2 / (P + 2)), clamped to [0.03, 1]. The shaders use the same.
+inline float phongPowerOfSpecAlpha(float a) {
+    const float t = std::clamp((a * 32.0f - 0.5f) / 30.0f, 0.0f, 1.0f);
+    return std::log(0.1f) / std::log(std::cos((180.0f - 175.0f * t) * 3.14159265f / 720.0f));
+}
+inline float ggxAlphaOfPower(float p) { return std::clamp(std::sqrt(2.0f / (p + 2.0f)), 0.03f, 1.0f); }
+
+// ---- point light shadows ---------------------------------------------------------------------------------------------------------
+
+// The six faces of a point light's shadow: face f looks along +X, -X, +Y, -Y, +Z, -Z; its right / up axes are our own fixed choice
+// (the shader picks the face by the major axis of the light-to-point vector and projects with the same axes). Tile (f % 3, f / 3).
+struct CubeFace { float fwd[3], right[3], up[3]; };
+inline CubeFace cubeFace(int f) {
+    CubeFace c{};
+    const int axis = f / 2;
+    const float sgn = (f & 1) ? -1.0f : 1.0f;
+    c.fwd[axis] = sgn;
+    float up[3] = {0, 0, 1};
+    if (axis == 2) up[0] = 1, up[2] = 0;
+    // right = fwd x up
+    c.right[0] = c.fwd[1] * up[2] - c.fwd[2] * up[1];
+    c.right[1] = c.fwd[2] * up[0] - c.fwd[0] * up[2];
+    c.right[2] = c.fwd[0] * up[1] - c.fwd[1] * up[0];
+    for (int k = 0; k < 3; ++k) c.up[k] = up[k];
+    return c;
+}
+inline int cubeFaceOf(const float v[3]) {
+    const float ax = std::fabs(v[0]), ay = std::fabs(v[1]), az = std::fabs(v[2]);
+    if (ax >= ay && ax >= az) return v[0] >= 0.0f ? 0 : 1;
+    if (ay >= az) return v[1] >= 0.0f ? 2 : 3;
+    return v[2] >= 0.0f ? 4 : 5;
+}
+// Depth (0..1) of a point at distance d along a face's forward axis, for near n and far f.
+inline float cubeFaceDepth(float d, float n, float f) { return f / (f - n) - f * n / ((f - n) * d); }
 
 // ---- temporal anti-aliasing ------------------------------------------------------------------------------------------------------
 
