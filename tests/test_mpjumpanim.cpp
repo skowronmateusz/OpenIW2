@@ -5,6 +5,7 @@
 // Needs the game files (IW2_MAIN) for all but the rate clamps.
 #include "assets/d3dbsp.h"
 #include "fs/vfs.h"
+#include "game/clientinput.h"
 #include "game/collision.h"
 #include "game/mpplayers.h"
 #include "game/playeranimscript.h"
@@ -19,6 +20,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -88,7 +90,7 @@ void pmoveTests(const fs::Vfs& vfs) {
     for (const float fwd : {0.0f, -1.0f}) {
         game::PlayerState p;
         settle(p);
-        CHECK(p.onGround && p.animEvent == 0);
+        CHECK(p.onGround && p.animEventSeq == 0);
         game::PlayerInput in;
         in.jump = true;
         in.forward = fwd;
@@ -97,13 +99,14 @@ void pmoveTests(const fs::Vfs& vfs) {
         CHECK(!p.onGround && p.animEvent == (fwd < 0 ? 4 : 3) && p.animEventForced && p.animEventSeq == seq + 1);
         // The next move adds nothing in the air; then the landing (a jump falls about 39 units, above 12).
         game::playerMove(cw, p, {}, 0.05f);
-        CHECK(p.animEvent == 0);
+        CHECK(p.animEventSeq == seq + 1);
         int land = 0;
         for (int i = 0; i < 40 && !p.onGround; ++i) {
+            const int before = p.animEventSeq;
             game::playerMove(cw, p, {}, 0.05f);
-            if (p.animEvent == 5 && p.animEventForced) ++land;
+            if (p.animEventSeq != before && p.animEvent == 5 && p.animEventForced) ++land;
         }
-        CHECK(p.onGround && land == 1);
+        CHECK(p.onGround && land == 1 && p.animEventSeq == seq + 2);
     }
     // A fall of 8 units lands without the land animation; one of 40 with it.
     for (const float h : {8.0f, 40.0f}) {
@@ -113,8 +116,9 @@ void pmoveTests(const fs::Vfs& vfs) {
         p.onGround = false;
         bool land = false;
         for (int i = 0; i < 40 && !(i > 0 && p.onGround); ++i) {
+            const int before = p.animEventSeq;
             game::playerMove(cw, p, {}, 0.05f);
-            land |= p.animEvent == 5;
+            land |= p.animEventSeq != before && p.animEvent == 5;
         }
         CHECK(land == (h > 12.0f));
     }
@@ -123,9 +127,10 @@ void pmoveTests(const fs::Vfs& vfs) {
         game::PlayerState p;
         settle(p);
         p.origin[2] += h; // still flagged on the ground
+        const int before = p.animEventSeq;
         game::playerMove(cw, p, {}, 0.05f);
         CHECK(!p.onGround);
-        CHECK((p.animEvent == 3 && p.animEventForced) == (h > 64.0f));
+        CHECK((p.animEventSeq == before + 1 && p.animEvent == 3 && p.animEventForced) == (h > 64.0f));
     }
     // The recorded view state carries them.
     {
@@ -310,6 +315,72 @@ void worldTests(const fs::Vfs& vfs) {
     CHECK(host.vm().errors().empty() && view.vm().errors().empty());
 }
 
+// A network client jumps with its usercmds (WorldGame::clientThink): the server's move adds the jump event, the other
+// client's snapshot carries the takeoff with the toggle bit while it is in the air, and 0 again after the landing.
+void netJumpTests(const fs::Vfs& vfs) {
+    World host(vfs, "mp_toujane", true);
+    host.vm().setLoopGuardIterations(200000u);
+    host.cvars["mapname"] = "mp_toujane";
+    host.cvars["scr_dm_timelimit"] = "0";
+    host.mpStart("dm");
+    const int local = host.mpConnect("host");
+    host.mpBegin(local);
+    host.frame();
+    host.mpAutoJoin(local);
+    netgame::WorldGame game(&host, "mp_toujane", "dm", 7, 8);
+    game.worldOwnedByHost = true;
+    CHECK(game.clientConnect(1, "\\name\\watcher"));
+    CHECK(game.clientConnect(2, "\\name\\jumper"));
+    const int watcher = game.clientNumber(1), jumper = game.clientNumber(2);
+    for (const int c : {watcher, jumper}) {
+        host.mpBegin(c);
+        host.frame();
+        host.mpAutoJoin(c);
+    }
+    int t = int(host.timeMs());
+    auto think = [&](bool jump) {
+        net::UserCmd cmd;
+        t += 50;
+        cmd.serverTime = t;
+        cmd.buttons = jump ? int32_t(game::Button::Jump) : 0;
+        game.clientThink(2, cmd);
+        host.frame();
+    };
+    for (int i = 0; i < 40; ++i) think(false); // spawned and settled
+    const game::MpClient& cl = host.mpState().clients[size_t(jumper)];
+    CHECK(cl.ent && cl.ent->anim && cl.ent->obj->get("sessionstate").toString() == "playing");
+    if (!cl.ent || !cl.ent->anim) return;
+    const game::AnimTree& tree = cl.ent->anim->tree();
+    auto wire = [&]() {
+        const net::SnapshotView v = game.snapshot(1);
+        const auto it = v.entities.find(jumper);
+        return it == v.entities.end() ? -1 : getI(it->second, 204) & 1023;
+    };
+    CHECK(wire() == 0);
+    think(true);
+    const int w1 = wire();
+    const std::string name = (w1 & 0x1ff) > 0 && size_t(w1 & 0x1ff) < tree.nodes().size() ? tree.nodes()[size_t(w1 & 0x1ff)].name : "-";
+    std::cout << "network jump: legsAnim " << w1 << " (" << name << ")\n";
+    CHECK(name.find("jump_takeoff") != std::string::npos && (w1 & 0x200) != 0);
+    int held = 0, last = w1;
+    std::vector<int> after; // the values that follow the takeoff
+    for (int i = 0; i < 40; ++i) {
+        think(false);
+        const int w = wire();
+        if (w == w1 && after.empty()) ++held;
+        else if (w != last) after.push_back(w);
+        last = w;
+    }
+    std::cout << "network jump: takeoff held " << held << " frames, then";
+    for (int w : after) std::cout << " " << w << " (" << ((w & 0x1ff) > 0 ? tree.nodes()[size_t(w & 0x1ff)].name : "-") << ")";
+    std::cout << "\n";
+    // In the air the takeoff stays; the landing (about 39 units, above 12) sends the land animation with the toggle bit
+    // changed, then the move type is chosen again (0).
+    CHECK(held >= 5 && after.size() == 2 && tree.nodes()[size_t(after[0] & 0x1ff)].name.find("jump_land") != std::string::npos &&
+          ((after[0] ^ w1) & 0x200) != 0 && after[1] == 0);
+    CHECK(host.vm().errors().empty());
+}
+
 // A client on a map turret (docs/spec/mp-players.md "On a turret"): the mounted items of the move type (aim, fire while
 // the attack is held), the turret pose of their blend node, no weapon in the hands; the watcher's puppet the same from
 // the entity state (eFlags 0x300, otherEntityNum).
@@ -419,6 +490,7 @@ int main() {
         vfs.mountDirectory(main);
         pmoveTests(vfs);
         worldTests(vfs);
+        netJumpTests(vfs);
         turretTests(vfs);
     } else {
         std::cout << "IW2_MAIN not set, world part skipped\n";

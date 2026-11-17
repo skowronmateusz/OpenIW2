@@ -256,9 +256,10 @@ namespace {
 // landings"): kept for the third-person animation driver.
 constexpr int kAnimEventJump = 3, kAnimEventJumpBack = 4, kAnimEventLand = 5;
 void addAnimEvent(PlayerState& ps, int event, bool forced) {
-    if (ps.animEvent != 0 && ps.animEventForced && !forced) return;
+    if (!forced && ps.animEventForced && ps.animEventTimeMs == ps.timeMs) return;
     ps.animEvent = event;
     ps.animEventForced = forced;
+    ps.animEventTimeMs = ps.timeMs;
     ++ps.animEventSeq;
 }
 } // namespace
@@ -1771,8 +1772,6 @@ float mantleClampYaw(const PlayerState& ps, float yaw) {
 
 void playerMove(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, float dt, const MoveParams& mp) {
     ps.stanceEvent = -1;
-    ps.animEvent = 0;
-    ps.animEventForced = false;
     // Pmove (0x50cc10) runs steps of at most 66 ms; PmoveSingle (0x50c4a0) clamps a step to 1..200 ms.
     int ms = std::max(1, int(std::lround(dt * 1000.0f)));
     while (ms > 0) {

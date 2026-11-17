@@ -199,10 +199,10 @@ forced (docs/spec/mp-players.md "Events"):
 These calls happen inside the move, before the footsteps step chooses the move type, so the items' `movetype`
 conditions see the move type of the previous step. The `jump` items play their takeoff animation with `duration 5`
 (`playeranim.script:1127-1173`): the legs hold ends at once, and what keeps the takeoff on the legs is the airborne
-hold of the footsteps step until the landing. openiw2: the movement keeps the strongest event of each move in the player
-state (`PlayerState::animEvent`; a later forced event replaces an earlier one, an unforced one does not replace a
-forced one) with a sequence number; the recorded view state carries it to the animation driver, which plays it before
-the move type with the previous move type.
+hold of the footsteps step until the landing. openiw2: the movement keeps the last event in the player
+state (`PlayerState::animEvent`; an unforced one does not replace a forced one of the same step) with a count of the
+events added; the recorded view state carries them, the animation driver takes an event when the count changed (so a
+command the server runs in pieces loses nothing) and plays it before the move type with the previous move type.
 
 ## Animation rate from the movement
 

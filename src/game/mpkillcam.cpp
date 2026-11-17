@@ -85,13 +85,12 @@ void World::mpSetViewState(int client, const MpViewState& v) {
     MpClient& cl = mp_->clients[size_t(client)];
     cl.view = v;
     // The movement's ground state and legs event for the third-person animation (docs/spec/mp-players.md "Jumps and
-    // landings"): an event is kept until the driver plays it; a later forced one replaces it, an unforced one does not
-    // replace a forced one.
+    // landings"): a new event (the movement's count changed) is kept until the driver plays it, replacing an older one.
     MpPlayerInput& in = cl.animInput;
     in.onGround = v.onGround ? 1 : 0;
     if (v.animEventSeq != in.animEventSeq) {
         in.animEventSeq = v.animEventSeq;
-        if (v.animEvent != 0 && (v.animEventForced || !in.legsEventForced || in.legsEvent == 0)) {
+        if (v.animEvent != 0) {
             in.legsEvent = v.animEvent;
             in.legsEventForced = v.animEventForced;
         }
