@@ -439,14 +439,23 @@ void World::mpFastRestart() {
         if (clients[i].state == MpClientState::Active) mpBegin(int(i));
     bots_ = bots; // after the reconnect: the bot frame drops bots whose slot is free
     if (bots_ && bots_->nav) paths_ = bots_->nav->toPathGraph();
-    if (bots_)
+    if (bots_) {
+        // The restarted map has new entities: what the bots know of its turrets and items is gathered again.
+        bots_->turrets.clear();
+        bots_->turretsBuilt = false;
+        bots_->items.clear();
+        bots_->itemsMs = -100000;
+        bots_->smokes.clear();
         for (MpBot& b : bots_->bots) {
             const int skill = b.skill, client = b.client;
+            const BotTrait trait = b.trait;
             b = MpBot{};
             b.client = client;
             b.skill = skill;
+            b.trait = trait;
             b.joinStep = 2; // the gametype puts a client that already has a team back in the game itself
         }
+    }
 }
 
 } // namespace iw2::game

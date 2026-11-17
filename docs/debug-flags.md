@@ -211,7 +211,14 @@ and test_savestate, whose scripts print with `println` and set developer_script 
   on macOS, `$XDG_CACHE_HOME/openiw2/nav` or `~/.cache/openiw2/nav` elsewhere; delete a `<map>.nav` to regenerate it).
   ctest `mpbots_iw2game` runs two veteran bots on mp_toujane.
 - `test_mpbotcombat` (docs/spec/mp-bots.md "Combat behaviour"): without arguments the fights per skill on mp_toujane
-  (shots, hits, kills, grenades), the pistol switch and hearing; `perf <map>` runs 15 bots for 60 s and prints the
+  (shots, hits, kills, grenades), the pistol switch and hearing; `behaviour` runs the scenarios of the humanlike
+  behaviour (ammunition, melee, weapons from the ground, turrets, perception, aim, grenades, cover, smoke; ctest
+  `mpbotbehaviour`); `stats <map> <gametype> <bots> <skill> <seconds> [scripted]` is the measurement run of
+  docs/spec/mp-bots.md "Measurement" (kills, hit rate, time defenceless, pickups, turret use, stuck counts, frame
+  cost; `scripted` adds the scripted player; env `IW2_BOT_CLASS=sniper` (or another class) gives every bot a weapon of
+  that class); env `IW2_BOT_AMMODBG=1` prints every change of a bot between having and not having something to fight
+  with (weapons, clips, weapon state); `IW2_BOT_STUCKDBG=1` also prints every 5 s stall of a walking bot and the map's
+  turret table as the bots know it. `perf <map>` runs 15 bots for 60 s and prints the
   frame cost and the most A* plans in a frame; `soak <map>` runs 8 bots for `IW2_BOT_SOAK_SECONDS` game seconds (default
   60; 300 for the five-minute check) and fails when a bot stood still for a minute (ctest `mpbotsoak_<map>` per map);
   `probe <map> x y z x2 y2 z2` prints box traces between two points at four heights. Env `IW2_BOT_STUCKDBG=1` prints

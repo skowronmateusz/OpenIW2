@@ -292,7 +292,17 @@ int main() {
             bots.push_back(w.mpAddBot());
             run(w, 1);
         }
-        run(w, 20 * 140);
+        // The bots see what their screens show and hear what a player would, so a silent player standing at its spawn is
+        // met only by chance (the first controller's veterans saw all around). This one fires a shot into the air every
+        // five seconds: the bots hear it, come and find it.
+        for (int f = 0; f < 20 * 200; ++f) {
+            Entity* pe = w.mpClientEntity(c0);
+            if (f % 100 == 50 && pe && field(pe, "sessionstate") == "playing") {
+                const auto o = originOf(pe);
+                w.clientFire(*pe, {o[0], o[1], o[2] + 60}, {0, 0, 1});
+            }
+            w.frame();
+        }
         // The dead respawn: at some moment of the last 10 s at least two clients are playing (a snapshot at one frame
         // can fall on two deaths in a row).
         int playingMax = 0;

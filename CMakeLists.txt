@@ -107,7 +107,7 @@ add_library(iw2_game
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/actorslide.cpp
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp src/game/grenadehint.cpp
   src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/spawnchecks.cpp src/game/softlock.cpp src/game/firemonitor.cpp src/game/inventorydiff.cpp src/game/grenades.cpp src/game/actorgrenade.cpp src/game/actorevents.cpp
-  src/game/mpgame.cpp src/game/mpkillcam.cpp src/game/maprotation.cpp src/game/mphud.cpp src/game/mpchat.cpp src/game/mpscoreboard.cpp src/game/mpspectate.cpp src/game/mpgametypes.cpp src/game/mpbots.cpp src/game/mpbotcombat.cpp src/game/mpbotgoals.cpp src/game/mpplayers.cpp src/game/playeranimscript.cpp src/game/navgen.cpp src/game/watersim.cpp src/game/clientinput.cpp src/game/profilekeys.cpp src/game/playeractions.cpp src/game/playeruse.cpp
+  src/game/mpgame.cpp src/game/mpkillcam.cpp src/game/maprotation.cpp src/game/mphud.cpp src/game/mpchat.cpp src/game/mpscoreboard.cpp src/game/mpspectate.cpp src/game/mpgametypes.cpp src/game/mpbots.cpp src/game/mpbotcombat.cpp src/game/mpbotgoals.cpp src/game/mpbotitems.cpp src/game/mpbotturret.cpp src/game/mpbotsense.cpp src/game/mpbotaim.cpp src/game/mpplayers.cpp src/game/playeranimscript.cpp src/game/navgen.cpp src/game/watersim.cpp src/game/clientinput.cpp src/game/profilekeys.cpp src/game/playeractions.cpp src/game/playeruse.cpp
   src/game/mpremote.cpp src/game/prone.cpp src/game/proneworld.cpp src/game/savestate.cpp src/game/actorfacing.cpp src/game/actorpredict.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets iw2_ui ZLIB::ZLIB)
@@ -1075,6 +1075,8 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set(_botenv "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache")
   add_test(NAME mpbotcombat COMMAND test_mpbotcombat)
   set_tests_properties(mpbotcombat PROPERTIES ENVIRONMENT "${_botenv}" TIMEOUT 900)
+  add_test(NAME mpbotbehaviour COMMAND test_mpbotcombat behaviour)
+  set_tests_properties(mpbotbehaviour PROPERTIES ENVIRONMENT "${_botenv}" TIMEOUT 900)
   add_test(NAME mpbotcombat_weapons COMMAND test_mpbotcombat weapons)
   set_tests_properties(mpbotcombat_weapons PROPERTIES ENVIRONMENT "${_botenv}" TIMEOUT 900)
   add_test(NAME mpbotcombat_perf COMMAND test_mpbotcombat perf mp_decoy)

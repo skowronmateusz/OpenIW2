@@ -74,6 +74,12 @@ void fights(iw2::fs::Vfs& vfs, const char* map, int nbots, int seconds, Totals& 
     int64_t prevShown = -1;
     float maxTurn = 0;
     for (int i = 0; i < 20 * seconds; ++i) {
+        // The standing victim fires a shot into the air every five seconds: the bots see only what their screens show, so
+        // a silent one is met by chance; this one they hear and come for.
+        if (i % 100 == 50 && p->obj->get("sessionstate").toString() == "playing") {
+            const auto o = p->obj->get("origin").asVector();
+            w.clientFire(*p, {o[0], o[1], o[2] + 60}, {0, 0, 1});
+        }
         w.frame();
         if (p->obj->get("sessionstate").toString() == "dead") { // after the killcam: respawn (a use press)
             World::PlayerCommand c;
@@ -182,8 +188,8 @@ void fights(iw2::fs::Vfs& vfs, const char* map, int nbots, int seconds, Totals& 
               << maxTurn << " deg\n";
     CHECK(bodyFrames == victimFrames);
     CHECK(lateShots == 0);
-    // No view snap: a bot turns at most its turn rate per frame (the veteran's 450 deg/s is 22.5 per frame) plus the
-    // shot's correction of up to 8 degrees in the frame it fires, on ladders too.
+    // No view snap: a bot steers its view at most at its turn rate (the veteran's 480 deg/s is 24 per frame); on top of
+    // that come the hand's error and the view kick of its shots, a few degrees a frame; on ladders too.
     CHECK(maxTurn <= 30.51f);
     tot.killcams += killcams, tot.frames += frames, tot.prevFrames += prevFrames, tot.victimFrames += victimFrames;
     tot.bodyFrames += bodyFrames, tot.shots += shots, tot.lateShots += lateShots, tot.maxTurn = std::max(tot.maxTurn, maxTurn);
@@ -236,7 +242,9 @@ int main() {
     vfs.mountDirectory(main);
     ladders(vfs);
     Totals tot;
-    fights(vfs, "mp_toujane", 7, 400, tot);
+    // 600 s, with a victim that is heard (fights): the first controller's veterans saw all around and found a silent
+    // one often enough in 400 s.
+    fights(vfs, "mp_toujane", 7, 600, tot);
     // TODO: a second map; the standing victim is rarely found on the larger maps (carentan, dawnville) within 10 minutes.
     CHECK(tot.killcams >= 3 && tot.frames > 300 && tot.prevFrames > 300);
     std::cout << "own body after death: " << gBodyFrames << " frames, drawn " << gBodyDrawn << "\n";

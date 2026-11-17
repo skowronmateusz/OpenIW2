@@ -54,6 +54,7 @@ void combat(iw2::fs::Vfs& vfs, const char* map, int nbots, int seconds) {
     std::string prev = field(p, "sessionstate");
     int64_t killMs = -1, lastFrameMs = -1;
     int killer = -1, deaths = 0, killFrames = 0, lastMod = -1, killMod = -1;
+    bool turretKill = false;
     iw2::script::Vec3 victimEye{};
     for (int i = 0; i < 20 * seconds; ++i) {
         run(w, 1);
@@ -65,6 +66,7 @@ void combat(iw2::fs::Vfs& vfs, const char* map, int nbots, int seconds) {
             victimEye = p->obj->get("origin").asVector();
             killer = p->lastAttacker ? p->lastAttacker->number : -1;
             killMod = lastMod;
+            turretKill = killer >= 0 && w.mpClientOnTurret(w.mpClientOfNumber(killer)); // the killer sits behind a mounted machine gun
             lastFrameMs = -1;
             ++deaths;
         }
@@ -75,8 +77,9 @@ void combat(iw2::fs::Vfs& vfs, const char* map, int nbots, int seconds) {
             lastFrameMs = v.frameTimeMs;
             // The killer's player state is the HUD's: its weapon and rounds; a shot shows as a fire age.
             CHECK(!v.weapon.empty() && v.client >= 0 && v.maxHealth > 0);
-            // A bullet kill (MOD_PISTOL_BULLET, MOD_RIFLE_BULLET, MOD_HEAD_SHOT): a grenade has no shot to replay.
-            if (v.frameTimeMs == killMs && (killMod == 1 || killMod == 2 || killMod == 8)) {
+            // A bullet kill (MOD_PISTOL_BULLET, MOD_RIFLE_BULLET, MOD_HEAD_SHOT): a grenade has no shot to replay. Nor has
+            // a kill with a mounted machine gun (bots use them): the turret fired, not the killer's hand weapon.
+            if (v.frameTimeMs == killMs && (killMod == 1 || killMod == 2 || killMod == 8) && !turretKill) {
                 // The killing shot is in the replayed frames: a recent fire age and its fire sound archived with the frame.
                 CHECK(v.fireAgeMs >= 0 && v.fireAgeMs < 1000);
                 bool sound = false;

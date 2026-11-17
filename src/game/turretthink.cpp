@@ -316,6 +316,12 @@ void World::shootTurret(Entity& t) {
     // The damage attacker is the turret's user, or the world without one (0x51ada0 → 0x5312b0).
     Entity* user = ts.inUse && ts.owner ? entityOf(Value(ts.owner)) : nullptr;
     fireBullet(t, muzzle, add(muzzle, scale(sd, 8192.0f)), weaponDamage(ts.weapon), user, ts.weapon);
+    // A client's turret fire is heard by the bots as its own shots are (docs/spec/mp-bots.md "Hearing").
+    if (mp_ && user && user->isPlayer)
+        if (const int cl = mpClientOf(*user); cl >= 0) {
+            mp_->clients[size_t(cl)].lastShotMs = timeMs_;
+            mp_->clients[size_t(cl)].lastShotPos = muzzle;
+        }
     // EV_FIRE_WEAPON_MG42 (0xaf, sent at 0x51afc1) → cgame 0x4b7800: for an entity that is not the local client
     // the muzzle flash 0x4b6660 plays the weapon's worldFlashEffect (0xf48e48) at the model's tag_flash; fireSound
     // (empty for the MG42s) plays too. The event also shakes the view (0x4bf5e0 with scale 0.05, 100 ms, radius 100 at the entity origin, ViewShake). The effect is bolted on tag_flash of the turret entity.

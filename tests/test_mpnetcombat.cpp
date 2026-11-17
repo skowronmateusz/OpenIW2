@@ -122,8 +122,9 @@ struct Game {
             for (int k = 0; k < 2; ++k) cmds[i].angles[k] = (cmds[i].angles[k] - f.deltaAngles[k]) & 0xffff;
         }
     }
-    // Moves a player next to `target` where the line between them is clear (the movement restarts there).
-    bool placeNear(Entity* p, Entity* target, float dist) {
+    // Moves a player next to `target` where the line between them is clear (the movement restarts there); with `face`
+    // it looks at the target (a bot sees only what is in its view).
+    bool placeNear(Entity* p, Entity* target, float dist, bool face = false) {
         if (!p || !target) return false;
         const game::Vec3 t = origin(target);
         for (int k = 0; k < 16; ++k) {
@@ -133,6 +134,7 @@ struct Game {
                                                    game::Contents::PlayerClipMask, target->number);
             if (tr.fraction < 1 || tr.startSolid) continue;
             p->obj->set("origin", Value(c));
+            if (face) p->obj->set("angles", Value(game::Vec3{0.0f, std::atan2(t[1] - c[1], t[0] - c[0]) * 180.0f / float(M_PI), 0.0f}));
             return true;
         }
         return false;
@@ -552,7 +554,7 @@ void dm(fs::Vfs& vfs) {
     bool botKill = false;
     for (int i = 0; i < 1200 && !botKill; ++i) {
         if (i % 40 == 0 && field(g.host.mpClientEntity(b), "sessionstate") == "playing")
-            g.placeNear(g.host.mpClientEntity(bot2), g.host.mpClientEntity(b), 150);
+            g.placeNear(g.host.mpClientEntity(bot2), g.host.mpClientEntity(b), 150, true);
         g.frame();
         botKill = g.obituary(b, bot2);
     }

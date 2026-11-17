@@ -49,6 +49,11 @@ struct MpBot;
 struct MpBotStats;
 struct BotStall;
 struct BotObjective;
+struct BotItemWant;
+struct BotTurret;
+struct BotView;
+struct BotAimNoiseIn;
+struct BotWeaponInfo;
 
 class ClientInput;
 
@@ -563,6 +568,10 @@ public:
     const std::vector<BotStall>& mpBotStalls() const; // finished "wants to walk, stays on the spot" spells
     int64_t mpBotWalkMs() const;                      // time all bots together wanted to walk
     MpBot* mpBot(int client); // test / debug: the bot controller of a client, nullptr for a non-bot
+    const std::vector<BotTurret>& mpBotTurrets(); // the map's turrets as the bots know them (built on the first call)
+    void mpBotSmoke(const Vec3& at); // a smoke grenade went off there: its cloud hides what is behind it from the bots
+    Vec3 mpBotAimPoint(MpBot& b, Entity& enemy); // the point of the seen enemy's body the bot aims at (src/game/mpbotaim.cpp)
+    int mpBotFindCover(const Vec3& from, const Vec3& threatEye, int selfEntity); // a graph node near `from` the threat does not see (-1 none)
     void mpBotSetSkill(int client, int skill);
     // The bot controller's cost of the last frame and the most A* plans run in one frame (docs/spec/mp-bots.md "Cost limits").
     struct MpBotCost { double lastUs = 0, maxUs = 0, meanUs = 0; int maxPlans = 0; int64_t frames = 0; };
@@ -2088,6 +2097,29 @@ private:
     void mpBotsFrame();
     void mpBotFrame(MpBot& b); // one bot's controller step (src/game/mpbots.cpp)
     void mpBotMeasureStall(MpBot& b, bool wantsWalk, float step, const std::array<float, 2>& dir);
+    void mpBotMeasure(MpBot& b, Entity& self, bool fighting);
+    void mpBotRefreshItems(); // src/game/mpbotitems.cpp
+    BotItemWant mpBotItemWant(Entity& self, const std::string& weapon);
+    bool mpBotItemDetour(MpBot& b, Entity& self, const Vec3& eye, bool busy, bool unarmed, BotObjective& obj);
+    bool mpBotItemUse(MpBot& b, Entity& self, std::string& weaponName);
+    void mpBotIgnoreItems(MpBot& b, const Vec3& at, int ms);
+    void mpBotDetourStuck(MpBot& b); // a detour the bot makes no way to: given up
+    bool mpBotCoverDetour(MpBot& b, Entity& self, bool enemyVisible, float enemyDist, bool emptyClip, bool reloading, BotObjective& obj);
+    void mpBotCommand(MpBot& b);
+    const BotWeaponInfo& mpBotWeaponInfo(const std::string& weapon); // src/game/mpbotaim.cpp
+    Entity* mpBotSense(MpBot& b, Entity& self, const Vec3& eye, const std::string& weaponName); // src/game/mpbotsense.cpp
+    BotView mpBotView(const MpBot& b, const std::string& weaponName, float& fov43);
+    bool mpBotSmokeBlocks(const Vec3& a, const Vec3& b) const;
+    void mpBotAlert(MpBot& b, int entity, const Vec3& believed, int delayMs, int urgency);
+    void mpBotBuildTurrets(); // src/game/mpbotturret.cpp
+    bool mpBotTurretDetour(MpBot& b, Entity& self, const Vec3& eye, bool engage, bool unarmed, BotObjective& obj);
+    void mpBotTurretFrame(MpBot& b, Entity& self, Entity* enemy, const Vec3& eye);
+    void mpBotTurretDamaged(MpBot& b, const Vec3& from);
+    void mpBotTurnView(MpBot& b, float wantYaw, float wantPitch, bool tracking);
+    void mpBotAimAt(MpBot& b, Entity& enemy, const Vec3& eye, float& wantYaw, float& wantPitch, const BotAimNoiseIn& noiseIn);
+    void mpBotAimNoise(MpBot& b, const BotAimNoiseIn& noiseIn, float scale);
+    void mpBotFireShot(MpBot& b, Entity& self, const Vec3& eye, const std::string& weapon, bool lastShot);
+    void mpBotKickStep(MpBot& b, const std::string& weapon, bool hasWeapon);
     // Combat helpers (src/game/mpbotcombat.cpp)
     void mpBotOnDamage(Entity& target, Entity* attacker, const std::string& mod, bool died);
     bool mpBotGrenade(MpBot& b, Entity& self, const Vec3& eye, bool smoke, const Vec3& target);

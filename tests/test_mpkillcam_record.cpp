@@ -166,8 +166,10 @@ void run(fs::Vfs& vfs) {
 
     // --- 1. The throw through the offhand states. ---
     const int clipBefore = g.host.inventory(*be).clip[field(g.host, frag, "clipName")];
+    // A throw the test asks for: the view angles of the throw (the grenade leaves along the bot's view as a player's).
     const std::array<float, 3> vel{300.0f, 100.0f, 400.0f};
-    b->throwPending = {true, false, frag, vel};
+    const float throwYaw = b->yaw + 20.0f, throwPitch = -25.0f;
+    b->throwPending = {true, false, frag, vel, throwYaw, throwPitch, g.host.timeMs()};
     int prepareFrames = 0, throwFrames = 0, holdFrames = 0;
     bool sawPrep = false, sawUse = false;
     std::string prepAnim, throwAnim, prepViewWeapon;
@@ -201,7 +203,14 @@ void run(fs::Vfs& vfs) {
     CHECK(gren != nullptr);
     if (gren) {
         CHECK(gren->grenade->weapon == frag);
-        CHECK(near3(gren->grenade->trDelta, {vel[0], vel[1], vel[2]}, 0.01f));
+        // The grenade left along the bot's view at the throw (docs/spec/mp-bots.md "Grenades"): the view had turned to the
+        // throw's angles, so its direction is within a few degrees of them, and upwards.
+        const auto& d = gren->grenade->trDelta;
+        float dyaw = std::atan2(d[1], d[0]) * 180.0f / float(M_PI) - throwYaw;
+        dyaw = std::remainder(dyaw, 360.0f);
+        std::cout << "grenade velocity " << d[0] << " " << d[1] << " " << d[2] << ", " << dyaw << " deg off the throw's yaw\n";
+        CHECK(std::fabs(dyaw) < 6.0f);
+        CHECK(d[2] > 100.0f);
     }
     CHECK(!b->throwPending.valid);
     CHECK(g.host.inventory(*be).clip[field(g.host, frag, "clipName")] == clipBefore - 1);
@@ -211,7 +220,7 @@ void run(fs::Vfs& vfs) {
     // --- 2. The network killcam equals the local killcam view of the same archived frame. ---
     // Another throw during the archived window, so the replay carries offhand states and the view weapon switch.
     for (int i = 0; i < 20; ++i) g.step();
-    b->throwPending = {true, false, frag, vel};
+    b->throwPending = {true, false, frag, vel, throwYaw, throwPitch, g.host.timeMs()};
     for (int i = 0; i < 40; ++i) g.step();
     // The host's local killcam view of alpha's follow (what the server's own front end would draw), by server time.
     std::map<int, World::MpKillcamView> local;

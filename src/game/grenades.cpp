@@ -391,6 +391,8 @@ void World::explodeGrenade(Entity& e) {
     }
     e.obj->set("origin", Value(at));
     ++stats.grenadeExplosions;
+    // A smoke grenade's cloud hides what is behind it from the bots (docs/spec/mp-bots.md "Perception").
+    if (mp_ && lowerStr(weaponField(g.weapon, "offhandClass")) == "smoke grenade") mpBotSmoke(at);
     // 0x5267d3: radius damage only when explosionInnerDamage (+0x37c) is not 0 (the moscow potato has 0).
     const float radius = weaponFloat(g.weapon, "explosionRadius");
     if (weaponFloat(g.weapon, "explosionInnerDamage") != 0.0f)

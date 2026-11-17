@@ -108,15 +108,29 @@ Bots are an OpenIW2 addition: the original game has none. At most 31 bots are on
 needs a free slot, so keep a few free (`--maxclients 20 --bots 6`, or `--maxclients 64 --bots 31` for a big game). Bots obey the weapon list, play the objectives of
 the gametype and use the navigation graph of the map.
 
-| `--bot-skill` | Name | Reaction | Aim | Sight |
-|---|---|---|---|---|
-| 0 | recruit | slow (about 0.9 s) | poor, wide misses | short |
-| 1 | regular | about 0.6 s | fair | medium |
-| 2 | hardened | about 0.4 s | good, checks corners | long |
-| 3 | veteran | about 0.25 s | best accuracy, sees all around | very long |
+| `--bot-skill` | Name | Notices and reacts in | Aim | Sight | Also |
+|---|---|---|---|---|---|
+| 0 | recruit | about 1 s | unsteady, slow to turn, hits about 1 shot in 9 | short | never takes cover |
+| 1 | regular | about 0.7 s | fair, about 1 in 6 | medium | takes cover when badly hurt |
+| 2 | hardened | about 0.5 s | good, about 1 in 4 | long | checks corners, reloads behind cover |
+| 3 | veteran | about 0.3 s | steady and quick, about 1 in 3 | very long | checks corners, reloads behind cover |
 
 The server's default is 3 (veteran); the Bots & weapons page of the game's menu starts at 1. Details of the
 presets are in `docs/spec/mp-bots.md`.
+
+Bots are made to play like people, not like machines:
+
+- They see what a player's screen would show: nothing behind them or far to the side, and through a scope only what
+  is in the scope. An enemy at the edge of the view or far away takes longer to notice. Gunfire and running steps
+  tell them roughly where somebody is, and a hit roughly where it came from; they turn to look. Smoke hides you.
+- Their aim moves like a hand on a mouse: it swings to the target, overshoots a little and settles, trails a running
+  target, and is thrown off by recoil and by being hit. Their bullets go where they point, with the weapon's own
+  spread; nothing decides in advance whether a shot hits.
+- They reload under fire and when it is quiet, change to their other weapon when one is empty, hit with the rifle
+  butt at arm's length, pick up better weapons and ammunition from the ground (walking to the weapon and pressing
+  use, as you do), throw grenades and smoke, and get on the mounted machine guns that overlook the fight, leaving them
+  when flanked or when nothing happens.
+- Bots of one skill are not all alike: each has its own reaction, steadiness and boldness.
 
 **Navigation graph.** The first time a map is loaded with bots, the server generates the graph the bots walk on. That
 takes between a few seconds and about 40 seconds depending on the map, and the server does not answer players
