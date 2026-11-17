@@ -284,6 +284,10 @@ impulse of the player weapon is zero for them.
   name never warns. The copy still replaces 0x14 / 0x15 / 0x16 with `.`. Only plain string values go through the letter
   check. `HintArg::entityName` marks such an argument; sethintstring (turrets) passes plain script values, an entity there is not a
   string and is not given this treatment.
+- The letter warning is not a port defect on maps whose scripts pass a key name: `duhoc_assault_guns.gsc:102` sets each artillery gun
+  trigger's hint to a localized string reference plus, as a second plain argument, the use-key name read from `getKeyBinding(getUseKey())`
+  (default binding `F`), so the original prints the warning four times when duhoc_assault loads (four guns). The same pattern is
+  `toujane_ride.gsc:982` and `downtown_sniper.gsc:303` (key names from `getKeyBinding`).
 - The text goes into one of 32 configstrings (0x4cd + slot, 0x4f0da0): the first empty slot, or the slot already holding the
   same text; when all 32 differ the error "Too many different hintstring values. Max allowed is 32 different strings" is raised and
   the index stays -1. The table is shared with the weapons' useHintString / dropHintString that G_RegisterWeapon (0x522ba0)

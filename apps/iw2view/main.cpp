@@ -1745,27 +1745,35 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         if (model->rfind("xmodel/", 0) != 0) continue;
         auto& cached = modelCache[*model];
         if (!cached) {
-            try {
-                const auto md = vfs.read(*model);
-                if (!md) throw std::runtime_error("missing");
-                const auto xm = assets::parseXModel(*md);
-                const auto pd = vfs.read("xmodelparts/" + xm.lods.at(0).name);
-                const auto sd = vfs.read("xmodelsurfs/" + xm.lods.at(0).name);
-                if (!pd || !sd) throw std::runtime_error("missing parts or surfs");
-                ModelData d;
-                d.parts = assets::parseXModelParts(*pd);
-                d.lods.emplace_back();
-                d.lods[0].surfaces = assets::parseXModelSurfs(*sd, *d.parts);
-                for (const auto& mn : xm.lods[0].materials) d.lods[0].materials.push_back(material(mn));
-                for (size_t k = 0; k < xm.lods.size() && k < 4; ++k) {
-                    d.lodNames.push_back(xm.lods[k].name);
-                    d.lodMaterials[k] = xm.lods[k].materials;
-                    d.lodDist[k] = xm.lods[k].distance;
-                }
-                cached = std::move(d);
-            } catch (const std::exception& ex) {
-                std::cerr << "warning: " << *model << ": " << ex.what() << "\n";
+            const auto md = vfs.read(*model);
+            if (!md) {
+                // The original's xmodel registration prints this and continues with an empty model (VAs 0x47c030, format string
+                // 0x57c368); the static-model loader skips it (0x4151f0 returns false). The shipped duhoc_assault has one
+                // misc_model "xmodel/sign_minefield2." (the trailing dot is a typo in the map data), so the message is expected
+                // once on that map.
+                std::cerr << "^1ERROR: Cannot find xmodel '" << *model << "'.\n";
                 cached = ModelData{};
+            } else {
+                try {
+                    const auto xm = assets::parseXModel(*md);
+                    const auto pd = vfs.read("xmodelparts/" + xm.lods.at(0).name);
+                    const auto sd = vfs.read("xmodelsurfs/" + xm.lods.at(0).name);
+                    if (!pd || !sd) throw std::runtime_error("missing parts or surfs");
+                    ModelData d;
+                    d.parts = assets::parseXModelParts(*pd);
+                    d.lods.emplace_back();
+                    d.lods[0].surfaces = assets::parseXModelSurfs(*sd, *d.parts);
+                    for (const auto& mn : xm.lods[0].materials) d.lods[0].materials.push_back(material(mn));
+                    for (size_t k = 0; k < xm.lods.size() && k < 4; ++k) {
+                        d.lodNames.push_back(xm.lods[k].name);
+                        d.lodMaterials[k] = xm.lods[k].materials;
+                        d.lodDist[k] = xm.lods[k].distance;
+                    }
+                    cached = std::move(d);
+                } catch (const std::exception& ex) {
+                    std::cerr << "warning: " << *model << ": " << ex.what() << "\n";
+                    cached = ModelData{};
+                }
             }
         }
         if (cached->lods.empty() || cached->lods[0].surfaces.empty()) continue;

@@ -195,6 +195,23 @@ int main() {
                 std::printf("portalvis: yaw %.0f cell %d visits %zu portals taken %d (%zu sample points)\n", double(yaw), cell, f.visits.size(),
                             f.portalsTaken, checked);
             }
+
+            // The shipped map names one misc_model no archive holds: "xmodel/sign_minefield2." (a trailing-dot typo in the entity
+            // string; the archives have xmodel/sign_minefield2). The entity reader must keep the value verbatim, so exactly this one
+            // model of the map is unfindable (docs/spec/collision.md "Static models"; the original prints
+            // "ERROR: Cannot find xmodel ..." for it and drops the model).
+            int unfindable = 0;
+            bool dotTypo = false;
+            for (const auto& e : bsp.entities()) {
+                const std::string* cls = e.get("classname");
+                const std::string* model = e.get("model");
+                if (!cls || !model || *cls != "misc_model" || model->rfind("xmodel/", 0) != 0) continue;
+                if (!vfs.read(*model)) {
+                    ++unfindable;
+                    dotTypo = *model == "xmodel/sign_minefield2.";
+                }
+            }
+            chk(unfindable == 1 && dotTypo, __LINE__);
         }
     }
     std::printf(bad ? "FAIL\n" : "portalvis: ok\n");

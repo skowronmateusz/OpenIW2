@@ -302,6 +302,11 @@ when the trace misses or reports "default".
   `modelscale_vec` (x y z), default scale 1. 0x4151f0 drops a model that fails to load and one with a zero scale component; 0x4150a0
   builds the entity axes and their inverse (0x422b50, divides by the scale) and the world bounds of the collision surfaces (0x47db20).
   Entries are linked into the nodes of the point-trace tree (stride 0x50 per model).
+- A model whose file no archive holds: the xmodel registration (0x47c030) prints `^1ERROR: Cannot find xmodel '%s'.` (format 0x57c368,
+  console print 0x42c130) and returns an empty model, which 0x4151f0 then drops — the load continues. The shipped duhoc_assault has one
+  such entity, `xmodel/sign_minefield2.` (the trailing dot is a typo in the map data; the archive holds `xmodel/sign_minefield2`), so the
+  original prints that error once when the map loads. openiw2's front end prints the same message for the missing file and skips the
+  model; `World::loadStaticModels` is silent about it (the original prints once, at registration).
 - Point traces (the node walk 0x41a060, the zero-extent path) test every model linked to a node the segment crosses when
   `xmodel +0x5c & mask` (the OR of its collision-surface contents) and the segment touches its bounds (0x419450): start and end go to model
   space, 0x47c210 (same triangle test as script models above) finds a hit closer than the current fraction, the result keeps the
