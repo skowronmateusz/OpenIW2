@@ -311,7 +311,12 @@ void world(const char* main) {
     // main's onClose closes it; an in-game script menu opened on its own has no "bg" under it.
     auto hasBg = [&] { bool b = false; for (const ui::Menu* m : st.menus()) b = b || m->name == "bg"; return b; };
     CHECK(hasBg());
+    // main's onOpen opens player_profile (no profile exists), whose onOpen closes main_text and whose onClose opens it again
+    // (ui/playerprofile.menu). Close-all is one sweep over the menu table in load order (docs/spec/ui.md "Close-all", 0x4c8080):
+    // player_profile's entry comes after main_text's, so the main_text it reopens stays open; it is the only menu left.
     st.closeAll();
+    CHECK(st.menus().size() == 1 && st.menus()[0]->name == "main_text");
+    st.close("main_text");
     CHECK(st.menus().empty());
     CHECK(lib.loadFile("ui_mp/scriptmenus/team_britishgerman.menu"));
     CHECK(st.open("team_britishgerman") && !hasBg());
