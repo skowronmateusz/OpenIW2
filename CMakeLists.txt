@@ -1216,6 +1216,10 @@ add_test(NAME mpkillcam_fidelity COMMAND test_mpkillcam_fidelity)
 add_executable(test_gammaramp tests/test_gammaramp.cpp)
 target_link_libraries(test_gammaramp PRIVATE iw2_game)
 add_test(NAME gammaramp COMMAND test_gammaramp)
+# Enhanced rendering mode maths (docs/render-enhanced.md).
+add_executable(test_renderenhanced tests/test_renderenhanced.cpp)
+target_link_libraries(test_renderenhanced PRIVATE iw2_game)
+add_test(NAME renderenhanced COMMAND test_renderenhanced)
 # The client's per-frame clock and the effects read on it.
 add_executable(test_clienttime tests/test_clienttime.cpp)
 target_link_libraries(test_clienttime PRIVATE iw2_netgame)

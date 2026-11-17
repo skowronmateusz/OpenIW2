@@ -1,6 +1,8 @@
 // Map viewer shaders (MSL), written for this project as an own reimplementation. The behaviour (formulas, technique structure) was
 // read from the shipped game shaders and is reproduced for fidelity; the comments below cite the source file and, in places, a
 // single expression. This is not a mechanical translation and no shader files are included in this repository.
+// Blocks inside #ifdef IW2_ENHANCED belong to the enhanced rendering mode (docs/render-enhanced.md): an openiw2 addition of our own
+// design, not derived from the shipped shaders, compiled only into the enhanced shader library.
 R"MSL(
 #include <metal_stdlib>
 using namespace metal;
@@ -127,6 +129,21 @@ static float3 probe_lighting(float3 n, constant FragmentUniforms& u) {
     return float3(dot(w0, u.probe[0]) + dot(w1, u.probe[1]), dot(w0, u.probe[2]) + dot(w1, u.probe[3]), dot(w0, u.probe[4]) + dot(w1, u.probe[5]));
 }
 
+#ifdef IW2_ENHANCED
+// Enhanced mode (docs/render-enhanced.md): probe_lighting with the coefficients interpolated from the model's light-grid lattice.
+static float3 probe_lighting_c(float3 n, thread const float4* c) {
+    const float t0 = n.x * 0.81649655 + n.z * 0.57735026;
+    const float t1 = n.x * -0.40824828 + n.y * 0.70710677 + n.z * 0.57735026;
+    const float t2 = n.x * -0.40824828 - n.y * 0.70710677 + n.z * 0.57735026;
+    const float m = max(max(abs(t0), abs(t1)), max(abs(t2), 1e-6));
+    const float a = probe_smooth((t0 / m + 1.0) * 0.5), b = probe_smooth((t1 / m + 1.0) * 0.5);
+    const float s0 = probe_smooth(0.5 - t2 / m * 0.5), s1 = probe_smooth((t2 / m + 1.0) * 0.5);
+    const float4 w0 = float4((1 - a) * (1 - b), (1 - b) * a, (1 - a) * b, b * a) * s0;
+    const float4 w1 = float4((1 - a) * (1 - b), (1 - b) * a, (1 - a) * b, b * a) * s1;
+    return float3(dot(w0, c[0]) + dot(w1, c[1]), dot(w0, c[2]) + dot(w1, c[3]), dot(w0, c[4]) + dot(w1, c[5]));
+}
+#endif
+
 static float3 apply_fog(float3 rgb, float dist, constant FragmentUniforms& u) {
     if (u.fogParams.x < 0.5) return rgb;
     const float f = u.fogParams.w != 0.0 ? exp(dist * u.fogParams.w) : dist * u.fogParams.y + u.fogParams.z; // Fog_ExponentialFactor / Fog_LinearFactor
@@ -142,7 +159,11 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
                         sampler lmSampler [[sampler(1)]],
                         sampler sunSampler [[sampler(2)]],
                         texture2d<float> detailMap [[texture(3)]],
-                        sampler detailSampler [[sampler(3)]]) {
+                        sampler detailSampler [[sampler(3)]]
+#ifdef IW2_ENHANCED
+                        , ENH_FS_ARGS(4)
+#endif
+                        ) {
     const float2 uv = in.uv - float2(0.0, u.scroll.x);
     float4 tex0 = colorMap.sample(colorSampler, uv);
     // Detail texture (shade library, USE_DETAIL variant): the detail sample, centred on 0.5, is added to the base colour before the vertex colour multiply.
@@ -168,10 +189,28 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
         light = float3(1.0);
     } else if (u.params.y > 2.5) {
         float ndl = max(dot(normalize(in.normal), u.sunDirection.xyz), 0.0);
+#ifdef IW2_ENHANCED
+        const float3 wpE = in.eyeVec + eu.eye.xyz;
+        float sunE = u.ambient.w;
+        float3 amb = u.sunDirection.w > 0.5 ? probe_lighting(normalize(in.normal), u) : u.ambient.rgb;
+        if (du.lattice.w > 0.5) amb = enh_lattice_probe(wpE, normalize(in.normal), du, lattice, sunE);
+        if (sunE * ndl > 0.0 && du.step.w < 0.5) sunE *= enh_sun_shadow(wpE, normalize(in.normal), eu, shadowMap, shadowSampler);
+        light = amb + sunE * ndl * u.sunColor.rgb;
+#else
         const float3 amb = u.sunDirection.w > 0.5 ? probe_lighting(normalize(in.normal), u) : u.ambient.rgb;
         light = amb + u.ambient.w * ndl * u.sunColor.rgb;
+#endif
     } else if (u.params.y > 1.5) {
         light = in.light; // baked per vertex from the light grid
+#ifdef IW2_ENHANCED
+        // Static models: the baked light holds sunVis * N.L * sun (lmUv.x = the model's sun visibility); the dynamic shadow takes
+        // its share of that term away.
+        const float ndlS = max(dot(normalize(in.normal), u.sunDirection.xyz), 0.0);
+        if (ndlS * in.lmUv.x > 0.0) {
+            const float shS = enh_sun_shadow(in.eyeVec + eu.eye.xyz, normalize(in.normal), eu, shadowMap, shadowSampler);
+            light -= (1.0 - shS) * in.lmUv.x * ndlS * u.sunColor.rgb;
+        }
+#endif
     } else if (u.params.y > 0.5) {
         float4 r = lmCoeffs.sample(lmSampler, in.lmUv, 0);
         float4 g = lmCoeffs.sample(lmSampler, in.lmUv, 1);
@@ -179,6 +218,9 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
         float3 lm = float3(dot(r, u.lmWeights), dot(g, u.lmWeights), dot(b, u.lmWeights)) * u.params.z;
         float sunVis = lmSun.sample(sunSampler, in.lmUv).r;
         float ndl = max(dot(normalize(in.normal), u.sunDirection.xyz), 0.0);
+#ifdef IW2_ENHANCED
+        if (sunVis > 0.0 && ndl > 0.0) sunVis *= enh_sun_shadow(in.eyeVec + eu.eye.xyz, normalize(in.normal), eu, shadowMap, shadowSampler);
+#endif
         light = lm + sunVis * ndl * u.sunColor.rgb;
     } else {
         float ndl = max(dot(normalize(in.normal), u.sunDirection.xyz), 0.0);
@@ -314,7 +356,11 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
                         sampler specSampler [[sampler(4)]],
                         sampler specularitySampler [[sampler(5)]],
                         sampler lmWeightSampler [[sampler(6)]],
-                        sampler detailSampler [[sampler(7)]]) {
+                        sampler detailSampler [[sampler(7)]]
+#ifdef IW2_ENHANCED
+                        , ENH_FS_ARGS(8)
+#endif
+                        ) {
     // Textured diffuse with the detail variant: same detail add as above (detail scale in lmWeights.xy, flag in .z)
     float4 tex = colorMap.sample(colorSampler, in.uv);
     if (u.lmWeights.z > 0.5) tex.rgb += detailMap.sample(detailSampler, in.uv * u.lmWeights.xy).rgb - 0.5;
@@ -331,7 +377,12 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
     // The three lightmap coefficient weights come from sampling the lightmap-weights texture ($lightmapweights, gfx 0x1000ff10) with the normal-map sample
     const float4 cw = lmWeightMap.sample(lmWeightSampler, float2(ns.a, ns.g));
     const float3 lm = float3(dot(r, cw), dot(g, cw), dot(b, cw)) * u.params.z;
+#ifdef IW2_ENHANCED
+    float vis = lmSun.sample(sunSampler, in.lmUv).r;
+    if (vis > 0.0) vis *= enh_sun_shadow(in.eyeVec + eu.eye.xyz, normalize(in.normal), eu, shadowMap, shadowSampler);
+#else
     const float vis = lmSun.sample(sunSampler, in.lmUv).r; // * dynamicShadowSampler (no dynamic shadows: 1)
+#endif
     const float3 sunDiffuse = vis * max(dot(u.sunDirection.xyz, n), 0.0) * u.sunColor.rgb;
     // Phong_SpecularLighting / Phong_SpecularVisibility.
     const float4 ss = specularMap.sample(specSampler, in.uv);
@@ -390,6 +441,9 @@ fragment float4 fs_probe(ProbeVertexOut in [[stage_in]],
                          sampler specSampler [[sampler(2)]],
                          sampler specularitySampler [[sampler(3)]],
                          sampler detailSampler [[sampler(4)]]
+#ifdef IW2_ENHANCED
+                         , ENH_FS_ARGS(5)
+#endif
                          ) {
     const float2 uv = in.uv - float2(0.0, u.scroll.x);
     float4 tex = colorMap.sample(colorSampler, uv);
@@ -406,6 +460,11 @@ fragment float4 fs_probe(ProbeVertexOut in [[stage_in]],
     n = normalize(n);
     float vis = u.ambient.w; // lightColor0.a: the entity's sun visibility (* dynamicShadowSampler, no dynamic shadows: 1)
     float3 probe = u.sunDirection.w > 0.5 ? probe_lighting(n, u) : u.ambient.rgb;
+#ifdef IW2_ENHANCED
+    const float3 wpE = in.eyeVec + eu.eye.xyz;
+    if (du.lattice.w > 0.5) probe = enh_lattice_probe(wpE, n, du, lattice, vis);
+    if (vis > 0.0 && dot(u.sunDirection.xyz, n) > 0.0) vis *= enh_sun_shadow(wpE, n, eu, shadowMap, shadowSampler);
+#endif
     const float3 sunDiffuse = vis * max(dot(u.sunDirection.xyz, n), 0.0) * u.sunColor.rgb;
     float3 spec = float3(0.0);
     if (u.params.y > 0.5) { // Phong_SpecularLighting / Phong_SpecularVisibility
@@ -450,7 +509,11 @@ fragment float4 fs_gamma(GlowVOut in [[stage_in]], constant float4& u [[buffer(0
     return float4(o, 1.0);
 }
 float4 glowSample(texture2d<float> scene, texture2d<float> postSun, sampler s, float2 uv, constant GlowU& u) {
+#ifdef IW2_ENHANCED
+    const float4 px = saturate(scene.sample(s, uv)); // the original glow sees the scene as the 8-bit original does; light above 1 goes to the enhanced bloom
+#else
     const float4 px = scene.sample(s, uv);
+#endif
     const float intensity = dot(px.rgb, float3(0.299, 0.587, 0.114));
     float3 rgb = intensity >= u.b.x ? 1.0 + (px.rgb - 1.0) * u.b.y : float3(0.0);
     const float nonSky = saturate(4.0 * max(px.a, postSun.sample(s, uv).a));

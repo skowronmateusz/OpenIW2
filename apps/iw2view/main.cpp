@@ -45,6 +45,7 @@
 #include "game/screenmessages.h"
 #include "game/shellshock.h"
 #include "game/gammaramp.h"
+#include "game/renderenhanced.h"
 #include "game/glow_filter.h"
 #include "game/screen_blur.h"
 #include "game/viewweapon.h"
@@ -132,6 +133,13 @@ namespace {
 
 const char kShaderSource[] =
 #include "shaders.metal.inc"
+    ;
+// Enhanced mode library (docs/render-enhanced.md): kEnhancedPrefix + kShaderSource (with IW2_ENHANCED) + kEnhancedPost.
+const char kEnhancedPrefix[] =
+#include "shaders_enhanced.metal.inc"
+    ;
+const char kEnhancedPost[] =
+#include "shaders_enhanced_post.metal.inc"
     ;
 
 [[noreturn]] void sdlFail(const std::string& what) { throw std::runtime_error(what + ": " + SDL_GetError()); }
@@ -549,6 +557,7 @@ struct Scene {
     game::MarkSystem marks;
     game::OutdoorMap outdoor; // "$outdoor" (game/outdoor.h), built on first use by a Cloud with particle_cloud_outdoor
     std::unique_ptr<assets::LightGrid> grid;
+    uint64_t serial = 0; // distinct per loaded scene (caches keyed on a scene, e.g. the enhanced light-grid lattice)
     std::unordered_map<std::string, int> imageIndex;
     std::unordered_map<std::string, MatInfo> matCache;
     std::map<std::string, int> techsetRanks; // technique set name -> first-use order
@@ -1686,6 +1695,8 @@ std::vector<uint8_t> specularityTable(float shift) {
 
 Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapName, bool staticScriptModels) {
     Scene scene;
+    static uint64_t serials = 0;
+    scene.serial = ++serials;
     const std::string path = "maps/" + mapName + ".d3dbsp";
     const auto data = vfs.read(path);
     if (!data) throw std::runtime_error("map not found: " + path);
@@ -1887,6 +1898,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 // only. TODO(spec): the fogged variants are rigid in the original; iw2view bends static flags with fog too.
                 if (mi.flag) g.wave[0] = float(v.color[3]) / 255.0f, g.wave[1] = pl.scale;
                 g.uv[0] = v.uv[0]; g.uv[1] = v.uv[1];
+                g.lmUv[0] = pl.sunVis; // unused by the default shaders (no lightmap); the enhanced sun shadow reads it (shaders.metal.inc)
                 const float ndl = std::max(0.0f, dot(n, scene.sunDirection));
                 std::array<float, 3> probe = {0.45f, 0.45f, 0.45f};
                 if (pl.haveGrid) probe = assets::LightGrid::evaluate(pl.coeffs, {n.x, n.y, n.z});
@@ -2367,7 +2379,8 @@ struct Renderer {
     SDL_GPUTexture* depth = nullptr;
     uint32_t depthW = 0, depthH = 0;
     // Blur post effect: full-size scene copy, w/2 step and the w/4 x h/4 "$blurred_screen".
-    SDL_GPUTextureFormat colorFormat = SDL_GPU_TEXTUREFORMAT_INVALID;
+    SDL_GPUTextureFormat colorFormat = SDL_GPU_TEXTUREFORMAT_INVALID; // the frame: composite, HUD, the target
+    SDL_GPUTextureFormat sceneFormat = SDL_GPU_TEXTUREFORMAT_INVALID; // the scene pass and its post images (colorFormat unless enhanced)
     SDL_GPUTexture* sceneTex = nullptr;
     int sceneSamples = 1; // fixed at init, like the latched r_aaSamples
     SDL_GPUTexture* msaaColor = nullptr; // scene pass targets when sceneSamples > 1; resolved into sceneTex
@@ -2437,16 +2450,193 @@ struct Renderer {
         return SDL_GPU_STOREOP_DONT_CARE;
     }
 
+    // ---- enhanced mode (docs/render-enhanced.md, src/game/renderenhanced.h): an openiw2 addition, off by default ----
+    game::EnhancedSettings enh;   // set before init; latched for the renderer's life (like r_aaSamples)
+    std::string enhancedLibrary;  // kEnhancedPrefix + kShaderSource + kEnhancedPost
+    bool edrOut = false;          // the window swapchain is extended linear (RGBA16F); the frame is presented by fs_enh_present
+    float edrWhite = 1.0f;        // tone curve white (display encoding) for the current EDR headroom; 1 for SDR
+    bool captureMode = false;     // captureRgba: an 8-bit SDR image even when the window is EDR
+    struct EnhFragUC { float shadowVP[2][16]; float shadowParams[4]; float shadowSphere[2][4]; float eye[4]; float shadowBias[4]; };
+    struct EnhDrawUC { float lattice[4], origin[4], step[4]; };
+    SDL_GPUGraphicsPipeline *enhTonemapPipe = nullptr, *enhLumPipe = nullptr, *enhExpoPipe = nullptr, *enhBloomPrePipe = nullptr,
+                            *enhBloomDownPipe = nullptr, *enhBloomUpPipe = nullptr, *enhPresentPipe = nullptr, *enhPresentSdrPipe = nullptr,
+                            *enhShadowPipe = nullptr, *enhVelocityPipe = nullptr, *enhMotionViewPipe = nullptr, *enhTonemapTexPipe = nullptr;
+    SDL_GPUTexture* toneTex = nullptr; // the tone-mapped scene when the blur needs it as its source (colorFormat)
+    uint32_t toneW = 0, toneH = 0;
+    SDL_GPUTexture* velocityTex = nullptr; // RG16F: NDC motion of the static scene since the previous frame (camera motion)
+    uint32_t velocityW = 0, velocityH = 0;
+    Mat4 prevViewProj{};
+    bool hasPrevViewProj = false;
+    SDL_GPUSampler* shadowCmpSampler = nullptr;
+    SDL_GPUTexture* shadowTex = nullptr;   // cascades side by side, D32
+    SDL_GPUTexture* shadowDummy = nullptr; // 1 x 1, bound while shadows are off
+    int shadowCascadesNow = 0;             // cascades rendered this frame (0 = none)
+    SDL_GPUTexture* lumTex = nullptr;      // 256 x 256 log luminance with its mip chain
+    int lumLevels = 0;
+    SDL_GPUTexture* expoTex[2] = {nullptr, nullptr}; // 1 x 1 exposure EV, ping-pong
+    int expoCur = 0;
+    bool expoValid = false;
+    int64_t expoLastMs = 0;
+    std::vector<SDL_GPUTexture*> bloomTex;
+    std::vector<std::array<uint32_t, 2>> bloomSize;
+    uint32_t bloomW = 0, bloomH = 0;
+    SDL_GPUBuffer* latticeBuf = nullptr;
+    SDL_GPUTransferBuffer* latticeXfer = nullptr;
+    uint32_t latticeCap = 0; // bytes
+    std::vector<float> latticeData;
+    std::vector<EnhDrawUC> itemLattice; // parallel to the frame's items
+    std::unordered_map<int64_t, std::array<float, 28>> gridCache; // light-grid node -> 6 coefficient vectors + sun (e[27] < 0: no node)
+    uint64_t gridCacheOf = 0; // Scene::serial of the cached samples
+    struct EnhStats { int casters = 0; uint32_t casterTriangles = 0; int latticeItems = 0; int latticePoints = 0; } enhStats;
+
+    template <class Mk>
+    void initEnhanced(Mk& mk, const SDL_GPUShaderCreateInfo& vs, const SDL_GPUVertexBufferDescription& vbd, const SDL_GPUVertexAttribute* attrs) {
+        enhTonemapPipe = mk("fs_enh_tonemap", 3, 1, false, true);
+        enhTonemapTexPipe = mk("fs_enh_tonemap", 3, 1, false, false);
+        enhLumPipe = mk("fs_enh_lum", 1, 0, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT);
+        enhExpoPipe = mk("fs_enh_expo", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R32_FLOAT);
+        enhBloomPrePipe = mk("fs_enh_bloom_pre", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhBloomDownPipe = mk("fs_enh_bloom_down", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhBloomUpPipe = mk("fs_enh_bloom_up", 1, 1, true, false, true, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhPresentPipe = mk("fs_enh_present", 1, 1, false, false);
+        enhPresentSdrPipe = mk("fs_enh_present", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
+        enhVelocityPipe = mk("fs_enh_velocity", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT);
+        enhMotionViewPipe = mk("fs_enh_motion_view", 1, 0, false, true);
+        {   // sun shadow casters: depth only
+            SDL_GPUShaderCreateInfo sv = vs;
+            sv.entrypoint = "vs_shadow";
+            sv.num_uniform_buffers = 1;
+            SDL_GPUShaderCreateInfo sf = vs;
+            sf.entrypoint = "fs_shadow";
+            sf.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+            sf.num_samplers = 1;
+            sf.num_uniform_buffers = 0;
+            SDL_GPUShader* svs = SDL_CreateGPUShader(dev, &sv);
+            SDL_GPUShader* sfs = SDL_CreateGPUShader(dev, &sf);
+            if (!svs || !sfs) sdlFail("shadow shaders");
+            SDL_GPUGraphicsPipelineCreateInfo pi{};
+            pi.vertex_shader = svs;
+            pi.fragment_shader = sfs;
+            pi.vertex_input_state.vertex_buffer_descriptions = &vbd;
+            pi.vertex_input_state.num_vertex_buffers = 1;
+            pi.vertex_input_state.vertex_attributes = attrs;
+            pi.vertex_input_state.num_vertex_attributes = 9;
+            pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+            pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE; // 2005 meshes are often single-sided
+            pi.rasterizer_state.enable_depth_bias = true;
+            pi.rasterizer_state.depth_bias_constant_factor = 2.0f;
+            pi.rasterizer_state.depth_bias_slope_factor = 2.5f;
+            pi.depth_stencil_state.enable_depth_test = true;
+            pi.depth_stencil_state.enable_depth_write = true;
+            pi.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL;
+            pi.target_info.num_color_targets = 0;
+            pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+            pi.target_info.has_depth_stencil_target = true;
+            enhShadowPipe = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+            if (!enhShadowPipe) sdlFail("shadow pipeline");
+            SDL_ReleaseGPUShader(dev, svs);
+            SDL_ReleaseGPUShader(dev, sfs);
+        }
+        SDL_GPUSamplerCreateInfo cs{};
+        cs.min_filter = cs.mag_filter = SDL_GPU_FILTER_LINEAR; // 2 x 2 hardware percentage-closer filter per tap
+        cs.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+        cs.address_mode_u = cs.address_mode_v = cs.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        cs.enable_compare = true;
+        cs.compare_op = SDL_GPU_COMPAREOP_LESS_OR_EQUAL; // lit when the receiver's depth <= the stored caster depth
+        shadowCmpSampler = SDL_CreateGPUSampler(dev, &cs);
+        auto tex = [&](SDL_GPUTextureFormat f, uint32_t w, uint32_t h, SDL_GPUTextureUsageFlags usage, uint32_t levels = 1) {
+            SDL_GPUTextureCreateInfo ti{};
+            ti.type = SDL_GPU_TEXTURETYPE_2D;
+            ti.format = f;
+            ti.usage = usage;
+            ti.width = w;
+            ti.height = h;
+            ti.layer_count_or_depth = 1;
+            ti.num_levels = levels;
+            SDL_GPUTexture* t = SDL_CreateGPUTexture(dev, &ti);
+            if (!t) sdlFail("enhanced texture");
+            return t;
+        };
+        shadowDummy = tex(SDL_GPU_TEXTUREFORMAT_D32_FLOAT, 1, 1, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
+        const game::SunShadowQuality q = game::sunShadowQuality(enh.sunShadows);
+        if (q.resolution > 0)
+            shadowTex = tex(SDL_GPU_TEXTUREFORMAT_D32_FLOAT, uint32_t(q.resolution * q.cascades), uint32_t(q.resolution),
+                            SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
+        lumLevels = 9; // 256 .. 1
+        lumTex = tex(SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT, 256, 256, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, uint32_t(lumLevels));
+        for (SDL_GPUTexture*& e : expoTex) e = tex(SDL_GPU_TEXTUREFORMAT_R32_FLOAT, 1, 1, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER);
+        SDL_GPUBufferCreateInfo bi{};
+        bi.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
+        bi.size = latticeCap = 7 * 16 * 64;
+        latticeBuf = SDL_CreateGPUBuffer(dev, &bi);
+        SDL_GPUTransferBufferCreateInfo ti{};
+        ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        ti.size = latticeCap;
+        latticeXfer = SDL_CreateGPUTransferBuffer(dev, &ti);
+        if (!latticeBuf || !latticeXfer) sdlFail("lattice buffer");
+    }
+
+    void ensureBloomTargets(uint32_t w, uint32_t h) {
+        if (!bloomTex.empty() && bloomW == w && bloomH == h) return;
+        for (SDL_GPUTexture* t : bloomTex) SDL_ReleaseGPUTexture(dev, t);
+        bloomTex.clear();
+        bloomSize.clear();
+        const int n = game::bloomLevels(int(w), int(h));
+        uint32_t bw = std::max(w / 2, 1u), bh = std::max(h / 2, 1u);
+        for (int i = 0; i < n; ++i) {
+            SDL_GPUTextureCreateInfo ti{};
+            ti.type = SDL_GPU_TEXTURETYPE_2D;
+            ti.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+            ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            ti.width = bw;
+            ti.height = bh;
+            ti.layer_count_or_depth = 1;
+            ti.num_levels = 1;
+            SDL_GPUTexture* t = SDL_CreateGPUTexture(dev, &ti);
+            if (!t) sdlFail("bloom texture");
+            bloomTex.push_back(t);
+            bloomSize.push_back({bw, bh});
+            bw = std::max(bw / 2, 1u), bh = std::max(bh / 2, 1u);
+        }
+        bloomW = w, bloomH = h;
+    }
+
+    // Binds the enhanced resources of fs_main / fs_spec (shadow map at `shadowSlot`, the lattice buffer) and pushes the draw's lattice.
+    void enhBind(SDL_GPURenderPass* pass, SDL_GPUCommandBuffer* cmd, uint32_t shadowSlot, const DrawItem* it, const std::vector<DrawItem>& items) {
+        if (!enh.enabled) return;
+        const SDL_GPUTextureSamplerBinding sb{shadowCascadesNow > 0 ? shadowTex : shadowDummy, shadowCmpSampler};
+        SDL_BindGPUFragmentSamplers(pass, shadowSlot, &sb, 1);
+        SDL_BindGPUFragmentStorageBuffers(pass, 0, &latticeBuf, 1);
+        EnhDrawUC d{};
+        if (it && size_t(it - items.data()) < itemLattice.size()) d = itemLattice[size_t(it - items.data())];
+        if (it && it->effects) d.step[3] = 1.0f; // sprites and clouds take no dynamic sun shadow
+        SDL_PushGPUFragmentUniformData(cmd, 2, &d, sizeof d);
+    }
+
+    // Before the scene pass: the sun shadow map of the moving casters, the light-grid lattices of the model items, the per-frame
+    // fragment uniforms (slot 1).
+    void enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& cam, const std::vector<DrawItem>& items);
+    // After the scene pass: exposure and bloom.
+    void enhPost(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam, bool floatzReady);
+
     void init(SDL_GPUDevice* device, SDL_GPUTextureFormat colorFormat_, int samples = 1) {
         dev = device;
         colorFormat = colorFormat_;
+        // Enhanced mode (docs/render-enhanced.md): the scene renders into RGBA16F, so light above 1 survives to the tone curve. The
+        // frame (composite, HUD) keeps the target's format.
+        sceneFormat = enh.enabled ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT : colorFormat;
         sceneSamples = samples;
-        while (sceneSamples > 1 && !(SDL_GPUTextureSupportsSampleCount(dev, colorFormat, sampleCountEnum()) &&
+        while (sceneSamples > 1 && !(SDL_GPUTextureSupportsSampleCount(dev, sceneFormat, sampleCountEnum()) &&
                                      SDL_GPUTextureSupportsSampleCount(dev, SDL_GPU_TEXTUREFORMAT_D32_FLOAT, sampleCountEnum())))
             sceneSamples /= 2;
         SDL_GPUShaderCreateInfo vs{};
         vs.code = reinterpret_cast<const Uint8*>(kShaderSource);
         vs.code_size = sizeof(kShaderSource) - 1;
+        if (enh.enabled) {
+            enhancedLibrary = std::string(kEnhancedPrefix) + kShaderSource + kEnhancedPost;
+            vs.code = reinterpret_cast<const Uint8*>(enhancedLibrary.data());
+            vs.code_size = enhancedLibrary.size();
+        }
         vs.entrypoint = "vs_main";
         vs.format = SDL_GPU_SHADERFORMAT_MSL;
         vs.stage = SDL_GPU_SHADERSTAGE_VERTEX;
@@ -2458,7 +2648,19 @@ struct Renderer {
         fs.entrypoint = "fs_main";
         fs.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
         fs.num_samplers = 4;
-        SDL_GPUShader* fsh = SDL_CreateGPUShader(dev, &fs);
+        SDL_GPUShaderCreateInfo fmain = fs;
+        SDL_GPUShader* overlayFsh = nullptr; // enhanced: the HUD keeps the default fs_main (no shadow / lattice resources)
+        if (enh.enabled) {
+            fmain.num_samplers = 5;        // + the sun shadow map (texture 4)
+            fmain.num_uniform_buffers = 3; // + EnhFragU (slot 1) and EnhDrawU (slot 2)
+            fmain.num_storage_buffers = 1; // the light-grid lattices
+            SDL_GPUShaderCreateInfo plain = fs;
+            plain.code = reinterpret_cast<const Uint8*>(kShaderSource);
+            plain.code_size = sizeof(kShaderSource) - 1;
+            overlayFsh = SDL_CreateGPUShader(dev, &plain);
+            if (!overlayFsh) sdlFail("overlay shader");
+        }
+        SDL_GPUShader* fsh = SDL_CreateGPUShader(dev, &fmain);
         if (!vsh || !fsh) sdlFail("SDL_CreateGPUShader");
 
         SDL_GPUVertexBufferDescription vbd{};
@@ -2486,6 +2688,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo sfsi = fs;
         sfsi.entrypoint = "fs_spec";
         sfsi.num_samplers = 8;
+        if (enh.enabled) sfsi.num_samplers = 9, sfsi.num_uniform_buffers = 3, sfsi.num_storage_buffers = 1;
         SDL_GPUShaderCreateInfo dfsi = fs;
         dfsi.entrypoint = "fs_dlight";
         dfsi.num_samplers = 3;
@@ -2504,12 +2707,13 @@ struct Renderer {
         SDL_GPUShaderCreateInfo pfsi = fs;
         pfsi.entrypoint = "fs_probe";
         pfsi.num_samplers = 5;
+        if (enh.enabled) pfsi.num_samplers = 6, pfsi.num_uniform_buffers = 3, pfsi.num_storage_buffers = 1;
         SDL_GPUShader* probeVsh = SDL_CreateGPUShader(dev, &pvsi);
         SDL_GPUShader* probeFsh = SDL_CreateGPUShader(dev, &pfsi);
         if (!probeVsh || !probeFsh) sdlFail("probe shaders");
         for (int p = 0; p < 5; ++p) {
             SDL_GPUColorTargetDescription ct{};
-            ct.format = colorFormat;
+            ct.format = sceneFormat;
             if (p >= 2) {
                 ct.blend_state.enable_blend = true;
                 ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
@@ -2536,8 +2740,13 @@ struct Renderer {
             pi.target_info.num_color_targets = 1;
             pi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
             pi.target_info.has_depth_stencil_target = true;
-            if (p == int(Pass::Blend)) {
-                overlayPipe = SDL_CreateGPUGraphicsPipeline(dev, &pi);
+            if (p == int(Pass::Blend)) { // the HUD / composite quads draw into the frame (colorFormat)
+                SDL_GPUGraphicsPipelineCreateInfo oi = pi;
+                SDL_GPUColorTargetDescription oct = ct;
+                oct.format = colorFormat;
+                oi.target_info.color_target_descriptions = &oct;
+                if (overlayFsh) oi.fragment_shader = overlayFsh;
+                overlayPipe = SDL_CreateGPUGraphicsPipeline(dev, &oi);
                 if (!overlayPipe) sdlFail("SDL_CreateGPUGraphicsPipeline");
             }
             multisampleScene(pi, p == int(Pass::AlphaTest));
@@ -2630,7 +2839,7 @@ struct Renderer {
             SDL_GPUShader* sf = SDL_CreateGPUShader(dev, &sfs);
             if (!sv || !sf) sdlFail("sky shaders");
             SDL_GPUColorTargetDescription ct{};
-            ct.format = colorFormat;
+            ct.format = sceneFormat;
             SDL_GPUGraphicsPipelineCreateInfo pi{};
             pi.vertex_shader = sv;
             pi.fragment_shader = sf;
@@ -2661,7 +2870,7 @@ struct Renderer {
                 SDL_GPUShader* ofs = SDL_CreateGPUShader(dev, &ofi);
                 if (!ofs) sdlFail("objective shader");
                 SDL_GPUColorTargetDescription oct{};
-                oct.format = colorFormat;
+                oct.format = sceneFormat;
                 oct.blend_state.enable_blend = true;
                 oct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
                 oct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
@@ -2706,7 +2915,9 @@ struct Renderer {
             gv.entrypoint = "vs_fs";
             gv.num_uniform_buffers = 0;
             SDL_GPUShader* gvs = SDL_CreateGPUShader(dev, &gv);
-            auto mk = [&](const char* entry, uint32_t samplers, uint32_t ubs, bool blend, bool depthTarget, bool additive = false) {
+            auto mk = [&](const char* entry, uint32_t samplers, uint32_t ubs, bool blend, bool depthTarget, bool additive = false,
+                          SDL_GPUTextureFormat fmt = SDL_GPU_TEXTUREFORMAT_INVALID) {
+                if (fmt == SDL_GPU_TEXTUREFORMAT_INVALID) fmt = colorFormat;
                 SDL_GPUShaderCreateInfo gf = fs;
                 gf.entrypoint = entry;
                 gf.num_samplers = samplers;
@@ -2714,7 +2925,7 @@ struct Renderer {
                 SDL_GPUShader* gfs = SDL_CreateGPUShader(dev, &gf);
                 if (!gvs || !gfs) sdlFail("glow shaders");
                 SDL_GPUColorTargetDescription ct{};
-                ct.format = colorFormat;
+                ct.format = fmt;
                 if (blend) { // premultiplied over: rgb + dst * (1 - a)
                     ct.blend_state.enable_blend = true;
                     ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
@@ -2743,12 +2954,13 @@ struct Renderer {
                 return gp;
             };
             copyPipe = mk("fs_copy", 1, 0, false, true);
-            glowSetupPipe = mk("fs_glow_setup", 2, 1, false, false);
-            glowBlurPipe = mk("fs_glow_blur", 1, 1, false, false);
+            glowSetupPipe = mk("fs_glow_setup", 2, 1, false, false, false, sceneFormat); // into the quarter-size scene-format images
+            glowBlurPipe = mk("fs_glow_blur", 1, 1, false, false, false, sceneFormat);
             glowApplyPipe = mk("fs_glow_apply", 2, 1, true, true);
             glowBloomPipe = mk("fs_glow_bloom", 1, 1, true, true, true);
             feedbackBlendPipe = mk("fs_feedback_blend", 1, 1, true, true);
             gammaPipe = mk("fs_gamma", 1, 1, false, false);
+            if (enh.enabled) initEnhanced(mk, vs, vbd, attrs);
             SDL_ReleaseGPUShader(dev, gvs);
         }
         {
@@ -2765,7 +2977,7 @@ struct Renderer {
                 SDL_GPUShader* efs = SDL_CreateGPUShader(dev, &ef);
                 if (!evs || !efs) sdlFail("effect shaders");
                 SDL_GPUColorTargetDescription ct{};
-                ct.format = colorFormat;
+                ct.format = sceneFormat;
                 ct.blend_state.enable_blend = true;
                 ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
                 ct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
@@ -2853,7 +3065,7 @@ struct Renderer {
             if (!wv || !wf) sdlFail("water shaders");
             for (int blend = 0; blend < 2; ++blend) {
                 SDL_GPUColorTargetDescription ct{};
-                ct.format = colorFormat;
+                ct.format = sceneFormat;
                 if (blend) { // nofog.sm: blendFunc passthrough (SrcAlpha, InvSrcAlpha), separateAlphaBlendFunc Add InvDestAlpha, One
                     ct.blend_state.enable_blend = true;
                     ct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
@@ -2891,6 +3103,7 @@ struct Renderer {
         }
         SDL_ReleaseGPUShader(dev, vsh);
         SDL_ReleaseGPUShader(dev, fsh);
+        if (overlayFsh) SDL_ReleaseGPUShader(dev, overlayFsh);
 
         SDL_GPUSamplerCreateInfo si{};
         si.min_filter = SDL_GPU_FILTER_LINEAR;
@@ -2918,10 +3131,10 @@ struct Renderer {
         for (SDL_GPUTexture** t : {&sceneTex, &quarterTex, &pingpongTex[0], &pingpongTex[1], &glowTex, &ghostTex[0], &ghostTex[1],
                                    &postSunTex, &floatzTex})
             if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
-        auto make = [&](uint32_t tw, uint32_t th) {
+        auto make = [&](uint32_t tw, uint32_t th, SDL_GPUTextureFormat fmt = SDL_GPU_TEXTUREFORMAT_INVALID) {
             SDL_GPUTextureCreateInfo info{};
             info.type = SDL_GPU_TEXTURETYPE_2D;
-            info.format = colorFormat;
+            info.format = fmt == SDL_GPU_TEXTUREFORMAT_INVALID ? sceneFormat : fmt;
             info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
             info.width = std::max(tw, 1u);
             info.height = std::max(th, 1u);
@@ -2935,8 +3148,8 @@ struct Renderer {
         pingpongTex[0] = make(w / 4, h / 4); // all screen filter targets: (width >> 2, height >> 2), gfx 0x100235aa onwards
         pingpongTex[1] = make(w / 4, h / 4);
         glowTex = make(w / 4, h / 4);
-        ghostTex[0] = make(w, h);
-        ghostTex[1] = make(w, h);
+        ghostTex[0] = make(w, h, colorFormat); // composed frames
+        ghostTex[1] = make(w, h, colorFormat);
         ghostValid = false;
         postSunTex = make(w, h);
         {
@@ -2985,7 +3198,7 @@ struct Renderer {
             ms.sample_count = sampleCountEnum();
             ms.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
             msaaDepth = SDL_CreateGPUTexture(dev, &ms);
-            ms.format = colorFormat;
+            ms.format = sceneFormat;
             ms.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
             msaaColor = SDL_CreateGPUTexture(dev, &ms);
             if (!msaaDepth || !msaaColor) sdlFail("multisample targets");
@@ -3176,7 +3389,8 @@ struct Renderer {
     void draw(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam,
               const std::vector<DrawItem>& items = {}, const std::vector<Quad2D>& overlay = {}, float blur = 0.0f) {
         const float g = game::clampGamma(gamma);
-        if (g == 1.0f) return drawFrame(cmd, target, w, h, scene, cam, items, overlay, blur);
+        const bool present = enh.enabled && edrOut; // the EDR frame goes through fs_enh_present (an SDR image for a capture)
+        if (g == 1.0f && !present) return drawFrame(cmd, target, w, h, scene, cam, items, overlay, blur);
         if (!gammaTex || gammaW != w || gammaH != h) {
             if (gammaTex) SDL_ReleaseGPUTexture(dev, gammaTex);
             SDL_GPUTextureCreateInfo info{};
@@ -3198,10 +3412,10 @@ struct Renderer {
         c.load_op = SDL_GPU_LOADOP_DONT_CARE;
         c.store_op = SDL_GPU_STOREOP_STORE;
         SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &c, 1, nullptr);
-        SDL_BindGPUGraphicsPipeline(p, gammaPipe);
+        SDL_BindGPUGraphicsPipeline(p, present ? (captureMode ? enhPresentSdrPipe : enhPresentPipe) : gammaPipe);
         SDL_GPUTextureSamplerBinding tb{gammaTex, clampSampler};
         SDL_BindGPUFragmentSamplers(p, 0, &tb, 1);
-        const float u[4] = {g, 1.0f / g, 0, 0};
+        const float u[4] = {g, 1.0f / g, present && !captureMode ? 1.0f : 0.0f, 0};
         SDL_PushGPUFragmentUniformData(cmd, 0, u, sizeof(u));
         SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
         SDL_EndGPURenderPass(p);
@@ -3211,6 +3425,7 @@ struct Renderer {
                    const std::vector<DrawItem>& items, const std::vector<Quad2D>& overlay, float blur) {
         ensureDepth(w, h);
         cullWorld(cmd, scene, cam, cam.viewProj(float(w) / float(h)));
+        if (enh.enabled) enhPrepare(cmd, scene, cam, items);
         {   // gameTime for every vs_main / vs_dlight draw of this command buffer (vertex uniform slot 1)
             const assets::GameTimeConst g = assets::gameTimeConst(renderTimeMs);
             const float gt[4] = {g.x, g.y, g.z, g.w};
@@ -3221,8 +3436,8 @@ struct Renderer {
         const float blurA = game::blurAlpha(blur, float(h));
         // r_glow (default 1, gfx 0x1000b7b8); IW2_NO_GLOW=1 disables the chain.
         static const bool noGlow = std::getenv("IW2_NO_GLOW") != nullptr;
-        const bool glowOn = !noGlow;
-        const bool post = blurA > 0.0f || glowOn || ghostActive || sceneSamples > 1; // the resolve target is sceneTex
+        const bool glowOn = !noGlow; // enhanced: the original glow stays (art direction); the enhanced bloom adds light above 1
+        const bool post = blurA > 0.0f || glowOn || ghostActive || sceneSamples > 1 || enh.enabled; // the resolve target is sceneTex
         if (post) {
             ensureBlurTargets(w, h);
             GpuVertex bv[12]{};
@@ -3318,6 +3533,7 @@ struct Renderer {
             for (const DrawItem& it : items)
                 if (it.model)
                     for (const Batch& b : it.model->batches) postSunWanted = postSunWanted || b.fxKind != 0;
+        if (post && !noPostSun && enh.enabled && enh.motionDebug) postSunWanted = true; // the motion vectors read $floatz
         bool postSunReady = false;
         if (postSunWanted && scene.outdoor.valid() && outdoorFor != &scene.outdoor) {
             if (outdoorTex) SDL_ReleaseGPUTexture(dev, outdoorTex);
@@ -3547,6 +3763,7 @@ struct Renderer {
                     {scene.specularity, clampSampler},
                     detailBinding(b.detail)};
                 SDL_BindGPUFragmentSamplers(pass, 0, tex, 5);
+                enhBind(pass, cmd, 5, &it, items);
                 FragmentUniforms fu = {
                     {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
                     {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, specColorScaleDvar()},
@@ -3568,6 +3785,7 @@ struct Renderer {
             SDL_GPUTextureSamplerBinding tex[4] = {
                 {scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {elm.coeffs, clampSampler}, {elm.sun, clampSampler}, detailBinding(b.detail)};
             SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
+            enhBind(pass, cmd, 4, &it, items);
             FragmentUniforms fu = {
                 {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
                 {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -3663,6 +3881,7 @@ struct Renderer {
                                                            {scene.textures[b.detail >= 0 ? size_t(scene.details[size_t(b.detail)].tex) : 0],
                                                             matSampler(b.detail >= 0 ? scene.details[size_t(b.detail)].state : uint8_t(0))}};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 8);
+                    enhBind(pass, cmd, 8, nullptr, items);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, specColorScale},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -3681,6 +3900,7 @@ struct Renderer {
                     SDL_GPUTextureSamplerBinding tex[4] = {
                         {scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {lm.coeffs, clampSampler}, {lm.sun, clampSampler}, detailBinding(b.detail)};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
+                    enhBind(pass, cmd, 4, nullptr, items);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -3859,6 +4079,7 @@ struct Renderer {
                     SDL_GPUTextureSamplerBinding tex[4] = {
                         {scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {elm.coeffs, clampSampler}, {elm.sun, clampSampler}, detailBinding(b.detail)};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
+                    enhBind(pass, cmd, 4, &it, items);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
                         {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -3954,6 +4175,7 @@ struct Renderer {
         }
         if (nq && !post) drawOverlay(pass, cmd, scene, overlay, nq);
         SDL_EndGPURenderPass(pass);
+        if (enh.enabled) enhPost(cmd, w, h, cam, postSunWanted);
         if (post) {
             // Screen filter chain, docs/spec/effects.md "Glow and the blurred screen". Passes alternate between the pingpong images, the
             // last one writes dst. A one-pass chain reading dst stays in the pingpong image (the result is returned).
@@ -3989,10 +4211,33 @@ struct Renderer {
                 }
                 return src;
             };
+            // Enhanced: the tone pass inputs and, while the screen is blurred, the tone-mapped scene in its own image so the blur reads
+            // exposure and the shoulder too (docs/render-enhanced.md).
+            const bool bloomOn = enh.enabled && enh.bloom && !bloomTex.empty();
+            const SDL_GPUTextureSamplerBinding toneIn[3] = {{sceneTex, clampSampler}, {bloomOn ? bloomTex[0] : (expoTex[0] ? expoTex[0] : sceneTex), clampSampler},
+                                                            {expoTex[expoCur] ? expoTex[expoCur] : sceneTex, pointClampSampler}};
+            const float toneU[8] = {enh.tonemap ? 1.0f : 0.0f, captureMode ? 1.0f : edrWhite, enh.bloomIntensity, enh.autoExposure ? 1.0f : 0.0f,
+                                    enh.exposureBias, bloomOn ? 1.0f : 0.0f, game::kToneKnee, 0.0f};
+            SDL_GPUTexture* enhToneSrc = nullptr;
+            if (enh.enabled && blurA > 0.0f) {
+                if (!toneTex || toneW != w || toneH != h) {
+                    if (toneTex) SDL_ReleaseGPUTexture(dev, toneTex);
+                    SDL_GPUTextureCreateInfo ti{};
+                    ti.type = SDL_GPU_TEXTURETYPE_2D;
+                    ti.format = colorFormat;
+                    ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                    ti.width = w, ti.height = h, ti.layer_count_or_depth = 1, ti.num_levels = 1;
+                    toneTex = SDL_CreateGPUTexture(dev, &ti);
+                    if (!toneTex) sdlFail("tone texture");
+                    toneW = w, toneH = h;
+                }
+                fullscreen(enhTonemapTexPipe, toneTex, toneIn, 3, toneU, sizeof toneU);
+                enhToneSrc = toneTex;
+            }
             SDL_GPUTexture* blurredTex = quarterTex;
             if (blurA > 0.0f) { // sigma in scene pixels; pixels are square
                 const float sigma = float(h) * game::blurImageRadius(blur, float(h)) / 480.0f;
-                blurredTex = filterChain(sceneTex, quarterTex, game::filterPlan(sigma, sigma, int(w), int(h), int(gw), int(gh)), 0);
+                blurredTex = filterChain(enhToneSrc ? enhToneSrc : sceneTex, quarterTex, game::filterPlan(sigma, sigma, int(w), int(h), int(gw), int(gh)), 0);
             }
             const game::GlowDvars glowDvars;
             const bool worldSky = scene.sky != nullptr;
@@ -4018,8 +4263,25 @@ struct Renderer {
             SDL_GPUDepthStencilTargetInfo d2 = ds;
             d2.texture = depth; // the composite pass is single-sampled
             SDL_GPURenderPass* p2 = SDL_BeginGPURenderPass(cmd, &c2, 1, &d2);
-            SDL_BindGPUGraphicsPipeline(p2, copyPipe);
-            {
+            if (enh.enabled) { // tone mapping (docs/render-enhanced.md): the HDR scene, exposure and bloom into the frame
+                if (enhToneSrc) {
+                    SDL_BindGPUGraphicsPipeline(p2, copyPipe);
+                    const SDL_GPUTextureSamplerBinding cb{enhToneSrc, clampSampler};
+                    SDL_BindGPUFragmentSamplers(p2, 0, &cb, 1);
+                } else {
+                    SDL_BindGPUGraphicsPipeline(p2, enhTonemapPipe);
+                    SDL_BindGPUFragmentSamplers(p2, 0, toneIn, 3);
+                    SDL_PushGPUFragmentUniformData(cmd, 0, toneU, sizeof toneU);
+                }
+                SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
+                if (enh.motionDebug && velocityTex && postSunWanted) {
+                    SDL_BindGPUGraphicsPipeline(p2, enhMotionViewPipe);
+                    const SDL_GPUTextureSamplerBinding vb{velocityTex, pointClampSampler};
+                    SDL_BindGPUFragmentSamplers(p2, 0, &vb, 1);
+                    SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
+                }
+            } else {
+                SDL_BindGPUGraphicsPipeline(p2, copyPipe);
                 SDL_GPUTextureSamplerBinding cb{sceneTex, clampSampler};
                 SDL_BindGPUFragmentSamplers(p2, 0, &cb, 1);
                 SDL_DrawGPUPrimitives(p2, 3, 1, 0, 0);
@@ -4140,6 +4402,269 @@ struct Renderer {
     }
 };
 
+// ---- enhanced mode passes (docs/render-enhanced.md) ----
+
+void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& cam, const std::vector<DrawItem>& items) {
+    enhStats = {};
+    EnhFragUC f{};
+    f.eye[0] = cam.pos.x, f.eye[1] = cam.pos.y, f.eye[2] = cam.pos.z;
+    shadowCascadesNow = 0;
+    const game::SunShadowQuality q = game::sunShadowQuality(enh.sunShadows);
+    const bool sunLit = scene.sunColor.x + scene.sunColor.y + scene.sunColor.z > 0.0f;
+    if (shadowTex && q.resolution > 0 && sunLit) {
+        // Sun shadow map of the moving casters (docs/render-enhanced.md "Sun shadows"): actors, vehicles, script models and brush
+        // movers. Static models and the world are in the baked sun mask already; the receivers multiply both.
+        SDL_GPUDepthStencilTargetInfo dt{};
+        dt.texture = shadowTex;
+        dt.clear_depth = 1.0f;
+        dt.load_op = SDL_GPU_LOADOP_CLEAR;
+        dt.store_op = SDL_GPU_STOREOP_STORE;
+        dt.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+        dt.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+        SDL_GPURenderPass* sp = SDL_BeginGPURenderPass(cmd, nullptr, 0, &dt);
+        SDL_BindGPUGraphicsPipeline(sp, enhShadowPipe);
+        const float sun[3] = {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z};
+        Vec3 fwd = cam.forward();
+        fwd.z = 0.0f;
+        const float fl = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y);
+        fwd = fl > 1e-4f ? fwd * (1.0f / fl) : Vec3{};
+        constexpr float kCasterReach = 3000.0f; // casters this far beyond the sphere towards the sun still land in the map
+        struct SVU { float vp[16]; Mat4 model; float p[4]; };
+        for (int c = 0; c < q.cascades; ++c) {
+            const float R = q.radius[c];
+            const Vec3 centre = cam.pos + fwd * (R * 0.4f); // the camera stays inside; most of the area is ahead
+            const float cc[3] = {centre.x, centre.y, centre.z};
+            const game::SunShadowFit fit = game::fitSunShadow(sun, cc, R, kCasterReach, q.resolution);
+            std::memcpy(f.shadowVP[c], fit.viewProj.data(), sizeof(f.shadowVP[c]));
+            f.shadowSphere[c][0] = centre.x, f.shadowSphere[c][1] = centre.y, f.shadowSphere[c][2] = centre.z, f.shadowSphere[c][3] = R;
+            if (c == 0) f.shadowBias[0] = 1.5f / fit.depthRange;
+            const SDL_GPUViewport vp{float(c * q.resolution), 0.0f, float(q.resolution), float(q.resolution), 0.0f, 1.0f};
+            SDL_SetGPUViewport(sp, &vp);
+            SVU u{};
+            std::memcpy(u.vp, fit.viewProj.data(), sizeof(u.vp));
+            const float cr = R * 1.5f + kCasterReach; // rough caster cull: farther items cannot reach the map
+            auto inReach = [&](const float* mn, const float* mx) {
+                for (int a = 0; a < 3; ++a) {
+                    const float lo = cc[a] - cr, hi = cc[a] + cr;
+                    if (mx[a] < lo || mn[a] > hi) return false;
+                }
+                return true;
+            };
+            for (const DrawItem& it : items) {
+                if (it.effects || it.depthMax < 1.0f) continue; // sprites; the view model (first-person arms and gun)
+                if (it.model) {
+                    if (it.model->hasBounds) {
+                        float mn[3], mx[3];
+                        game::transformedBoxBounds(it.model->mins, it.model->maxs, it.transform.data(), mn, mx);
+                        if (!inReach(mn, mx)) continue;
+                    }
+                    bool any = false;
+                    for (const Batch& b : it.model->batches) any = any || ((b.pass == Pass::Opaque || b.pass == Pass::AlphaTest) && b.fxKind == 0);
+                    if (!any) continue;
+                    const SDL_GPUBufferBinding vb{it.model->vertices, it.model->vertexOffset};
+                    SDL_BindGPUVertexBuffers(sp, 0, &vb, 1);
+                    const SDL_GPUBufferBinding ib{it.model->indices, 0};
+                    SDL_BindGPUIndexBuffer(sp, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                    u.model = it.transform;
+                    if (c == 0) ++enhStats.casters;
+                    for (const Batch& b : it.model->batches) {
+                        if ((b.pass != Pass::Opaque && b.pass != Pass::AlphaTest) || b.fxKind != 0 || !b.indexCount) continue;
+                        u.p[0] = b.pass == Pass::AlphaTest ? 1.0f : 0.0f;
+                        SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
+                        const SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
+                        SDL_BindGPUFragmentSamplers(sp, 0, &tb, 1);
+                        enhStats.casterTriangles += b.indexCount / 3;
+                        drawIndexed(sp, b.indexCount, 1, b.firstIndex, 0, 0);
+                    }
+                } else if (it.worldBatches) { // brush movers (doors, gates): the world buffers at the entity transform
+                    const SDL_GPUBufferBinding vb{scene.vertices, 0};
+                    SDL_BindGPUVertexBuffers(sp, 0, &vb, 1);
+                    const SDL_GPUBufferBinding ib{scene.indices, 0};
+                    SDL_BindGPUIndexBuffer(sp, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                    u.model = it.transform;
+                    if (c == 0) ++enhStats.casters;
+                    for (const Batch& b : *it.worldBatches) {
+                        if ((b.pass != Pass::Opaque && b.pass != Pass::AlphaTest) || !b.indexCount) continue;
+                        u.p[0] = b.pass == Pass::AlphaTest ? 1.0f : 0.0f;
+                        SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
+                        const SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
+                        SDL_BindGPUFragmentSamplers(sp, 0, &tb, 1);
+                        enhStats.casterTriangles += b.indexCount / 3;
+                        drawIndexed(sp, b.indexCount, 1, b.firstIndex, 0, 0);
+                    }
+                }
+            }
+        }
+        SDL_EndGPURenderPass(sp);
+        shadowCascadesNow = q.cascades;
+        f.shadowParams[0] = float(q.cascades);
+        f.shadowParams[1] = 1.0f / float(q.resolution);
+        f.shadowParams[2] = 1.5f; // normal offset, texels
+        f.shadowParams[3] = float(q.pcfTaps);
+        f.shadowBias[1] = 1.0f;
+    }
+    // Light-grid lattices of the model items near the camera (docs/render-enhanced.md "Per-pixel light grid").
+    itemLattice.assign(items.size(), EnhDrawUC{});
+    latticeData.clear();
+    if (enh.gridPerPixel && scene.grid) {
+        if (gridCacheOf != scene.serial) gridCache.clear(), gridCacheOf = scene.serial; // samples at grid nodes, kept per map
+        constexpr float kLatticeDist = 2500.0f;
+        for (size_t i = 0; i < items.size(); ++i) {
+            const DrawItem& it = items[i];
+            if (!it.model || !it.hasProbe || !it.model->hasBounds || it.effects) continue;
+            float mn[3], mx[3];
+            game::transformedBoxBounds(it.model->mins, it.model->maxs, it.transform.data(), mn, mx);
+            const float dx = 0.5f * (mn[0] + mx[0]) - cam.pos.x, dy = 0.5f * (mn[1] + mx[1]) - cam.pos.y, dz = 0.5f * (mn[2] + mx[2]) - cam.pos.z;
+            if (dx * dx + dy * dy + dz * dz > kLatticeDist * kLatticeDist) continue;
+            const game::ProbeLattice lat = game::probeLattice(mn, mx);
+            const size_t base = latticeData.size() / 28;
+            for (int z = 0; z < lat.n[2]; ++z)
+                for (int y = 0; y < lat.n[1]; ++y)
+                    for (int x = 0; x < lat.n[0]; ++x) {
+                        const int64_t gx = lat.node0[0] + x * lat.stride[0], gy = lat.node0[1] + y * lat.stride[1], gz = lat.node0[2] + z * lat.stride[2];
+                        const int64_t key = ((gx + 0x100000) << 42) | ((gy + 0x100000) << 21) | (gz + 0x100000);
+                        auto hit = gridCache.find(key);
+                        if (hit == gridCache.end()) {
+                            std::array<float, 28> e{};
+                            assets::LightGridCoeffs c;
+                            float sunVis = 1.0f;
+                            const std::array<float, 3> p = {float(gx) * game::kGridCell[0], float(gy) * game::kGridCell[1], float(gz) * game::kGridCell[2]};
+                            if (scene.grid->sample(p, c, sunVis)) {
+                                for (int ch = 0; ch < 3; ++ch)
+                                    for (int h = 0; h < 2; ++h)
+                                        for (int k = 0; k < 4; ++k) e[size_t(ch * 8 + h * 4 + k)] = c[size_t(ch)][size_t(h * 4 + k)];
+                                e[24] = sunVis;
+                            } else e[27] = -1.0f; // no grid point here: the item's own sample stands in
+                            hit = gridCache.emplace(key, e).first;
+                        }
+                        if (hit->second[27] < 0.0f) {
+                            for (int r = 0; r < 6; ++r)
+                                for (int k = 0; k < 4; ++k) latticeData.push_back(it.probe[r][k]);
+                            latticeData.insert(latticeData.end(), {it.sunVisibility, 0.0f, 0.0f, 0.0f});
+                        } else latticeData.insert(latticeData.end(), hit->second.begin(), hit->second.end());
+                    }
+            EnhDrawUC& d = itemLattice[i];
+            d.lattice[0] = float(base), d.lattice[1] = float(lat.n[0]), d.lattice[2] = float(lat.n[1]), d.lattice[3] = float(lat.n[2]);
+            for (int a = 0; a < 3; ++a) d.origin[a] = lat.origin[a], d.step[a] = lat.step[a];
+            ++enhStats.latticeItems;
+            enhStats.latticePoints += lat.count();
+        }
+        if (!latticeData.empty()) {
+            const uint32_t bytes = uint32_t(latticeData.size() * sizeof(float));
+            if (bytes > latticeCap) {
+                SDL_ReleaseGPUBuffer(dev, latticeBuf);
+                SDL_ReleaseGPUTransferBuffer(dev, latticeXfer);
+                latticeCap = std::max(bytes, latticeCap * 2);
+                SDL_GPUBufferCreateInfo bi{};
+                bi.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
+                bi.size = latticeCap;
+                latticeBuf = SDL_CreateGPUBuffer(dev, &bi);
+                SDL_GPUTransferBufferCreateInfo ti{};
+                ti.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+                ti.size = latticeCap;
+                latticeXfer = SDL_CreateGPUTransferBuffer(dev, &ti);
+                if (!latticeBuf || !latticeXfer) sdlFail("lattice buffer");
+            }
+            void* dst = SDL_MapGPUTransferBuffer(dev, latticeXfer, true);
+            std::memcpy(dst, latticeData.data(), bytes);
+            SDL_UnmapGPUTransferBuffer(dev, latticeXfer);
+            SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+            const SDL_GPUTransferBufferLocation src{latticeXfer, 0};
+            const SDL_GPUBufferRegion region{latticeBuf, 0, bytes};
+            SDL_UploadToGPUBuffer(cp, &src, &region, true);
+            SDL_EndGPUCopyPass(cp);
+        }
+    }
+    SDL_PushGPUFragmentUniformData(cmd, 1, &f, sizeof f);
+}
+
+void Renderer::enhPost(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam, bool floatzReady) {
+    auto pass = [&](SDL_GPUGraphicsPipeline* pipe, SDL_GPUTexture* dst, bool load, const SDL_GPUTextureSamplerBinding* src, uint32_t nsrc,
+                    const void* u, uint32_t usize) {
+        SDL_GPUColorTargetInfo ct{};
+        ct.texture = dst;
+        ct.load_op = load ? SDL_GPU_LOADOP_LOAD : SDL_GPU_LOADOP_DONT_CARE;
+        ct.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+        SDL_BindGPUGraphicsPipeline(p, pipe);
+        SDL_BindGPUFragmentSamplers(p, 0, src, nsrc);
+        if (usize) SDL_PushGPUFragmentUniformData(cmd, 0, u, usize);
+        SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+        SDL_EndGPURenderPass(p);
+    };
+    if (enh.autoExposure) {
+        const SDL_GPUTextureSamplerBinding sb{sceneTex, clampSampler};
+        pass(enhLumPipe, lumTex, false, &sb, 1, nullptr, 0);
+        SDL_GenerateMipmapsForGPUTexture(cmd, lumTex);
+        const game::ExposureParams ep;
+        const bool reset = !expoValid || renderTimeMs < expoLastMs;
+        const float dt = reset ? 0.0f : std::min(float(renderTimeMs - expoLastMs) * 0.001f, 0.25f);
+        const float u[12] = {ep.keyLog2, ep.strength, ep.minEv, ep.maxEv, dt, ep.tauBrighten, ep.tauDarken, reset ? 1.0f : 0.0f,
+                             float(lumLevels - 1), 0, 0, 0};
+        const SDL_GPUTextureSamplerBinding eb[2] = {{lumTex, clampSampler}, {expoTex[expoCur], pointClampSampler}};
+        pass(enhExpoPipe, expoTex[1 - expoCur], false, eb, 2, u, sizeof u);
+        expoCur = 1 - expoCur;
+        expoValid = true;
+        expoLastMs = renderTimeMs;
+    }
+    // Camera motion vectors (docs/render-enhanced.md "Motion vectors"); for now only the debug view consumes them.
+    const Mat4 vp = cam.viewProj(float(w) / float(h));
+    if (enh.motionDebug && floatzReady) {
+        if (!velocityTex || velocityW != w || velocityH != h) {
+            if (velocityTex) SDL_ReleaseGPUTexture(dev, velocityTex);
+            SDL_GPUTextureCreateInfo ti{};
+            ti.type = SDL_GPU_TEXTURETYPE_2D;
+            ti.format = SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
+            ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            ti.width = w, ti.height = h, ti.layer_count_or_depth = 1, ti.num_levels = 1;
+            velocityTex = SDL_CreateGPUTexture(dev, &ti);
+            if (!velocityTex) sdlFail("velocity texture");
+            velocityW = w, velocityH = h;
+        }
+        game::Mat4c cur{}, inv{};
+        std::memcpy(cur.data(), vp.data(), sizeof(float) * 16);
+        if (game::invertMat(cur, inv)) {
+            const Vec3 f = cam.forward();
+            const float eye[3] = {cam.pos.x, cam.pos.y, cam.pos.z}, fwd[3] = {f.x, f.y, f.z};
+            const auto zl = game::clipDepthLine(cur, eye, fwd);
+            struct { float inv[16], prev[16], z[4]; } vu{};
+            std::memcpy(vu.inv, inv.data(), sizeof vu.inv);
+            Mat4 prev = hasPrevViewProj ? prevViewProj : vp;
+            if (const char* py = std::getenv("IW2_ENH_PREV_CAM")) { // debug (--shot): the previous camera = this one moved by dx,dy,dz,dyaw
+                Camera pc = cam;
+                float d[4] = {0, 0, 0, 0};
+                std::sscanf(py, "%f,%f,%f,%f", &d[0], &d[1], &d[2], &d[3]);
+                pc.pos = pc.pos + Vec3{d[0], d[1], d[2]};
+                pc.yaw += d[3];
+                prev = pc.viewProj(float(w) / float(h));
+            }
+            std::memcpy(vu.prev, prev.data(), sizeof vu.prev);
+            vu.z[0] = zl[0], vu.z[1] = zl[1], vu.z[2] = 262144.0f * 2.0f * 1.7f; // below the $floatz sky clear (build floatz)
+            const SDL_GPUTextureSamplerBinding fb{floatzTex, pointClampSampler};
+            pass(enhVelocityPipe, velocityTex, false, &fb, 1, &vu, sizeof vu);
+        }
+    }
+    prevViewProj = vp;
+    hasPrevViewProj = true;
+    if (enh.bloom) {
+        ensureBloomTargets(w, h);
+        const int n = int(bloomTex.size());
+        float u[8] = {1.0f / float(w), 1.0f / float(h), 1.0f, 0.5f, enh.exposureBias, enh.autoExposure ? 1.0f : 0.0f, 0, 0};
+        const SDL_GPUTextureSamplerBinding pb[2] = {{sceneTex, clampSampler}, {expoTex[expoCur], pointClampSampler}};
+        pass(enhBloomPrePipe, bloomTex[0], false, pb, 2, u, sizeof u);
+        for (int i = 1; i < n; ++i) {
+            u[0] = 1.0f / float(bloomSize[size_t(i - 1)][0]), u[1] = 1.0f / float(bloomSize[size_t(i - 1)][1]);
+            const SDL_GPUTextureSamplerBinding db{bloomTex[size_t(i - 1)], clampSampler};
+            pass(enhBloomDownPipe, bloomTex[size_t(i)], false, &db, 1, u, sizeof u);
+        }
+        for (int i = n - 2; i >= 0; --i) {
+            u[0] = 1.0f / float(bloomSize[size_t(i + 1)][0]), u[1] = 1.0f / float(bloomSize[size_t(i + 1)][1]);
+            const SDL_GPUTextureSamplerBinding ub{bloomTex[size_t(i + 1)], clampSampler};
+            pass(enhBloomUpPipe, bloomTex[size_t(i)], true, &ub, 1, u, sizeof u);
+        }
+    }
+}
+
 // Texture filtering is forced (deliberate deviation, docs/spec/material.md "Texture sampler state"): anisotropic at the highest
 // supported level, whatever r_textureMode / r_anisotropy in the profile, the config or a --cvar says (the dvars stay registered
 // and archived as the original defines them; nothing reads them). The graphics page's filter row is hidden (src/ui/menuhide.cpp).
@@ -4166,7 +4691,9 @@ std::vector<uint8_t> captureRgba(SDL_GPUDevice* dev, Renderer& r, const Scene& s
     if (!target || !tb) sdlFail("screenshot resources");
 
     SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
+    r.captureMode = true; // an 8-bit SDR image even from an EDR window
     r.draw(cmd, target, w, h, scene, cam, items, overlay, blur);
+    r.captureMode = false;
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion region{};
     region.texture = target;
@@ -4761,7 +5288,20 @@ int main(int argc, char** argv) {
         };
         upgradeKeyBindings();
         // renderer dvars live in the menu store; r_texturemode / r_anisotropy are not passed on: the filter is forced (applyTextureFilter)
-        for (const auto& [k, v] : extraCvars) if (k == "r_gamma" || k == "r_ignorehwgamma" || k == "r_aasamples") uiCvars[k] = v;
+        for (const auto& [k, v] : extraCvars) if (k == "r_gamma" || k == "r_ignorehwgamma" || k == "r_aasamples" || k.rfind("r_enh", 0) == 0) uiCvars[k] = v;
+        // Enhanced rendering mode (docs/render-enhanced.md): read once, when the renderer starts (cvar names are case-insensitive).
+        const auto enhancedSettings = [&] {
+            return game::enhancedSettings([&](const char* n) {
+                std::string want = n;
+                std::transform(want.begin(), want.end(), want.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+                for (const auto& [k, v] : uiCvars) {
+                    std::string kl = k;
+                    std::transform(kl.begin(), kl.end(), kl.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+                    if (kl == want) return v;
+                }
+                return std::string();
+            });
+        };
         for (const char* k : {"snd_slavefadetime", "snd_slaveFadeTime"}) if (uiCvars.count(k)) mixer.slaveFadeMs = std::clamp(std::atoi(uiCvars[k].c_str()), 0, 5000);
         mixer.masterVolume = uiCvars.count("snd_volume") ? std::clamp(float(std::atof(uiCvars["snd_volume"].c_str())), 0.0f, 1.0f) * 0.75f : mixer.masterVolume;
         // Debug IW2_START_TRACE=1: level start timing (real ms since this point, level time, sound starts, load end, first frames).
@@ -9727,6 +10267,7 @@ int main(int argc, char** argv) {
                 std::cout << "shoot: " << world->stats.bulletImpacts << " impacts\n";
                 atExitMarks = true;
             }
+            renderer.enh = enhancedSettings();
             renderer.init(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, aaSamples());
             syncWeapon();
             pweapon.update(1.0f, {});
@@ -9922,7 +10463,27 @@ int main(int argc, char** argv) {
                     gpuMs.push_back(double(t3 - t2) * 1e-6);
                     totalMs.push_back(double(t3 - t0) * 1e-6);
                 }
+                // IW2_BENCH_GPU=M: then M frames of the same items encoded and submitted back to back, waited for once at the end, so the GPU
+                // stays busy at full clock: the mean time per frame is the GPU-bound frame time (or the encode time when that is larger).
+                double gpuBoundMs = 0.0;
+                if (const char* bg = std::getenv("IW2_BENCH_GPU"); bg && std::atoi(bg) > 0) {
+                    const int m = std::atoi(bg);
+                    auto benchItems = killcamView ? gatherKillcamItems(cam, 1.0f) : gatherItems(cam);
+                    benchItems.insert(benchItems.end(), shotVmItems.begin(), shotVmItems.end());
+                    const uint64_t g0 = SDL_GetTicksNS();
+                    SDL_GPUFence* last = nullptr;
+                    for (int i = 0; i < m; ++i) {
+                        SDL_GPUCommandBuffer* bcmd = SDL_AcquireGPUCommandBuffer(dev);
+                        renderer.draw(bcmd, benchTarget, width, height, scene, cam, benchItems, benchHud, forcedBlur);
+                        if (i + 1 < m) SDL_SubmitGPUCommandBuffer(bcmd);
+                        else last = SDL_SubmitGPUCommandBufferAndAcquireFence(bcmd);
+                    }
+                    SDL_WaitForGPUFences(dev, true, &last, 1);
+                    SDL_ReleaseGPUFence(dev, last);
+                    gpuBoundMs = double(SDL_GetTicksNS() - g0) * 1e-6 / double(m);
+                }
                 SDL_ReleaseGPUTexture(dev, benchTarget);
+                if (gpuBoundMs > 0.0) std::printf("bench: gpu-bound %.2f ms per frame\n", gpuBoundMs);
                 if (g_skinStats.byName)
                     for (const auto& [nm, cv] : *g_skinStats.byName) std::printf("bench skinned %s x%d %llu vertices\n", nm.c_str(), cv.first, static_cast<unsigned long long>(cv.second));
                 auto median = [](std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; };
@@ -9937,6 +10498,9 @@ int main(int argc, char** argv) {
                             "visits, %d portals taken, far %.0f\n", renderer.cullStats.soupsVisible, renderer.cullStats.soups, renderer.cullStats.modelsVisible,
                             renderer.cullStats.models, renderer.cullStats.modelsBeyond, renderer.cullStats.cell, renderer.cullStats.visits,
                             renderer.cullStats.portals, double(renderer.farDist));
+                if (renderer.enh.enabled)
+                    std::printf("bench: enhanced: %d shadow casters (%u triangles per cascade set), %d items with a light-grid lattice (%d points)\n",
+                                renderer.enhStats.casters, renderer.enhStats.casterTriangles, renderer.enhStats.latticeItems, renderer.enhStats.latticePoints);
             }
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
             Uploader::releasePool(dev);
@@ -9950,6 +10514,18 @@ int main(int argc, char** argv) {
         if (!window) sdlFail("SDL_CreateWindow");
         logDisplay(window, language);
         if (!SDL_ClaimWindowForGPUDevice(dev, window)) sdlFail("SDL_ClaimWindowForGPUDevice");
+        renderer.enh = enhancedSettings();
+        // Enhanced mode with r_enhEdr: an extended linear swapchain where the system offers one (docs/render-enhanced.md "EDR output").
+        SDL_GPUSwapchainComposition composition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+        if (renderer.enh.enabled && renderer.enh.edr &&
+            SDL_WindowSupportsGPUSwapchainComposition(dev, window, SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR) &&
+            SDL_SetGPUSwapchainParameters(dev, window, SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR, SDL_GPU_PRESENTMODE_VSYNC)) {
+            composition = SDL_GPU_SWAPCHAINCOMPOSITION_HDR_EXTENDED_LINEAR;
+            renderer.edrOut = true;
+        }
+        if (renderer.enh.enabled)
+            std::cout << "enhanced rendering: preset " << renderer.enh.preset << ", sun shadows " << renderer.enh.sunShadows << ", output "
+                      << (renderer.edrOut ? "EDR" : "SDR") << "\n";
         renderer.init(dev, SDL_GetGPUSwapchainTextureFormat(dev, window), aaSamples());
         SDL_SetWindowRelativeMouseMode(window, true);
 
@@ -10726,6 +11302,14 @@ int main(int argc, char** argv) {
             const uint64_t now = SDL_GetTicksNS();
             const float dt = float(now - last) * 1e-9f;
             frameDt = std::min(dt, 0.1f);
+            if (const char* at = std::getenv("IW2_SCREENSHOT_AT")) { // debug: one screenshot command after that many seconds in the window
+                static double shotClock = 0.0;
+                static bool shotDone = false;
+                shotClock += double(dt);
+                if (!shotDone && shotClock >= std::atof(at)) shotDone = true, pendingShot = Shot::Png;
+            }
+            if (renderer.edrOut) // the EDR headroom follows the display brightness
+                renderer.edrWhite = game::toneWhite(SDL_GetFloatProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f));
             if (presentModeDirty) {
                 presentModeDirty = false;
                 const bool vsync = std::atoi(menuEnv.getCvar("r_swapInterval").c_str()) != 0 || std::atoi(menuEnv.getCvar("r_swapinterval").c_str()) != 0;
@@ -10734,7 +11318,7 @@ int main(int argc, char** argv) {
                     if (SDL_WindowSupportsGPUPresentMode(dev, window, SDL_GPU_PRESENTMODE_IMMEDIATE)) pm = SDL_GPU_PRESENTMODE_IMMEDIATE;
                     else if (SDL_WindowSupportsGPUPresentMode(dev, window, SDL_GPU_PRESENTMODE_MAILBOX)) pm = SDL_GPU_PRESENTMODE_MAILBOX;
                 }
-                if (!SDL_SetGPUSwapchainParameters(dev, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, pm))
+                if (!SDL_SetGPUSwapchainParameters(dev, window, composition, pm))
                     std::cerr << "present mode: " << SDL_GetError() << "\n";
                 std::cout << "present mode: " << (pm == SDL_GPU_PRESENTMODE_VSYNC ? "vsync" : pm == SDL_GPU_PRESENTMODE_IMMEDIATE ? "immediate" : "mailbox") << "\n";
             }
