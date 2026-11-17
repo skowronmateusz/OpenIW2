@@ -6642,14 +6642,11 @@ int main(int argc, char** argv) {
             menuMx = 320.0f, menuMy = 240.0f;
             if (!frontStack.open(menuName)) std::cerr << "warning: script menu " << menuName << " not found\n";
         };
-        // MP togglemenu (client 0x4107b0, also ESC in a running level): the script main menu the server named with
-        // setClientCvar g_scriptMainMenu (the client keeps it in its own buffer, 0x4d1b3e) opens; when it is not a loaded
-        // menu, "main". The MP game is not paused by it.
+        // MP togglemenu (client 0x4107b0, also ESC in a running level): every menu is closed (0x53adc0), then the script main
+        // menu the server named with setClientCvar g_scriptMainMenu (the client keeps it in its own buffer, 0x4d1b3e) opens;
+        // when it is not a loaded menu, "main". It does not look at the open menus first. The MP game is not paused by it.
         auto mpToggleMenu = [&]() {
-            if (!frontStack.empty()) {
-                if (const ui::Menu* t = frontStack.top()) frontStack.close(t->name);
-                return;
-            }
+            frontStack.closeAll();
             menuMx = 320.0f, menuMy = 240.0f;
             // menuEnv.getCvar: the local server's setClientCvar, or on a network client the "v" server command (menuEnv.setCvar).
             const std::string sm = menuEnv.getCvar("g_scriptMainMenu");
@@ -8760,6 +8757,15 @@ int main(int argc, char** argv) {
                 }
                 fadeDrawn = true;
             };
+            // Intermission (pm_type 5): the cgame 2D pass draws only the forced scoreboard (0x4cbca0 -> 0x4cb810). The UI paints the
+            // menus after it (0x414a37 -> 0x532540): a menu that survives the intermission ESC presses (a fullScreen one, see
+            // MenuStack::intermissionEscape) lies over the scoreboard.
+            if (world && world->multiplayer() && mpIntermissionView) {
+                std::vector<Quad2D> board;
+                drawMpScoreboard(board, w, h);
+                game::intermission2D(out, front, scopeQuads, board);
+                hudElemStart = 0;
+            }
             if (!frontStack.empty()) {
                 out.insert(out.end(), front.begin(), front.end());
                 front.clear();
@@ -9004,11 +9010,6 @@ int main(int argc, char** argv) {
             // Draw order of CG_DrawActive (0x4bfa70): damage icons, crosshair + scope overlay (0x4bd760 -> 0x4bcdd0), then the hud
             // elements of both layers (0x4c3030), the HUD menus, the subtitles and the rest: the overlay lies below all of them.
             game::insertBelow(out, hudElemStart, scopeQuads);
-            // Intermission (pm_type 5): the 2D pass draws only the forced scoreboard (0x4cbca0 -> 0x4cb810); open menus stay.
-            if (world && world->multiplayer() && mpIntermissionView) {
-                out.clear();
-                drawMpScoreboard(out, w, h);
-            }
             out.insert(out.end(), front.begin(), front.end());
             // Without menus the fade to black is drawn last, over the HUD (CG_DrawActive 0x4bfaa4: 0x4bda70 after the 2D elements).
             if (!fadeDrawn) drawScreenFade();
@@ -11828,6 +11829,11 @@ int main(int argc, char** argv) {
                 }
             }
             if (profileDirty) saveProfileCfg(); // write the archived cvars (config.cfg) after a menu changed one
+            // MP intermission (cgame 0x4cb810, before the 2D pass and the UI paint of the frame; docs/spec/mp-ui.md "Escape at
+            // intermission"): unless a fullScreen menu is open, ESC goes to the UI three times, so the in-game menu that ESC
+            // (togglemenu) opened this frame closes again before it is drawn, blurs the world or takes the cursor. The whole 2D
+            // pass, and with it this rule, is skipped with cg_draw2D 0 (0x4cbcb0).
+            if (world && world->multiplayer() && mpIntermissionView && menuEnv.getCvar("cg_draw2D") != "0") frontStack.intermissionEscape();
             frontStack.tick(int(SDL_GetTicks()));
             if (const auto sv = uiCvars.find("snd_volume"); sv != uiCvars.end()) mixer.masterVolume = std::clamp(float(std::atof(sv->second.c_str())), 0.0f, 1.0f) * 0.75f;
             frontStack.resumeLoop();

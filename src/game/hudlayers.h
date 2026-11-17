@@ -15,4 +15,14 @@ void insertBelow(std::vector<T>& list, size_t pos, const std::vector<T>& quads) 
     list.insert(list.begin() + std::ptrdiff_t(std::min(pos, list.size())), quads.begin(), quads.end());
 }
 
+// MP intermission (pm_type 5; VAs in the patch 1.3 MP executable): the cgame 2D pass (0x4cbca0) jumps to the scoreboard (0x4cb810) and draws nothing else: no HUD,
+// no script HUD elements (foreground ones included), no scope overlay. The client paints the UI menus after the cgame pass
+// (0x414a37 -> 0x532540), so the caller adds the menus after this and a menu that stays open lies over the scoreboard.
+template <class T>
+void intermission2D(std::vector<T>& cgame, std::vector<T>& foreground, std::vector<T>& scope, const std::vector<T>& scoreboard) {
+    cgame = scoreboard;
+    foreground.clear();
+    scope.clear();
+}
+
 } // namespace iw2::game

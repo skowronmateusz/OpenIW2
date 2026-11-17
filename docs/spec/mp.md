@@ -131,9 +131,16 @@ What they draw over (the game view, never the main-menu backdrop `bg`): docs/spe
   exactly two arguments (else it prints its usage text, 0x5a3328 / 0x5a32f8) and a connected client; it looks the menu
   name up case-insensitively among the 32 precached menu config strings (index -1 when absent) and sends the same
   `mr` command. `default_mp.cfg` binds x to `openscriptmenu ingame changeweapon` (the weapon menu of the client's team).
-- `togglemenu` (handler 0x4107b0, bound to ESCAPE in `default_mp.cfg`): in a running game it opens the menu named by
-  the client's `g_scriptMainMenu` buffer; when no menu of that name opens, it opens `main`. TODO(spec): the UI state
-  calls around it (0x415830, 0x53adc0) and the branch taken while the UI is already active.
+- `togglemenu` (handler 0x4107b0, bound to ESCAPE in `default_mp.cfg`) does nothing before the menus are loaded (UI
+  menu count, +0x22c). In a running game it stores 2 at UI state +0x49c, sets the key catcher to the UI bit (8; 0x415830
+  keeps the console bit 1), closes every menu (0x53adc0) and opens the menu named by the client's `g_scriptMainMenu`
+  buffer (0x1518e7c, opened by name through 0x53e600); when no menu of that name exists it opens `main`. It does not test
+  the open menus first: while the UI has the keys, ESC goes to the menus and not to the binding. When the flag at
+  0x64a170 (also passed to the cgame frame, 0x4148a0) or the byte at +0xdc of the client block behind 0x5cf444 is set,
+  it stores 1 at +0x49c and opens `main` without closing the others, then `error_popmenu` when `com_errorMessage` is not
+  empty and a string test against `;` (0x44a670) passes. TODO(spec): what those two flags are and that test (the port
+  never sets the flags). At intermission the cgame closes the in-game
+  menu again in the same frame (docs/spec/mp-ui.md "Escape at intermission").
 
 ### Weapon for the next respawn
 A weapon response while the player is alive only stores the choice (`self.pers["weapon"]`) and tells that client it

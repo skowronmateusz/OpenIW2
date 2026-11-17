@@ -180,6 +180,45 @@ void world(const char* main) {
     CHECK(st.open("team_britishgerman") && names(st) == "team_britishgerman");
     st.key(ui::MenuStack::Key::Escape);
     CHECK(st.menus().empty());
+
+    // Intermission (docs/spec/mp-ui.md "Escape at intermission", cgame 0x4cb810): every frame, unless a fullScreen menu is open,
+    // ESC goes to the UI three times. The in-game menu that ESC (togglemenu) opened closes before it is drawn.
+    inGame = true;
+    CHECK(st.open(ui::toggleMenuTarget("ingame", true)) && names(st) == "ingame");
+    CHECK(!st.fullScreenOpen());
+    CHECK(st.intermissionEscape() == ui::MenuStack::kIntermissionEscPresses);
+    CHECK(st.menus().empty());
+    // ingame, key 5 -> leavegame: closed too.
+    CHECK(st.open("ingame") && st.execKey('5') && names(st) == "leavegame");
+    st.intermissionEscape();
+    CHECK(st.menus().empty());
+    // Nothing open: the presses change nothing.
+    CHECK(st.intermissionEscape() == ui::MenuStack::kIntermissionEscPresses);
+    CHECK(st.menus().empty());
+    // Exactly three presses per frame: of four stacked menus whose onESC closes only themselves, the bottom one is left, and the
+    // next frame closes it.
+    // (callvote and muteplayer are left out by the port's hide table, src/ui/menuhide.cpp.)
+    for (const char* f : {"team_americangerman", "weapon_british", "weapon_german"}) CHECK(lib.loadFile(std::string("ui_mp/scriptmenus/") + f + ".menu"));
+    for (const char* n : {"ingame", "team_americangerman", "weapon_british", "weapon_german"}) CHECK(st.open(n));
+    CHECK(st.menus().size() == 4);
+    st.intermissionEscape();
+    CHECK(names(st) == "ingame");
+    st.intermissionEscape();
+    CHECK(st.menus().empty());
+    // A menu without onESC (quickcommands) on top: the first press closes every menu (UI_KeyEvent 0x538380 -> 0x53adc0).
+    CHECK(lib.loadFile("ui_mp/scriptmenus/quickcommands.menu"));
+    CHECK(st.open("ingame") && st.open("weapon_british") && st.open("quickcommands") && st.menus().size() == 3);
+    st.intermissionEscape();
+    CHECK(st.menus().empty());
+    // A fullScreen menu (main, the togglemenu fallback without g_scriptMainMenu; ui_mp/main.menu:40) stops the presses: it stays
+    // open and is drawn over the scoreboard.
+    CHECK(st.open(ui::toggleMenuTarget("", false)) && names(st) == home);
+    CHECK(st.fullScreenOpen());
+    CHECK(st.intermissionEscape() == 0);
+    CHECK(names(st) == home);
+    st.key(ui::MenuStack::Key::Escape); // main_text's onESC still closes it in a game
+    CHECK(st.menus().empty());
+    inGame = false;
 }
 
 } // namespace

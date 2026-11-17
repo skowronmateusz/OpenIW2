@@ -279,12 +279,41 @@ ui_mp/joinserver.menu:35-41 and 971-977, ui_mp/createserver.menu:19-50, ui_mp/sc
   createserver_serversettings main`, Back or ESC (createserver onClose closes the three panels and reopens `main_text`) ->
   front page; options, profile, single-player and quit popups -> ESC -> front page.
 - In an MP level, default_mp.cfg binds ESCAPE to `togglemenu`; the key goes through that binding only (one press = one
-  toggle: open `g_scriptMainMenu`, e.g. `ingame`, or close the top menu). With a menu open, ESC goes to the menu's onESC.
+  togglemenu: close every menu, then open `g_scriptMainMenu`, e.g. `ingame`; docs/spec/mp.md). With a menu open, ESC goes to
+  the menu's onESC.
   `ingame` closes on ESC; its key 5 opens `leavegame`, whose yes button closes it and runs `disconnect`.
 - The port treats every MP level as connection state 8, a listen server with bots and a network client alike, so
   `ingameclose` acts there (in SP the cl_paused rule stays). togglemenu reads g_scriptMainMenu wherever the client got it:
   the local server's setClientCvar or, on a network client, the `v` server command; without it the client falls back
   to `main`, which `ingameclose main` closes in a game. Menus the server opened (`t`) close through their own onESC.
+
+## Escape at intermission
+
+Evidence: VAs in the patch 1.3 MP executable; `ui_mp/scriptmenus/ingame.menu:10-21`, `ui_mp/main.menu:40`, `dm.gsc:640-651`.
+Implementation: `ui::MenuStack::intermissionEscape` (src/ui/frontend.cpp), called once per frame by iw2view. Test:
+tests/test_mpmenunav.cpp (ctest `mpmenunav`).
+
+- The cgame 2D pass (0x4cbca0) does nothing while its frame argument at 0x14ee08c is set (0 for the normal frame, 0x4148b6) or
+  while `cg_draw2D` is 0. Otherwise, with the local player state's pm_type 5 (intermission), it goes straight to 0x4cb810: unless
+  an open menu is fullScreen (0x5422f0: the open list from the top, a visible menu whose integer +0x214 is nonzero), it hands key
+  0x1b (ESC), down, to the UI key handler (0x538380) three times; then it shows the scoreboard (docs/spec/mp-scoreboard.md).
+- Each of these presses is an ordinary ESC for the UI: with a focused menu, no visible fullScreen menu and no onESC (+0x24c) on
+  that menu, every menu closes (0x53adc0); otherwise the menu key handler (0x53ea00, jump table entry for 0x1b: 0x53eccf) runs
+  the menu's onESC, unless the flag at 0x19a1c90 is set. Once no menu has the focus, the handler clears the UI key catcher bit
+  (8) and sets `cl_paused` to 0, as for any ESC that closes the last menu.
+- The client draws the frame as cgame pass, then the UI (0x414a37: with the UI key catcher bit set and a connection state other
+  than 1, UI_Refresh 0x532540 paints the menus and the cursor). The presses run before the UI paint of the same frame.
+- Result: ESC at intermission runs `togglemenu` as in the game; it closes every menu and opens `g_scriptMainMenu` (`ingame` or
+  one of its variants, which the gametype scripts set and do not change at the end of the map: they close the menus and the
+  in-game menu at `dm.gsc:640-651`). `ingame` is not fullScreen and its onESC closes it, so the menu is gone before it is drawn
+  and its `blurWorld` never applies: the scoreboard stays, unblurred, and no menu shows. Up to three non-fullscreen menus close
+  per frame, including menus the server opens during intermission. A fullScreen menu (`main`, the togglemenu fallback when
+  `g_scriptMainMenu` is not a known menu) stops the presses and is painted over the scoreboard.
+- The port runs the rule after the frame's input and console commands and before the 2D pass, for a listen server and a network
+  client alike (the local client's session state 3, or the server's pm_type 5). The intermission 2D pass replaces only the cgame
+  part (HUD, script HUD elements, scope overlay) by the scoreboard; the menus are drawn after it (`game::intermission2D`,
+  src/game/hudlayers.h). TODO(spec): the meaning of the frame argument at 0x14ee08c and of the flag at 0x19a1c90 (both taken as
+  0 here); the port has no `cg_draw2D` otherwise and reads the dvar only for this rule.
 
 ## Join server
 

@@ -43,7 +43,9 @@ row client numbers are the server's. Implemented: iw2view reads the name and tea
 - `+scores` shows it, `-scores` hides it and stamps the release time; after the release it fades out over 100 ms.
   Nothing is drawn while `cl_paused` is set.
 - During intermission (the local player state's pm_type 5) the 2D pass of the client draws only the scoreboard, at
-  full alpha (0x4cbca0 -> 0x4cb810): no HUD, no crosshair, no script HUD elements.
+  full alpha (0x4cbca0 -> 0x4cb810): no HUD, no crosshair, no script HUD elements. Before it, unless a fullScreen menu is
+  open, the same function sends ESC to the UI three times, which closes the in-game menu (docs/spec/mp-ui.md "Escape at
+  intermission"); the UI paints what is still open after the cgame pass, over the scoreboard.
 - Scrolling: while the scoreboard is shown, three keys move the first drawn line up and three down by
   `cg_scoreboardScrollStep` lines (0x4c6b30). TODO(spec): the key numbers (0xce / 0xa4 / 0xb8 up, 0xcd / 0xa3 / 0xbe
   down) in this port's key names; scrolling is not bound here.

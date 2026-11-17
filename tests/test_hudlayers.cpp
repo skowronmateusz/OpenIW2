@@ -25,5 +25,11 @@ int main() {
     CHECK((e == std::vector<int>{7}));
     iw2::game::insertBelow(list, 0, std::vector<int>{});
     CHECK(list.size() == 6);
+    // MP intermission (0x4cbca0 -> 0x4cb810): the cgame part becomes the scoreboard alone; foreground HUD elements and the scope
+    // overlay go (the caller adds the UI menus after it, 0x414a37 -> 0x532540).
+    std::vector<int> cgame{0, 10, 11}, fg{12}, scope{1}, board{30, 31};
+    iw2::game::intermission2D(cgame, fg, scope, board);
+    CHECK((cgame == std::vector<int>{30, 31}));
+    CHECK(fg.empty() && scope.empty());
     return failures ? 1 : 0;
 }

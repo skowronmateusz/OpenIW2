@@ -59,6 +59,13 @@ public:
     // Whether the top menu takes the keys the game would otherwise get (0x5345b0): fullscreen menus take every key, the
     // others only their execKey keys. TODO(spec): the UI flag 0x19a1c94 that makes the exe take every key.
     bool takesAllKeys() const { return top() && top()->fullScreen; }
+    // Whether an open menu is fullScreen (MP 0x5422f0: the open list from the top, visible menus with a nonzero +0x214).
+    bool fullScreenOpen() const;
+    // MP intermission, once per frame before the 2D pass (cgame 0x4cb810, docs/spec/mp-ui.md "Escape at intermission"): unless an
+    // open menu is fullScreen, ESC goes to the UI key handler three times, so up to three non-fullscreen menus close (their onESC,
+    // or all at once for a menu without one). Returns the number of presses sent: 0 or kIntermissionEscPresses.
+    static constexpr int kIntermissionEscPresses = 3;
+    int intermissionEscape();
 
     // Time base in milliseconds: double-click timing and the scrollbar button auto-repeat. Call once per frame.
     void tick(int nowMs);

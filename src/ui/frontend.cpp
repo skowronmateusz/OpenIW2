@@ -658,6 +658,16 @@ bool MenuStack::execKey(char ch) {
     return false;
 }
 
+bool MenuStack::fullScreenOpen() const {
+    return std::any_of(stack_.begin(), stack_.end(), [](const Menu* m) { return m->fullScreen; });
+}
+
+int MenuStack::intermissionEscape() {
+    if (fullScreenOpen()) return 0; // tested once, before the presses (0x4cb817)
+    for (int i = 0; i < kIntermissionEscPresses; ++i) key(Key::Escape); // key 0x1b, down (0x4cb820..0x4cb83b -> 0x538380)
+    return kIntermissionEscPresses;
+}
+
 void MenuStack::key(Key k) {
     Menu* m = focusMenu_;
     if (!m) return;
@@ -673,9 +683,7 @@ void MenuStack::key(Key k) {
         // set (nothing for a fullScreen menu without one, e.g. main). After closing the last menu the exe also clears the
         // UI key catcher and, when the byte behind pointer 0x59b724 is 0, sets cl_paused to 0 (0x4c6455); the port has no key catcher
         // and its caller owns cl_paused (uiScript ingameclose clears it, menurun.cpp).
-        bool fullScreenVisible = false;
-        for (const Menu* o : stack_) fullScreenVisible = fullScreenVisible || o->fullScreen;
-        if (m->onEsc.empty() && !fullScreenVisible) closeAll();
+        if (m->onEsc.empty() && !fullScreenOpen()) closeAll();
         else runItem(*m, m->onEsc);
         return;
     }
