@@ -519,7 +519,28 @@ int main() {
     gStart = nowMs();
     const double seconds = std::getenv("IW2_BODIES_SECONDS") ? std::atof(std::getenv("IW2_BODIES_SECONDS")) : 60.0;
     // Three clients a few steps apart next to one of mp_toujane's dm spawns (1474 1055 96).
-    if (!std::getenv("IW2_MP_PLACE")) setenv("IW2_MP_PLACE", "bA=1474,1055,70;bB=1474,1135,70;bC=1404,1095,70", 1);
+    if (!std::getenv("IW2_MP_PLACE")) setenv("IW2_MP_PLACE", "bA=1474,1055,70;bB=1474,1135,70;bC=1434,1095,70", 1);
+    // Every placement must hold a standing player: a client put into a wall cannot move and its dropped weapons start in the
+    // solid, so the item step frees them in their first frame (docs/spec/mp.md "Dropped weapons") after they took the slots
+    // of other weapons. 1404 1095 (used before) lies in the wall west of the spawn.
+    {
+        game::World w(vfs, "mp_toujane", true);
+        const std::string list = std::getenv("IW2_MP_PLACE");
+        for (size_t at = 0; at < list.size();) {
+            size_t end = list.find(';', at);
+            if (end == std::string::npos) end = list.size();
+            const std::string item = list.substr(at, end - at);
+            at = end + 1;
+            const size_t eq = item.find('=');
+            float x = 0, y = 0, z = 0;
+            if (std::sscanf(item.c_str() + (eq == std::string::npos ? 0 : eq + 1), "%f,%f,%f", &x, &y, &z) != 3) continue;
+            const auto tr = w.collision().trace({x, y, z}, {x, y, z}, {-15, -15, 0}, {15, 15, 70}, game::Contents::PlayerClipMask, -1);
+            if (tr.startSolid) {
+                std::printf("placement %s is in solid (contents %x)\nmpbodies: FAILED\n", item.c_str(), tr.contents);
+                return 1;
+            }
+        }
+    }
     ServerProcess server;
     if (!server.start(serverExe, {mainDir, "mp_toujane", "dm", "--port", "0", "--bots", "0", "--maxclients", "8", "+set", "scr_dm_timelimit", "0",
                                   "+set", "scr_dm_scorelimit", "0"})) {

@@ -8,5 +8,6 @@ predict.error
 
 # Only after a stall of the server (its commands beyond level time + 200 ms are not run one by one, docs/spec/net.md
 # section 10 "Command steps"): the client predicted more shots in the gap than the server then fired, and the next
-# snapshot gives the rounds back. Not seen in runs without stalls.
+# snapshot gives the rounds back. Not seen in runs without stalls. A pause of the test process itself does the same (the
+# report notes each one).
 ammo.hudrefill

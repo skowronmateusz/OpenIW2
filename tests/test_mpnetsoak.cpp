@@ -41,6 +41,7 @@
 #include <sstream>
 #include <spawn.h>
 #include <string>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -431,6 +432,12 @@ struct Life {
     bool emptied = false;  // the server's magazine reached 0 in the fire step
 };
 
+// A pause of the test process itself (the machine did not schedule it: the wall time of a loop frame minus its CPU time,
+// sleep included) from this length on is counted in the report: it cuts the scenario's timed presses and windows (a 300 ms
+// gap already swallows a jump press and shifts a shot, the rejoin note in main), so a failure next to one may be the
+// machine's, not the game's.
+constexpr int kPauseMs = 250;
+
 // The killcam begins two seconds and a frame after the death (the gametype waits 2 s first, tdm.gsc:491-495; the soak's
 // notes measure 2093 .. 2139 ms at the client). A level that ends before that shows none.
 constexpr int64_t kKillcamStartMs = 2200;
@@ -485,6 +492,18 @@ struct Soak {
     float predMaxAfterDamage = 0, predMaxOther = 0;
     // frame timing
     std::vector<int> frameDurations;
+    int maxOffMs = 0, pauses = 0;  // the longest time the process did not run in a loop frame; pauses of kPauseMs or more
+
+    // A loop frame in which the process did not run for `offMs` (wall time less CPU time).
+    void notePause(int offMs) {
+        maxOffMs = std::max(maxOffMs, offMs);
+        if (offMs < kPauseMs) return;
+        ++pauses;
+        char b[160];
+        std::snprintf(b, sizeof b, "the test process did not run for %d ms (life %d, %.1f s after its spawn)", offMs, life.number,
+                      life.spawnMs ? double(nowMs() - life.spawnMs) / 1000.0 : 0.0);
+        gReport.note(b);
+    }
 
     explicit Soak(const fs::Vfs& v) : vfs(v) {}
 
@@ -893,9 +912,13 @@ struct Soak {
             o.lastCommandTime = f.commandTime;
             checkEntities(c, *last);
         }
-        // Spawn / death transitions.
+        // Spawn / death transitions. A spawn: the player state turns live (pm_type 0, not following) after a dead, spectating or
+        // following one. After a killcam the spectator state before the spawn lasts one or two snapshots (about 25 ms); a
+        // client frame that misses it sees the followed state (pm_type 0 with the follow bit) turn into its own live one
+        // (the next life measured as the rest of the old one: seen as ammo.refill and weapon.changecount after a death in the fire
+        // step, and as ammo.notempty with ammo.hudrefill after one before it, the respawned player firing only the last second).
         const bool alive = f.pmType == 0 && health > 0 && !following;
-        if (o.pmType != 0 && f.pmType == 0 && !following) {
+        if ((o.pmType != 0 || o.following) && f.pmType == 0 && !following) {
             o.lastSpawnMs = now;
             if (death.active && !death.done) finishDeath();
             life = Life{};
@@ -921,6 +944,7 @@ struct Soak {
         }
         if (o.pmType == 0 && f.pmType != 0) o.lastDeathMs = now;
         o.pmType = f.pmType;
+        o.following = following;
         for (const auto& ob : obits)
             if (ob.victim == 0 && !death.active) {
                 death = DeathWatch{};
@@ -1573,11 +1597,20 @@ int run(fs::Vfs& vfs, const std::string& mainDir) {
     const int64_t mapMs = int64_t(std::atof(minutes.c_str()) * 60000.0);
     const int64_t deadline = gStart + int64_t(mapsWanted) * (mapMs + 45000) + int64_t(sdMaps) * (mapMs + 30000) + 60000;
     int64_t lastRss = 0, lastFrame = nowMs();
+    const auto cpuMs = []() {
+        rusage ru{};
+        getrusage(RUSAGE_SELF, &ru);
+        return int64_t(ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1000 + int64_t(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1000;
+    };
+    int64_t lastCpu = cpuMs();
     int64_t lastProgress = 0, lastRejoin = nowMs();
     while (nowMs() < deadline && soak.mapsPlayed < mapsWanted) {
         const int64_t now = nowMs();
         soak.frameDurations.push_back(int(now - lastFrame));
+        const int64_t cpu = cpuMs();
+        soak.notePause(int(std::max<int64_t>(0, (now - lastFrame) - (cpu - lastCpu))));
         lastFrame = now;
+        lastCpu = cpu;
         Scenario sa = soak.scenarioA(*soak.clients[0], soak.obs[0], now);
         soak.clientFrame(0, sa, now);
         Scenario sb;  // B walks in circles
@@ -1658,6 +1691,13 @@ int run(fs::Vfs& vfs, const std::string& mainDir) {
         gReport.note(b);
     }
     if (soak.scoreRequests > 0 && soak.scoreAnswers == 0) gReport.add("scoreboard.noanswer", std::to_string(soak.scoreRequests) + " score requests, no answer");
+    // The test loop's own frames: the longest one and the longest time the process did not run (kPauseMs).
+    if (!soak.frameDurations.empty()) {
+        char b[200];
+        std::snprintf(b, sizeof b, "test loop: longest frame %d ms, longest time not running %d ms, pauses of %d ms or more %d",
+                      *std::max_element(soak.frameDurations.begin(), soak.frameDurations.end()), soak.maxOffMs, kPauseMs, soak.pauses);
+        gReport.note(b);
+    }
     // Snapshot cadence (the server's frame time as the client sees it).
     {
         std::vector<int> g = soak.obs[0].snapGaps;

@@ -405,6 +405,12 @@ non-local client's stance counts (30 prone, 50 crouched, 70 standing). A name th
 Dropped-weapon slots: `g_maxDroppedWeapons` (0x8108758: default 16, 1..32) slots (0x864e0d8). A new item takes the first free
 slot (0x8105ffa); with all slots in use the item whose nearest playing client is farthest away is freed (squared distances,
 start value 1e12 when no client plays) and its slot reused. There is no other lifetime limit.
+A consequence of these rules together with the item step (docs/spec/grenades.md, G_RunItem step 7): a weapon dropped by a
+client whose box centre and hand tag both lie in item-solid space (mask 0x491; the tag trace is all solid, so the item stays
+at the box centre) is freed in its first item step. With all slots in use, the farthest item was then freed for an item that
+no client ever receives. openiw2 behaves so (seen with a test client placed into a wall of mp_toujane; `tests/test_mpbodies.cpp`
+now checks that its placements hold a standing player). TODO(spec): the MP server's item step is taken to be the single-player
+one; its first-frame free of an item that starts in solid is not compared with the server.
 
 Messages of a pickup go to the client that took it as a print command with the letter `f` (0x8105dbd, 0x8105e19, with the
 keys of the local path); openiw2 forwards them to network clients, while their pickup sound event (ps event 0x90 / 0x91) is not
