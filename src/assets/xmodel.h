@@ -65,6 +65,9 @@ struct XBone {
 };
 
 struct XModelParts {
+    // Identity of a parsed skeleton for caches keyed by it (unique per parseXModelParts call, kept by copies); 0 for a
+    // skeleton built by hand, which is never cached. Parsed skeletons are not modified afterwards.
+    uint64_t id = 0;
     int rootCount = 0;
     std::vector<XBone> bones;
     std::vector<uint8_t> classification; // per bone: hit location index (parts+0x10, read by FUN_00473d20)
@@ -134,7 +137,43 @@ void skinVertex(const XVertex& v, const XPose& pose, std::array<float, 3>& posit
 // The tangent and binormal under a pose. They follow the first bone, as the normal does.
 void skinTangents(const XVertex& v, const XPose& pose, std::array<float, 3>& tangent, std::array<float, 3>& binormal);
 
-std::array<float, 3> rotate(const Quat& q, const std::array<float, 3>& v);
+// v' = q · v · q⁻¹ (inline: the skinning loops call it for every vertex).
+inline std::array<float, 3> rotate(const Quat& q, const std::array<float, 3>& v) {
+    const float x = q.x, y = q.y, z = q.z, w = q.w;
+    const float tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
+    return {v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz), v[2] + w * tz + (x * ty - y * tx)};
+}
 Quat multiply(const Quat& a, const Quat& b);
+
+// The skinning data of a list of vertices in one flat array (for re-skinning many vertices every frame); skin() gives
+// exactly what skinVertex and skinTangents give for the source vertex.
+struct SkinStream {
+    struct Vertex {
+        uint32_t firstInfluence = 0;
+        uint32_t influenceCount = 0; // 0: the vertex keeps its model-space frame and is placed at the origin (skinVertex)
+        std::array<float, 3> normal{}, tangent{}, binormal{}; // in the space of the first bone, or model space without one
+    };
+    std::vector<Vertex> vertices;
+    std::vector<XInfluence> influences;
+
+    void add(const XVertex& v);
+    void skin(size_t k, const XPose& pose, std::array<float, 3>& position, std::array<float, 3>& normal, std::array<float, 3>& tangent,
+              std::array<float, 3>& binormal) const {
+        const Vertex& sv = vertices[k];
+        position = {0, 0, 0};
+        if (sv.influenceCount == 0) {
+            normal = sv.normal, tangent = sv.tangent, binormal = sv.binormal;
+            return;
+        }
+        const XInfluence* inf = &influences[sv.firstInfluence];
+        for (uint32_t i = 0; i < sv.influenceCount; ++i) {
+            const size_t b = size_t(inf[i].bone);
+            const auto o = rotate(pose.rotation[b], inf[i].offset);
+            for (int a = 0; a < 3; ++a) position[size_t(a)] += (pose.position[b][size_t(a)] + o[size_t(a)]) * inf[i].weight;
+        }
+        const Quat& r = pose.rotation[size_t(inf[0].bone)];
+        normal = rotate(r, sv.normal), tangent = rotate(r, sv.tangent), binormal = rotate(r, sv.binormal);
+    }
+};
 
 } // namespace iw2::assets

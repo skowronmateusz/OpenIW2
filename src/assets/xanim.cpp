@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 namespace iw2::assets {
+
 namespace {
 
 class Reader {
@@ -164,6 +165,7 @@ XAnim parseXAnim(std::span<const uint8_t> data) {
     }
     a.notes.push_back({"end", 1.0f});
     if (r.remaining() != 0) throw std::runtime_error("xanim: " + std::to_string(r.remaining()) + " trailing bytes");
+    a.boneMaps = std::make_shared<XAnimBoneMaps>();
     return a;
 }
 
@@ -174,28 +176,52 @@ bool sameName(const std::string& a, const std::string& b) {
            std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) { return std::tolower(x) == std::tolower(y); });
 }
 
+// The skeleton bone of every animation bone: the first bone with the same name, ignoring case (-1: none).
+const std::vector<int16_t>* boneMap(const XModelParts& parts, const XAnim& anim) {
+    if (!anim.boneMaps || parts.id == 0) return nullptr;
+    XAnimBoneMaps& m = *anim.boneMaps;
+    std::lock_guard<std::mutex> lock(m.mutex);
+    for (const auto& [id, map] : m.maps)
+        if (id == parts.id) return map.get();
+    auto map = std::make_unique<std::vector<int16_t>>(anim.bones.size(), int16_t(-1));
+    for (size_t k = 0; k < anim.bones.size(); ++k)
+        for (size_t i = 0; i < parts.bones.size(); ++i)
+            if (sameName(anim.bones[k].name, parts.bones[i].name)) {
+                (*map)[k] = int16_t(i);
+                break;
+            }
+    m.maps.emplace_back(parts.id, std::move(map));
+    return m.maps.back().second.get();
+}
+
 } // namespace
 
 void accumulateAnim(const XModelParts& parts, const XAnim& anim, float frame, float weight, AnimAccum& acc) {
     const int keys = anim.keyCount();
-    for (const auto& ab : anim.bones) {
-        for (size_t i = 0; i < parts.bones.size(); ++i) {
-            if (!sameName(ab.name, parts.bones[i].name)) continue;
-            BoneAccum& b = acc.bones[i];
-            if (ab.rot.keys.empty()) {
-                b.q[3] += weight;
-            } else {
-                const Quat q = sampleRotRaw(ab.rot, frame, keys);
-                b.q[0] += q.x * weight; b.q[1] += q.y * weight; b.q[2] += q.z * weight; b.q[3] += q.w * weight;
-            }
-            if (!ab.trans.keys.empty()) {
-                const auto v = sampleTrans(ab.trans, frame, keys);
-                for (int k = 0; k < 3; ++k) b.t[k] += v[size_t(k)] * weight;
-            }
-            b.w += weight;
-            acc.animated[i] = 1;
-            break;
+    const std::vector<int16_t>* map = boneMap(parts, anim);
+    for (size_t k = 0; k < anim.bones.size(); ++k) {
+        const XAnimBone& ab = anim.bones[k];
+        size_t i = 0;
+        if (map) {
+            if ((*map)[k] < 0) continue;
+            i = size_t((*map)[k]);
+        } else {
+            while (i < parts.bones.size() && !sameName(ab.name, parts.bones[i].name)) ++i;
+            if (i == parts.bones.size()) continue;
         }
+        BoneAccum& b = acc.bones[i];
+        if (ab.rot.keys.empty()) {
+            b.q[3] += weight;
+        } else {
+            const Quat q = sampleRotRaw(ab.rot, frame, keys);
+            b.q[0] += q.x * weight; b.q[1] += q.y * weight; b.q[2] += q.z * weight; b.q[3] += q.w * weight;
+        }
+        if (!ab.trans.keys.empty()) {
+            const auto v = sampleTrans(ab.trans, frame, keys);
+            for (int c = 0; c < 3; ++c) b.t[c] += v[size_t(c)] * weight;
+        }
+        b.w += weight;
+        acc.animated[i] = 1;
     }
 }
 

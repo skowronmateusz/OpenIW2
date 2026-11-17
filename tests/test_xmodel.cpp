@@ -123,6 +123,30 @@ int main() {
     try { parseXModelSurfs(surfs, p); } catch (const std::runtime_error&) { threw = true; }
     CHECK(threw);
 
+    {
+        // SkinStream gives exactly what skinVertex / skinTangents give: weighted influences, the frame from the first bone,
+        // and an unskinned vertex at the origin with its model-space frame. Parsed skeletons get distinct ids.
+        using namespace iw2::assets;
+        XPose pose;
+        pose.position = {{1, 2, 3}, {-4, 0.5f, 7}, {0.25f, -3, 9}};
+        pose.rotation = {{0, 0, 0, 1}, {0.1f, 0.7f, -0.2f, 0.6782f}, {-0.5f, 0.5f, 0.5f, 0.5f}};
+        std::vector<XVertex> verts(3);
+        verts[0].influences = {{1, 1.0f, {3, -1, 2}}};
+        verts[1].influences = {{2, 0.3f, {0.5f, 0.25f, -8}}, {0, 0.45f, {1, 1, 1}}, {1, 0.25f, {-2, 6, 0.125f}}};
+        verts[2].normal = {0, 0, 1}, verts[2].tangent = {1, 0, 0}, verts[2].binormal = {0, 1, 0};
+        for (auto& v : verts) v.boneNormal = {0.6f, 0, 0.8f}, v.boneTangent = {0, 1, 0}, v.boneBinormal = {-0.8f, 0, 0.6f};
+        SkinStream st;
+        for (const auto& v : verts) st.add(v);
+        for (size_t k = 0; k < verts.size(); ++k) {
+            std::array<float, 3> p0, n0, t0, b0, p1, n1, t1, b1;
+            skinVertex(verts[k], pose, p0, n0);
+            skinTangents(verts[k], pose, t0, b0);
+            st.skin(k, pose, p1, n1, t1, b1);
+            CHECK(p0 == p1 && n0 == n1 && t0 == t1 && b0 == b1);
+        }
+        CHECK(p.id != 0 && parseXModelParts(parts).id != p.id);
+    }
+
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
     std::cout << "test_xmodel: all checks passed\n";
     return 0;

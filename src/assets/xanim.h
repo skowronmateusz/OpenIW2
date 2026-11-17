@@ -5,6 +5,8 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -33,6 +35,13 @@ struct XAnimNote {
     float time = 0; // 0..1
 };
 
+// Per skeleton (XModelParts::id) the index of the skeleton bone each animation bone drives (-1: none), built on first
+// use by accumulateAnim; shared by the copies of one parsed animation and safe to use from several threads.
+struct XAnimBoneMaps {
+    std::mutex mutex;
+    std::vector<std::pair<uint64_t, std::unique_ptr<std::vector<int16_t>>>> maps; // (skeleton id, map); entries never move
+};
+
 struct XAnim {
     int numFrames = 0;   // frames in the file
     int frameRate = 0;
@@ -42,6 +51,7 @@ struct XAnim {
     XAnimTransTrack deltaTrans;
     std::vector<XAnimBone> bones;
     std::vector<XAnimNote> notes;
+    std::shared_ptr<XAnimBoneMaps> boneMaps; // set by parseXAnim; null for an animation built by hand (matched by name each time)
 
     float length() const { return frameRate > 0 ? float(numFrames > 1 ? numFrames - 1 : 0) / float(frameRate) : 0.0f; }
     int keyCount() const { return numFrames + (looping ? 1 : 0); }

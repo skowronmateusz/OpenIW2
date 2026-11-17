@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <memory>
 
 namespace {
 
@@ -79,6 +80,52 @@ int main() {
     renamed.bones[0].name = "j_spine";
     const XPose base = animatePose(parts, renamed, 0);
     CHECK(near(base.position[1][2], 37) && near(base.rotation[1].w, 1));
+
+    // The cached bone map of a parsed animation (XAnimBoneMaps) drives the same bones as matching by name: the first skeleton
+    // bone of the same name, ignoring case; unmatched animation bones are skipped. One animation keeps a map per skeleton.
+    {
+        XModelParts sk;
+        sk.id = 1001;
+        sk.rootCount = 1;
+        sk.bones.resize(4);
+        sk.bones[0].name = "tag_origin";
+        sk.bones[1].name = "J_Spine", sk.bones[1].parent = 0;
+        sk.bones[2].name = "j_head", sk.bones[2].parent = 1;
+        sk.bones[3].name = "j_spine", sk.bones[3].parent = 2; // a second bone of the same name: never driven
+        XAnim a;
+        a.numFrames = 2;
+        a.frameRate = 30;
+        const char* names[] = {"j_HEAD", "j_missing", "j_spine", "TAG_ORIGIN"};
+        for (int k = 0; k < 4; ++k) {
+            XAnimBone b;
+            b.name = names[k];
+            b.rot.keys = {{0, 0, 0.1f * float(k + 1), 1}, {0.2f, 0, 0, 1}};
+            b.trans.keys = {{float(k), 0, 0}, {0, float(k), 1}};
+            a.bones.push_back(b);
+        }
+        XAnim cached = a;
+        cached.boneMaps = std::make_shared<XAnimBoneMaps>();
+        auto same = [&](const XModelParts& parts) {
+            for (int pass = 0; pass < 2; ++pass) { // the second pass uses the stored map
+                AnimAccum byName(parts.bones.size()), byMap(parts.bones.size());
+                accumulateAnim(parts, a, 0.5f, 0.75f, byName);
+                accumulateAnim(parts, cached, 0.5f, 0.75f, byMap);
+                for (size_t i = 0; i < parts.bones.size(); ++i) {
+                    CHECK(byName.animated[i] == byMap.animated[i]);
+                    for (int c = 0; c < 4; ++c) CHECK(byName.bones[i].q[c] == byMap.bones[i].q[c]);
+                    for (int c = 0; c < 3; ++c) CHECK(byName.bones[i].t[c] == byMap.bones[i].t[c]);
+                    CHECK(byName.bones[i].w == byMap.bones[i].w);
+                }
+                CHECK(byMap.animated[0] && byMap.animated[1] && byMap.animated[2] && !byMap.animated[3]);
+            }
+        };
+        same(sk);
+        XModelParts other = sk; // another skeleton: its own map
+        other.id = 1002;
+        std::swap(other.bones[1].name, other.bones[2].name);
+        same(other);
+        CHECK(cached.boneMaps->maps.size() == 2);
+    }
 
     if (failures) return 1;
     std::cout << "xanim: ok\n";

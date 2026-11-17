@@ -661,20 +661,23 @@ void AnimState::calc(int n, float weight, assets::AnimAccum& acc, bool top, cons
             assets::accumulateAnim(parts, *a, nodes_[size_t(n)].time * float(a->keyCount() - 1), weight, acc);
         return;
     }
-    std::vector<int> active;
+    int first = -1;
+    size_t active = 0;
     for (int c : node.children)
-        if (nodes_[size_t(c)].weight != 0) active.push_back(c);
-    if (active.empty()) return;
-    if (active.size() == 1) {
-        calc(active[0], weight, acc, top, parts);
+        if (nodes_[size_t(c)].weight != 0 && active++ == 0) first = c;
+    if (active == 0) return;
+    if (active == 1) {
+        calc(first, weight, acc, top, parts);
         return;
     }
     if (top) {
-        for (int c : active) calc(c, nodes_[size_t(c)].weight, acc, false, parts);
+        for (int c : node.children)
+            if (nodes_[size_t(c)].weight != 0) calc(c, nodes_[size_t(c)].weight, acc, false, parts);
         return;
     }
     assets::AnimAccum sub(acc.bones.size());
-    for (int c : active) calc(c, nodes_[size_t(c)].weight, sub, false, parts);
+    for (int c : node.children)
+        if (nodes_[size_t(c)].weight != 0) calc(c, nodes_[size_t(c)].weight, sub, false, parts);
     assets::mergeBlend(sub, weight, acc);
 }
 

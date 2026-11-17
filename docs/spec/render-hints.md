@@ -195,6 +195,10 @@ Addresses are in the 1.3 renderer DLL unless marked exe. World pointer 0x101d1b9
   skipped when that box (header bounds of the body and its attachments summed, scale 1) is outside the four side planes of a 32:9 view
   (wider than any window), the near plane, or the far plane. Vehicles and turrets are not culled (their drawn tags feed bolted
   effects). The cell link is not implemented (it only drops more). `game::dobjCullBox` (modellod.h), tests/test_modellod.cpp.
+- OpenIW2 implementation (no behavior of its own): the drawn entities' poses are still evaluated every client frame, as 0x4afb70 advances
+  every entity's anim (docs/spec/vehicles.md "Client anim time"). Their skinning runs on all cores into one shared vertex buffer uploaded
+  once per frame, from per-model data built at load (`assets::SkinStream`, the same arithmetic as skinVertex / skinTangents). An
+  animation's bone-to-skeleton name match is cached per skeleton (`XAnimBoneMaps`). Tests: tests/test_xmodel.cpp, tests/test_xanim.cpp.
 
 ## setshadowhint
 

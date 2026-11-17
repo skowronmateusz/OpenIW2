@@ -1,5 +1,6 @@
 #include "assets/xmodel.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -45,13 +46,6 @@ private:
 };
 
 } // namespace
-
-std::array<float, 3> rotate(const Quat& q, const std::array<float, 3>& v) {
-    // v' = q * v * q^-1
-    const float x = q.x, y = q.y, z = q.z, w = q.w;
-    const float tx = 2 * (y * v[2] - z * v[1]), ty = 2 * (z * v[0] - x * v[2]), tz = 2 * (x * v[1] - y * v[0]);
-    return {v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz), v[2] + w * tz + (x * ty - y * tx)};
-}
 
 Quat multiply(const Quat& a, const Quat& b) {
     return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
@@ -112,6 +106,8 @@ XModelParts parseXModelParts(std::span<const uint8_t> data) {
     Reader r(data, "xmodelparts");
     if (const int16_t v = r.get<int16_t>(); v != kVersion) r.fail("version " + std::to_string(v));
     XModelParts p;
+    static std::atomic<uint64_t> nextId{1};
+    p.id = nextId.fetch_add(1, std::memory_order_relaxed);
     const int16_t childCount = r.get<int16_t>();
     p.rootCount = r.get<int16_t>();
     const int total = p.rootCount + childCount;
@@ -227,6 +223,16 @@ void skinVertex(const XVertex& v, const XPose& pose, std::array<float, 3>& posit
         for (int a = 0; a < 3; ++a) position[size_t(a)] += (pose.position[b][size_t(a)] + o[size_t(a)]) * inf.weight;
     }
     normal = v.influences.empty() ? v.normal : rotate(pose.rotation[size_t(v.influences.front().bone)], v.boneNormal);
+}
+
+void SkinStream::add(const XVertex& v) {
+    Vertex sv;
+    sv.firstInfluence = uint32_t(influences.size());
+    sv.influenceCount = uint32_t(v.influences.size());
+    influences.insert(influences.end(), v.influences.begin(), v.influences.end());
+    if (v.influences.empty()) sv.normal = v.normal, sv.tangent = v.tangent, sv.binormal = v.binormal;
+    else sv.normal = v.boneNormal, sv.tangent = v.boneTangent, sv.binormal = v.boneBinormal;
+    vertices.push_back(sv);
 }
 
 void skinTangents(const XVertex& v, const XPose& pose, std::array<float, 3>& tangent, std::array<float, 3>& binormal) {

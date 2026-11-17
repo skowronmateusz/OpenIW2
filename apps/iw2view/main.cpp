@@ -101,6 +101,7 @@
 #include "jpeg.h"
 
 #include <SDL3/SDL.h>
+#include <dispatch/dispatch.h>
 #include <unistd.h>
 
 #include "util/log.h"
@@ -251,6 +252,30 @@ public:
             SDL_UploadToGPUBuffer(pass(), &src, &region, false);
             done += chunk;
         }
+    }
+
+    // Staging memory for `size` bytes without an upload (copyStaged records it); `fits` says whether it is still in the current
+    // staging buffer (no flush in between).
+    bool fits(uint32_t size) const { return size <= kSize && (!cmd_ || ((used_ + 255u) & ~255u) + size <= kSize); }
+    uint8_t* stage(uint32_t size, uint32_t& offset) {
+        offset = reserve(size);
+        return mapped_ + offset;
+    }
+    void copyStaged(uint32_t offset, SDL_GPUBuffer* dst, uint32_t dstOffset, uint32_t size) {
+        SDL_GPUTransferBufferLocation src{tb_, offset};
+        SDL_GPUBufferRegion region{dst, dstOffset, size};
+        SDL_UploadToGPUBuffer(pass(), &src, &region, false);
+    }
+
+    // Reserves staging memory for `size` bytes uploaded to the start of dst and returns it; the caller fills it before the next
+    // call on this uploader.
+    void* bufferSpace(SDL_GPUBuffer* dst, uint32_t size) {
+        if (size > kSize) throw std::runtime_error("buffer too large for staging buffer");
+        const uint32_t off = reserve(size);
+        SDL_GPUTransferBufferLocation src{tb_, off};
+        SDL_GPUBufferRegion region{dst, 0, size};
+        SDL_UploadToGPUBuffer(pass(), &src, &region, false);
+        return mapped_ + off;
     }
 
     void texture(SDL_GPUTexture* dst, uint32_t level, uint32_t layer, uint32_t w, uint32_t h, const void* data, uint32_t size) {
@@ -463,6 +488,8 @@ struct WaterMat {
 // A model uploaded for dynamic (entity) drawing, in model space.
 struct GpuModel {
     SDL_GPUBuffer* vertices = nullptr;
+    uint32_t vertexOffset = 0; // byte offset of the model's vertices in `vertices` (the skinned entities share Scene::skinArena)
+    bool arenaVertices = false; // `vertices` is (or was, before it grew) Scene::skinArena, not a buffer of this model
     SDL_GPUBuffer* indices = nullptr;
     std::vector<Batch> batches;
     // Model-space box of the drawn vertices (for skinned models: of the last skinning), for the dynamic light surface test.
@@ -540,10 +567,24 @@ struct Scene {
         std::vector<std::string> lodNames;
         std::vector<std::vector<std::string>> lodMaterials;
         float headerMins[3] = {0, 0, 0}, headerMaxs[3] = {0, 0, 0}; // xmodel header bounds (entity cull)
+        // The drawn surfaces as skinModel uploads them, built once when the model is loaded (buildSkinData): per drawn vertex
+        // its skinning data and the fields that do not depend on the pose; the index list and the batches.
+        struct Skin {
+            assets::SkinStream stream;
+            std::vector<GpuVertex> base;
+            std::vector<uint32_t> indices;
+            std::vector<Batch> batches;
+        } skin;
+        std::vector<std::string> boneKeys; // the bone names in lower case (BoneMap keys)
     };
     std::unordered_map<std::string, std::optional<CpuModel>> cpuModels;
-    // Per (entity, model) GPU buffers re-filled every frame with skinned vertices.
+    // Per (entity, model) skinned models drawn: index buffer and batches; the vertices, re-filled every frame, are in skinArena
+    // (entities) or in a buffer of the model's own (the view model).
     std::map<std::pair<int, std::string>, GpuModel> skinned;
+    // The skinned entity vertices of the last gather, one model after the other (SkinBatch); grown when a gather needs more.
+    SDL_GPUBuffer* skinArena = nullptr;
+    uint32_t skinArenaSize = 0;
+    std::unordered_map<std::string, bool> cloudOutdoor; // cloud shader -> its technique set is particle_cloud_outdoor (cloudModel)
     Vec3 sunDirection{0, 0, 1};
     Vec3 sunColor{1, 1, 1};
     Camera start;
@@ -880,6 +921,46 @@ const GpuModel* sceneModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs,
     }
 }
 
+// Flattens a loaded CPU model's drawn surfaces (materials not skipped) for skinModel and keeps its lower-case bone names.
+void buildSkinData(Scene::CpuModel& cm) {
+    for (const auto& b : cm.parts.bones) {
+        std::string n = b.name;
+        for (char& c : n) c = char(std::tolower(static_cast<unsigned char>(c)));
+        cm.boneKeys.push_back(std::move(n));
+    }
+    auto& sk = cm.skin;
+    for (size_t si = 0; si < cm.surfaces.size(); ++si) {
+        const MatInfo mi = si < cm.materials.size() ? cm.materials[si] : MatInfo{Pass::Opaque, 0};
+        if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
+        const uint32_t base = uint32_t(sk.base.size());
+        for (const auto& v : cm.surfaces[si].vertices) {
+            GpuVertex g{};
+            { const auto c = assets::drawnVertexColor(mi.flag, v.color); std::memcpy(g.color, c.data(), 4); }
+            if (mi.flag) g.wave[0] = float(v.color[3]) / 255.0f, g.wave[1] = 1.0f;
+            g.uv[0] = v.uv[0];
+            g.uv[1] = v.uv[1];
+            sk.base.push_back(g);
+            sk.stream.add(v);
+        }
+        Batch b;
+        b.pass = mi.pass;
+        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState;
+        b.texture = mi.texture;
+        b.lightmap = -3;
+        b.polygonOffset = mi.polygonOffset;
+        b.cull = mi.cull;
+        b.scroll = mi.scroll;
+        b.detail = mi.detail;
+        b.alphaOne = mi.alphaOne;
+        b.colorState = mi.colorState;
+        b.alphaFunc = mi.alphaFunc;
+        b.firstIndex = uint32_t(sk.indices.size());
+        for (uint16_t i : cm.surfaces[si].indices) sk.indices.push_back(base + i);
+        b.indexCount = uint32_t(sk.indices.size()) - b.firstIndex;
+        sk.batches.push_back(b);
+    }
+}
+
 const Scene::CpuModel* sceneCpuModel(Scene& scene, SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& name) {
     if (auto it = scene.cpuModels.find(name); it != scene.cpuModels.end()) return it->second ? &*it->second : nullptr;
     auto& slot = scene.cpuModels[name];
@@ -904,6 +985,7 @@ const Scene::CpuModel* sceneCpuModel(Scene& scene, SDL_GPUDevice* dev, const fs:
         cm.lodCount = int(cm.lodNames.size());
         for (int a = 0; a < 3; ++a) cm.headerMins[a] = xm.mins[size_t(a)], cm.headerMaxs[a] = xm.maxs[size_t(a)];
         slot = std::move(cm);
+        buildSkinData(*slot);
         return &*slot;
     } catch (const std::exception& e) {
         std::cerr << "warning: model " << name << ": " << e.what() << "\n";
@@ -929,6 +1011,7 @@ const Scene::CpuModel* sceneCpuModelLod(Scene& scene, SDL_GPUDevice* dev, const 
         for (const auto& mn : base.lodMaterials[size_t(lod)]) cm.materials.push_back(sceneMaterial(scene, dev, up, vfs, mn));
         up.flush();
         slot = std::move(cm);
+        buildSkinData(*slot);
         return &*slot;
     } catch (const std::exception& e) {
         std::cerr << "warning: model " << name << " lod " << lod << ": " << e.what() << "\n";
@@ -937,76 +1020,142 @@ const Scene::CpuModel* sceneCpuModelLod(Scene& scene, SDL_GPUDevice* dev, const 
     }
 }
 
-// Skins a CPU model with a pose into its per-entity GPU buffers; returns the model to draw.
 // IW2_BENCH counters: models skinned on the CPU and their vertices since the last reset.
 struct SkinStats { uint64_t models = 0, vertices = 0; std::map<std::string, std::pair<int, uint64_t>>* byName = nullptr; };
 SkinStats g_skinStats;
 
+// Skins one model with a pose into staging memory and computes its drawn-vertex box (vertexBounds). The staging memory may be
+// uncached, so it is only written.
+void skinInto(GpuVertex* out, const Scene::CpuModel::Skin& sk, const assets::XPose& pose, GpuModel& gm) {
+    const size_t count = sk.base.size();
+    gm.hasBounds = count != 0;
+    for (int a = 0; a < 3; ++a) gm.mins[a] = 1e30f, gm.maxs[a] = -1e30f;
+    for (size_t k = 0; k < count; ++k) {
+        GpuVertex g = sk.base[k];
+        std::array<float, 3> p, n, tangent, binormal;
+        sk.stream.skin(k, pose, p, n, tangent, binormal);
+        std::memcpy(g.pos, p.data(), 12);
+        std::memcpy(g.normal, n.data(), 12);
+        std::memcpy(g.tangent, tangent.data(), 12);
+        std::memcpy(g.binormal, binormal.data(), 12);
+        const float pad = g.wave[0] != 0.0f ? kFlagWaveMaxOffset * std::abs(g.wave[1]) : 0.0f;
+        for (int a = 0; a < 3; ++a) {
+            gm.mins[a] = std::min(gm.mins[a], g.pos[a] - pad);
+            gm.maxs[a] = std::max(gm.maxs[a], g.pos[a] + pad);
+        }
+        out[k] = g;
+    }
+}
+
+// The skinning of one gather, queued by skinModel: the models are skinned on all cores into one staging range, uploaded with one
+// copy into Scene::skinArena (each model at its own offset). Each job owns its pose; a model skinned twice in one batch keeps the
+// later pose, as when the models were skinned one after the other.
+class SkinBatch {
+public:
+    SkinBatch(SDL_GPUDevice* dev, Scene& scene) : dev_(dev), scene_(scene), up_(dev, false) {}
+    ~SkinBatch() {
+        try { run(); } catch (const std::exception& e) { std::cerr << "warning: skinning: " << e.what() << "\n"; }
+    }
+
+    // False when the staging range is full (the caller skins the model into a buffer of its own).
+    bool add(const Scene::CpuModel::Skin& sk, const assets::XPose& pose, GpuModel& gm) {
+        const uint32_t size = uint32_t(sk.base.size() * sizeof(GpuVertex));
+        if (!up_.fits(size)) return false;
+        uint32_t offset = 0;
+        auto* out = reinterpret_cast<GpuVertex*>(up_.stage(size, offset));
+        if (auto [it, fresh] = pending_.try_emplace(&gm, jobs_.size()); !fresh) {
+            jobs_[it->second].gm = nullptr;
+            it->second = jobs_.size();
+        }
+        jobs_.push_back({out, offset, &sk, pose, &gm});
+        end_ = std::max(end_, offset + size);
+        return true;
+    }
+    // Drops a queued job of a model that is being skinned elsewhere after all (its buffer of its own).
+    void forget(const GpuModel& gm) {
+        if (auto it = pending_.find(&gm); it != pending_.end()) {
+            jobs_[it->second].gm = nullptr;
+            pending_.erase(it);
+        }
+    }
+    void run() {
+        if (jobs_.empty()) return;
+        dispatch_apply_f(jobs_.size(), dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), this, [](void* ctx, size_t i) {
+            const Job& j = static_cast<SkinBatch*>(ctx)->jobs_[i];
+            if (j.gm) skinInto(j.out, *j.skin, j.pose, *j.gm);
+        });
+        if (end_ > scene_.skinArenaSize) { // released once the GPU no longer uses it
+            if (scene_.skinArena) SDL_ReleaseGPUBuffer(dev_, scene_.skinArena);
+            SDL_GPUBufferCreateInfo vb{};
+            vb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+            vb.size = std::max<uint32_t>(end_ + end_ / 2, 4u << 20);
+            scene_.skinArena = SDL_CreateGPUBuffer(dev_, &vb);
+            if (!scene_.skinArena) sdlFail("skin arena");
+            scene_.skinArenaSize = vb.size;
+        }
+        up_.copyStaged(0, scene_.skinArena, 0, end_);
+        for (const Job& j : jobs_)
+            if (j.gm) {
+                if (j.gm->vertices && !j.gm->arenaVertices) SDL_ReleaseGPUBuffer(dev_, j.gm->vertices);
+                j.gm->vertices = scene_.skinArena, j.gm->vertexOffset = j.offset, j.gm->arenaVertices = true;
+            }
+        up_.flush();
+        jobs_.clear();
+        pending_.clear();
+        end_ = 0;
+    }
+
+private:
+    struct Job {
+        GpuVertex* out;
+        uint32_t offset; // in the staging range and in the arena
+        const Scene::CpuModel::Skin* skin;
+        assets::XPose pose;
+        GpuModel* gm; // null: superseded by a later job for the same model
+    };
+    SDL_GPUDevice* dev_;
+    Scene& scene_;
+    Uploader up_;
+    std::vector<Job> jobs_;
+    std::unordered_map<const GpuModel*, size_t> pending_;
+    uint32_t end_ = 0;
+};
+
+// Skins a CPU model with a pose for drawing; returns the model to draw. With a batch the model goes into the batch's shared buffer
+// when the batch runs, otherwise (or when the batch is full) into a vertex buffer of its own at once.
 const GpuModel* skinModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, int entity, const std::string& name,
-                          const Scene::CpuModel& cm, const assets::XPose& pose) {
+                          const Scene::CpuModel& cm, const assets::XPose& pose, SkinBatch* batch = nullptr) {
     ++g_skinStats.models;
+    const auto& sk = cm.skin;
+    const size_t count = sk.base.size();
+    g_skinStats.vertices += count;
+    if (g_skinStats.byName) { auto& e = (*g_skinStats.byName)[name]; ++e.first; e.second += count; }
+    if (count == 0) return nullptr;
     auto key = std::make_pair(entity, name);
     auto it = scene.skinned.find(key);
-    std::vector<GpuVertex> verts;
-    std::vector<uint32_t> indices;
-    std::vector<Batch> batches;
-    for (size_t si = 0; si < cm.surfaces.size(); ++si) {
-        const MatInfo mi = si < cm.materials.size() ? cm.materials[si] : MatInfo{Pass::Opaque, 0};
-        if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
-        const uint32_t base = uint32_t(verts.size());
-        for (const auto& v : cm.surfaces[si].vertices) {
-            GpuVertex g{};
-            std::array<float, 3> p, n;
-            assets::skinVertex(v, pose, p, n);
-            std::memcpy(g.pos, p.data(), 12);
-            std::memcpy(g.normal, n.data(), 12);
-            std::array<float, 3> tangent, binormal;
-            assets::skinTangents(v, pose, tangent, binormal);
-            std::memcpy(g.tangent, tangent.data(), 12);
-            std::memcpy(g.binormal, binormal.data(), 12);
-            { const auto c = assets::drawnVertexColor(mi.flag, v.color); std::memcpy(g.color, c.data(), 4); }
-            if (mi.flag) g.wave[0] = float(v.color[3]) / 255.0f, g.wave[1] = 1.0f;
-            g.uv[0] = v.uv[0];
-            g.uv[1] = v.uv[1];
-            verts.push_back(g);
-        }
-        Batch b;
-        b.pass = mi.pass;
-        b.sort = mi.sort, b.materialOrder = mi.materialOrder, b.emissive = mi.emissive, b.pointLit = mi.pointLit, b.pointBlend = mi.pointBlend, b.pointNormalTex = mi.pointNormalTex, b.pointNormalState = mi.pointNormalState;
-        b.texture = mi.texture;
-        b.lightmap = -3;
-        b.polygonOffset = mi.polygonOffset;
-        b.cull = mi.cull;
-        b.scroll = mi.scroll;
-        b.detail = mi.detail;
-        b.alphaOne = mi.alphaOne;
-        b.colorState = mi.colorState;
-        b.alphaFunc = mi.alphaFunc;
-        b.firstIndex = uint32_t(indices.size());
-        for (uint16_t i : cm.surfaces[si].indices) indices.push_back(base + i);
-        b.indexCount = uint32_t(indices.size()) - b.firstIndex;
-        batches.push_back(b);
-    }
-    g_skinStats.vertices += verts.size();
-    if (g_skinStats.byName) { auto& e = (*g_skinStats.byName)[name]; ++e.first; e.second += verts.size(); }
-    if (verts.empty()) return nullptr;
     if (it == scene.skinned.end()) {
         GpuModel gm;
-        SDL_GPUBufferCreateInfo vb{};
-        vb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
-        vb.size = uint32_t(verts.size() * sizeof(GpuVertex));
-        gm.vertices = SDL_CreateGPUBuffer(dev, &vb);
         SDL_GPUBufferCreateInfo ib{};
         ib.usage = SDL_GPU_BUFFERUSAGE_INDEX;
-        ib.size = uint32_t(indices.size() * 4);
+        ib.size = uint32_t(sk.indices.size() * 4);
         gm.indices = SDL_CreateGPUBuffer(dev, &ib);
-        up.buffer(gm.indices, indices.data(), ib.size);
-        gm.batches = batches;
+        up.buffer(gm.indices, sk.indices.data(), ib.size);
+        gm.batches = sk.batches;
         it = scene.skinned.emplace(key, gm).first;
     }
-    up.buffer(it->second.vertices, verts.data(), uint32_t(verts.size() * sizeof(GpuVertex)));
-    vertexBounds(verts, it->second);
-    return &it->second;
+    GpuModel& gm = it->second;
+    if (batch && batch->add(sk, pose, gm)) return &gm;
+    if (batch) batch->forget(gm);
+    if (!gm.vertices || gm.arenaVertices) { // a buffer of its own
+        SDL_GPUBufferCreateInfo vb{};
+        vb.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+        vb.size = uint32_t(count * sizeof(GpuVertex));
+        gm.vertices = SDL_CreateGPUBuffer(dev, &vb);
+        gm.vertexOffset = 0;
+        gm.arenaVertices = false;
+    }
+    skinInto(static_cast<GpuVertex*>(up.bufferSpace(gm.vertices, uint32_t(count * sizeof(GpuVertex)))), sk, pose, gm);
+    return &gm;
 }
 
 // Builds camera-facing quads for effect sprites into a per-frame model (size = half width; inferred).
@@ -1225,10 +1374,13 @@ const GpuModel* cloudModel(Scene& scene, SDL_GPUDevice* dev, Uploader& up, const
     for (const auto& [shader, list] : byShader) {
         const MatInfo mi = sceneMaterial(scene, dev, up, vfs, shader);
         if (mi.pass == Pass::Skip || mi.pass == Pass::Sky) continue;
-        bool outdoorTest = false; // technique set particle_cloud_outdoor -> particle_cloud_outdoor.hlsl (OUTDOOR 1)
-        if (const auto md = vfs.read("materials/" + shader)) {
-            try { outdoorTest = assets::parseMaterial(*md).techniqueSet == "particle_cloud_outdoor"; } catch (...) {}
-        }
+        // technique set particle_cloud_outdoor -> particle_cloud_outdoor.hlsl (OUTDOOR 1); read once per shader
+        auto [outdoorIt, firstUse] = scene.cloudOutdoor.try_emplace(shader, false);
+        if (firstUse)
+            if (const auto md = vfs.read("materials/" + shader)) {
+                try { outdoorIt->second = assets::parseMaterial(*md).techniqueSet == "particle_cloud_outdoor"; } catch (...) {}
+            }
+        const bool outdoorTest = outdoorIt->second;
         const bool useOutdoor = outdoorTest && scene.outdoor.valid() && !std::getenv("IW2_NO_OUTDOOR");
         Batch b;
         b.pass = mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest ? Pass::Blend : mi.pass;
@@ -1378,18 +1530,20 @@ static Vec3 worldSunColor(const Vec3& suncolor, float sunlight, float ambient, f
     return suncolor * (k * (sunlight - ambient) * (1.0f - diffuseFraction));
 }
 
-void addBones(BoneMap& map, const assets::XModelParts& parts, const assets::XPose& pose) {
-    for (size_t i = 0; i < parts.bones.size(); ++i) map.emplace(lowerName(parts.bones[i].name), std::make_pair(pose.position[i], pose.rotation[i]));
+void addBones(BoneMap& map, const Scene::CpuModel& cm, const assets::XPose& pose) {
+    if (map.empty()) map.reserve(256);
+    for (size_t i = 0; i < cm.boneKeys.size(); ++i) map.emplace(cm.boneKeys[i], std::make_pair(pose.position[i], pose.rotation[i]));
 }
 
 // Poses an attached model. All models on an entity share one skeleton: bones whose names already exist (on the
 // body or an earlier attachment) follow them; a tag places the model's root bone at that bone (inferred rules).
-assets::XPose attachmentPose(const BoneMap& bones, const assets::XModelParts& att, const std::string& tag,
+assets::XPose attachmentPose(const BoneMap& bones, const Scene::CpuModel& cm, const std::string& tag,
                              const assets::XPose* animated = nullptr) {
+    const assets::XModelParts& att = cm.parts;
     assets::XPose pose = assets::bindPose(att);
     const auto tagIt = tag.empty() ? bones.end() : bones.find(lowerName(tag));
     for (size_t i = 0; i < att.bones.size(); ++i) {
-        const auto it = tag.empty() ? bones.find(lowerName(att.bones[i].name)) : bones.end();
+        const auto it = tag.empty() ? bones.find(cm.boneKeys[i]) : bones.end();
         if (it != bones.end()) {
             pose.position[i] = it->second.first;
             pose.rotation[i] = it->second.second;
@@ -1443,7 +1597,11 @@ void releaseScene(SDL_GPUDevice* dev, Scene& scene) {
     tex(scene.sky);
     for (auto& [name, m] : scene.models)
         if (m) { buf(m->vertices); buf(m->indices); }
-    for (auto& [key, m] : scene.skinned) { buf(m.vertices); buf(m.indices); }
+    for (auto& [key, m] : scene.skinned) {
+        if (!m.arenaVertices) buf(m.vertices);
+        buf(m.indices);
+    }
+    buf(scene.skinArena);
     scene = Scene{};
 }
 
@@ -3209,7 +3367,7 @@ struct Renderer {
                 // TODO(spec): [inference, command 0x17 dispatch to walker 0x1002f830 not traced] the view model goes in with its depth class.
                 const SDL_GPUViewport fzRange{0, 0, float(w), float(h), 0.0f, it.depthMax};
                 SDL_SetGPUViewport(fp, &fzRange);
-                SDL_GPUBufferBinding mvb{it.model->vertices, 0};
+                SDL_GPUBufferBinding mvb{it.model->vertices, it.model->vertexOffset};
                 SDL_BindGPUVertexBuffers(fp, 0, &mvb, 1);
                 SDL_GPUBufferBinding mib{it.model->indices, 0};
                 SDL_BindGPUIndexBuffer(fp, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -3324,7 +3482,7 @@ struct Renderer {
             streamIndices = indexBuf;
         };
         auto bindItem = [&](const DrawItem& it) {
-            SDL_GPUBufferBinding mvb{it.model->vertices, 0};
+            SDL_GPUBufferBinding mvb{it.model->vertices, it.model->vertexOffset};
             SDL_BindGPUVertexBuffers(pass, 0, &mvb, 1);
             SDL_GPUBufferBinding mib{it.model->indices, 0};
             SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -3588,7 +3746,7 @@ struct Renderer {
                     if (b.fxKind != 0 && postSunReady && (b.fxKind == 2 || zFeather)) {
                         // distortion_floatz.tech / zfeather(_add).tech: vertex uniforms + the material constant, samplers colorMap,
                         // resolvedPostSun / floatZ.
-                        SDL_GPUBufferBinding mvb{it.model->vertices, 0};
+                        SDL_GPUBufferBinding mvb{it.model->vertices, it.model->vertexOffset};
                         SDL_BindGPUVertexBuffers(pass, 0, &mvb, 1);
                         SDL_GPUBufferBinding mib{it.model->indices, 0};
                         SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -3631,7 +3789,7 @@ struct Renderer {
                         continue;
                     }
                     if (!bound) {
-                        SDL_GPUBufferBinding mvb{it.model->vertices, 0};
+                        SDL_GPUBufferBinding mvb{it.model->vertices, it.model->vertexOffset};
                         SDL_BindGPUVertexBuffers(pass, 0, &mvb, 1);
                         SDL_GPUBufferBinding mib{it.model->indices, 0};
                         SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -3721,7 +3879,7 @@ struct Renderer {
                     const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
                     SDL_SetGPUViewport(pass, &vpDepth);
                 }
-                SDL_GPUBufferBinding mvb{it.model->vertices, 0};
+                SDL_GPUBufferBinding mvb{it.model->vertices, it.model->vertexOffset};
                 SDL_BindGPUVertexBuffers(pass, 0, &mvb, 1);
                 SDL_GPUBufferBinding mib{it.model->indices, 0};
                 SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
@@ -4938,6 +5096,7 @@ int main(int argc, char** argv) {
             };
             const game::FogParams fogNow = world->clientFog.current(cgNowMs());
             Uploader up(dev, false);
+            SkinBatch skinBatch(dev, scene); // the entities' skinning, run in parallel (skinModel)
             // Model LOD of the CPU-skinned entities (docs/spec/render-hints.md "Model LOD"): one distance per entity from its drawn origin
             // (scale 1), every attached model its own LOD from it; -1 = the model is not drawn (its tags are still posed). IW2_NO_CULL keeps
             // LOD 0. The player's view model is not an entity here and always draws LOD 0.
@@ -4950,7 +5109,7 @@ int main(int argc, char** argv) {
                 if (lod < 0) return nullptr;
                 const Scene::CpuModel* use = lod > 0 ? sceneCpuModelLod(scene, dev, vfs, model, cm, lod) : &cm;
                 if (!use) use = &cm, lod = 0;
-                return skinModel(scene, dev, up, entity, lod > 0 ? key + "#lod" + std::to_string(lod) : key, *use, pose);
+                return skinModel(scene, dev, up, entity, lod > 0 ? key + "#lod" + std::to_string(lod) : key, *use, pose, &skinBatch);
             };
             ++renderStamp;
             for (const auto& e : world->entities()) {
@@ -4997,8 +5156,9 @@ int main(int argc, char** argv) {
                 auto av = a.isVector() ? a.asVector() : script::Vec3{0, 0, 0};
                 // CG_CalcEntityLerpPositions (0x4acca0): entities the server moves every frame (TR_INTERPOLATE) are
                 // drawn between the previous and the latest server frame at cg.frameInterpolation (0xf708d0):
-                // origin lerped (0x4acb90), angles by LerpAngle (0x4acc10 → 0x423ee0). TODO(spec): [anim pose rate unproven] entities with
-                // other trajectory types (evaluated at cg.time) and the anim poses, which still step at 20 Hz.
+                // origin lerped (0x4acb90), angles by LerpAngle (0x4acc10 → 0x423ee0). The anim poses follow the client frame too (0x4afb70
+                // advances every entity's DObj anim per client frame: clientAnimState below, docs/spec/vehicles.md "Client anim time").
+                // TODO(spec): [trajectory types not read] entities with other trajectory types (evaluated at cg.time).
                 if (auto pv = lerpPrev.find(e->number); pv != lerpPrev.end()) {
                     for (int k = 0; k < 3; ++k) {
                         ov[size_t(k)] = pv->second.first[size_t(k)] + (ov[size_t(k)] - pv->second.first[size_t(k)]) * lerpFrac;
@@ -5034,14 +5194,17 @@ int main(int argc, char** argv) {
                     }
                     base.scrollV = float(t - std::floor(t));
                 }
-                assets::LightGridCoeffs c;
-                float sun = 1.0f;
-                if (scene.grid && scene.grid->sample({ov[0], ov[1], ov[2] + 4.0f}, c, sun)) {
-                    const auto l = assets::LightGrid::evaluate(c, {0, 0, 1});
-                    base.ambient[0] = l[0]; base.ambient[1] = l[1]; base.ambient[2] = l[2];
-                    base.sunVisibility = sun;
-                    storeProbe(base, c);
-                }
+                // The light grid sample of the entity's items, taken once it is known to be drawn (after the culls below).
+                auto lightBase = [&]() {
+                    assets::LightGridCoeffs c;
+                    float sun = 1.0f;
+                    if (scene.grid && scene.grid->sample({ov[0], ov[1], ov[2] + 4.0f}, c, sun)) {
+                        const auto l = assets::LightGrid::evaluate(c, {0, 0, 1});
+                        base.ambient[0] = l[0]; base.ambient[1] = l[1]; base.ambient[2] = l[2];
+                        base.sunVisibility = sun;
+                        storeProbe(base, c);
+                    }
+                };
                 const auto corpse = world ? game::World::corpseVehicle(*e) : std::nullopt;
                 if ((e->vehicle && e->vehicle->info) || corpse) {
                     // A freed vehicle's wreck (eType 0xd) goes through the same client path (0x4acd30 -> 0x4ac2b0) with the fields
@@ -5050,6 +5213,7 @@ int main(int argc, char** argv) {
                     // TODO(spec): [bone control order unproven] which control gets the pitch and which the yaw is a hypothesis (yaw on tag_turret, pitch on tag_barrel).
                     const Scene::CpuModel* vm = sceneCpuModel(scene, dev, vfs, m.asString());
                     if (!vm) continue;
+                    lightBase();
                     float tp = e->vehicle ? e->vehicle->turretPitch : corpse->turretPitch, ty = e->vehicle ? e->vehicle->turretYaw : corpse->turretYaw;
                     const float bodyPitch = e->vehicle ? e->vehicle->joltPitch : corpse->bodyPitch, bodyRoll = e->vehicle ? e->vehicle->joltRoll : corpse->bodyRoll;
                     const float travel = e->vehicle ? e->vehicle->info->suspensionTravel : corpse->travel, steer = e->vehicle ? e->vehicle->steerAngle : corpse->steer;
@@ -5059,8 +5223,7 @@ int main(int argc, char** argv) {
                     }
                     std::vector<assets::BoneControl> ctl;
                     for (size_t bi = 0; bi < vm->parts.bones.size(); ++bi) {
-                        std::string n = vm->parts.bones[bi].name;
-                        for (char& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+                        const std::string& n = vm->boneKeys[bi];
                         if (n == "tag_body") ctl.push_back({int(bi), assets::anglesQuat(bodyPitch, 0, bodyRoll), {0, 0, 0}});
                         else if (n == "tag_turret") ctl.push_back({int(bi), assets::anglesQuat(0, ty, 0), {0, 0, 0}});
                         else if (n == "tag_barrel") ctl.push_back({int(bi), assets::anglesQuat(tp, 0, 0), {0, 0, 0}});
@@ -5086,7 +5249,7 @@ int main(int argc, char** argv) {
                         // 0x48abb0 reads the client entity and skeleton for every entity type (World::vehicleTagPosition is the
                         // server-side position only).
                         BoneMap vbones;
-                        addBones(vbones, vm->parts, drawnPose);
+                        addBones(vbones, *vm, drawnPose);
                         recordDrawnTags(e->number, vbones, {ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
                     }
                     continue;
@@ -5111,6 +5274,7 @@ int main(int argc, char** argv) {
                                     double(ov[0]), double(ov[1]), double(ov[2]), int(vis), int(body != nullptr), int(e->anim != nullptr), m.asString().c_str());
                     if (!vis) continue; // anim state already stepped
                     if (!body) continue;
+                    lightBase();
                     assets::XPose pose;
                     const game::AnimState* animNow = e->anim.get();
                     std::optional<game::AnimState> tmpAnim;
@@ -5128,9 +5292,7 @@ int main(int argc, char** argv) {
                     static const bool noTilt = std::getenv("IW2_NO_PRONE_TILT") != nullptr;
                     if (float tiltPitch = 0, tiltRoll = 0, tiltLift = 0; !noTilt && world->actorProneTilt(*e, cgTime, tiltPitch, tiltRoll, tiltLift)) {
                         for (size_t bi = 0; bi < body->parts.bones.size(); ++bi) {
-                            std::string n = body->parts.bones[bi].name;
-                            for (char& ch : n) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-                            if (n != "tag_origin") continue;
+                            if (body->boneKeys[bi] != "tag_origin") continue;
                             pose = assets::applyControls(body->parts, pose,
                                                          std::vector<assets::BoneControl>{{int(bi), assets::anglesQuat(tiltPitch, 0, tiltRoll), {0, 0, tiltLift}}});
                             break;
@@ -5140,7 +5302,7 @@ int main(int argc, char** argv) {
                     it.model = skinLod(e->number, m.asString(), m.asString(), *body, pose, entityLodDist);
                     if (it.model) items.push_back(it);
                     BoneMap bones;
-                    addBones(bones, body->parts, pose);
+                    addBones(bones, *body, pose);
                     for (const auto& at : e->attachments) {
                         const Scene::CpuModel* am = sceneCpuModel(scene, dev, vfs, at.model);
                         if (!am) continue;
@@ -5148,8 +5310,8 @@ int main(int argc, char** argv) {
                         // anims (animscripts/face.gsc): pose the attachment from the anim too.
                         std::optional<assets::XPose> animated;
                         if (animNow) animated = animNow->pose(am->parts);
-                        const assets::XPose ap = attachmentPose(bones, am->parts, at.tag, animated ? &*animated : nullptr);
-                        addBones(bones, am->parts, ap);
+                        const assets::XPose ap = attachmentPose(bones, *am, at.tag, animated ? &*animated : nullptr);
+                        addBones(bones, *am, ap);
                         DrawItem ai = base;
                         ai.model = skinLod(e->number, at.model, at.model + "@" + at.tag, *am, ap, entityLodDist);
                         if (ai.model) items.push_back(ai);
@@ -5157,8 +5319,8 @@ int main(int argc, char** argv) {
                     // The weapon world model in a multiplayer client's hands (tag_weapon_right, docs/spec/mp-players.md).
                     if (const std::string wm = world->mpPlayerWeaponModel(*e); !wm.empty())
                         if (const Scene::CpuModel* wmodel = sceneCpuModel(scene, dev, vfs, wm)) {
-                            const assets::XPose wp = attachmentPose(bones, wmodel->parts, "tag_weapon_right");
-                            addBones(bones, wmodel->parts, wp);
+                            const assets::XPose wp = attachmentPose(bones, *wmodel, "tag_weapon_right");
+                            addBones(bones, *wmodel, wp);
                             DrawItem wi = base;
                             wi.model = skinLod(e->number, wm, wm + "@tag_weapon_right", *wmodel, wp, entityLodDist);
                             if (wi.model) items.push_back(wi);
@@ -5171,6 +5333,7 @@ int main(int argc, char** argv) {
                     // to its angles; the player's turret follows the view (view angles − base, already clamped).
                     const Scene::CpuModel* tm = sceneCpuModel(scene, dev, vfs, m.asString());
                     if (!tm) continue;
+                    lightBase();
                     float tp = e->turret->pitch, ty = e->turret->yaw;
                     if (auto pt = prevTurret.find(e->number); pt != prevTurret.end()) { // CG_CalcEntityLerpPositions-style smoothing
                         tp = pt->second.first + angleDelta(tp, pt->second.first) * lerpFrac;
@@ -5186,7 +5349,7 @@ int main(int argc, char** argv) {
                     if (it.model) items.push_back(it);
                     {
                         BoneMap tbones;
-                        addBones(tbones, tm->parts, tpose);
+                        addBones(tbones, *tm, tpose);
                         recordDrawnTags(e->number, tbones, {ov[0], ov[1], ov[2]}, {av[0], av[1], av[2]});
                     }
                     continue;
@@ -5194,10 +5357,12 @@ int main(int argc, char** argv) {
                 const GpuModel* gm = sceneModel(scene, dev, vfs, m.asString());
                 if (!gm) continue;
                 if (!entityVisible({{gm->headerMins, gm->headerMaxs}}, ov)) continue;
+                lightBase();
                 DrawItem it = base;
                 it.model = gm;
                 items.push_back(it);
             }
+            skinBatch.run();
             // Effects after the entities: bolted world effects follow this frame's drawn tags (recordDrawnTags).
             playWorldFx();
             fxSystem.viewRight = {fxRight.x, fxRight.y, fxRight.z};
@@ -5457,7 +5622,7 @@ int main(int argc, char** argv) {
             BoneMap bones;
             if (hands) {
                 const assets::XPose hp = an ? assets::blendPose(hands->parts, layers) : assets::bindPose(hands->parts);
-                addBones(bones, hands->parts, hp);
+                addBones(bones, *hands, hp);
                 DrawItem it = base;
                 it.model = skinModel(scene, dev, up, s.skinKey, s.handsName, *hands, hp);
                 if (it.model) items.push_back(it);
@@ -5477,7 +5642,7 @@ int main(int argc, char** argv) {
                 if (s.flash) {
                     const std::shared_ptr<ViewFlash>& vf = s.flash;
                     BoneMap gunBones;
-                    addBones(gunBones, gun->parts, gp);
+                    addBones(gunBones, *gun, gp);
                     const auto tf = gunBones.find("tag_flash");
                     vf->valid = tf != gunBones.end();
                     if (vf->valid) {
