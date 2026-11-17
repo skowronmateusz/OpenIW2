@@ -219,9 +219,16 @@ entity moved since its last sample and sets the animation's rate to that speed o
   3 - (move speed - 20) / 130, a smaller one at most 3 (0x4f9ebc..0x4f9f4c);
 - the rate goes into the part's animation in the tree (0x4f9f81..0x4f9f9c).
 So a climb on the spot stops the climb animation and walking slower or faster than the animation plays it slower or
-faster. openiw2 applies it in the driver to the legs and torso nodes of every client each world frame (50 ms on the
-server; on a network client from the puppet's origin as the snapshots place it), a node's move speed from its
-animation's delta translation (a blend node has none).
+faster. The dedicated server runs the same rule on its own player animation of each client: lnxded 0x80da42a reads
+the same constants (0.01, 150 and 130 at 0x81531f0..0x8153204); 0x80dbdbc calls it twice, for the entity state's
+legsAnim (+0xcc, 0x80dbe7e) and torsoAnim (+0xd0, 0x80dbea9). 0x80dbdbc is called at 0x80f7aac from the end of every
+playing client's frame (0x80f7516, docs/spec/mp.md; also reached from ClientSpawn at 0x80f947b) and at 0x8107db4 from
+0x8107d30 (TODO(spec): that routine's role). A client standing still plays the stance's idle, an animation without a
+move speed, so its rate stays 1; the rule changes only how fast an animation's time runs, not the shape of the pose,
+so a client whose animation runs slowly is still hit where it stands (see "Hit locations"; tests/test_mpstillhit.cpp).
+openiw2 applies it in the driver to the legs and torso nodes of every client each world frame (50 ms on the server; on
+a network client from the puppet's origin as the snapshots place it), a node's move speed from its animation's delta
+translation (a blend node has none).
 
 ## On a turret
 

@@ -815,6 +815,16 @@ if(IW2_TEST_MAIN)
 else()
   add_test(NAME mpjumpanim COMMAND test_mpjumpanim)
 endif()
+# A network client standing still, or just stopped, is hit by bullets and by a bot (tests/test_mpstillhit.cpp,
+# docs/spec/mp-players.md "Animation rate from the movement").
+add_executable(test_mpstillhit tests/test_mpstillhit.cpp)
+target_link_libraries(test_mpstillhit PRIVATE iw2_netgame)
+if(IW2_TEST_MAIN)
+  add_test(NAME mpstillhit COMMAND test_mpstillhit)
+  set_tests_properties(mpstillhit PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN};IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache" TIMEOUT 300)
+else()
+  add_test(NAME mpstillhit COMMAND test_mpstillhit)
+endif()
 # Bodies keep their client's model after it leaves (tests/test_mpbodycopy.cpp, docs/spec/net.md section 11).
 add_executable(test_mpbodycopy tests/test_mpbodycopy.cpp)
 target_link_libraries(test_mpbodycopy PRIVATE iw2_netgame)

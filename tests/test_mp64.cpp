@@ -6,14 +6,16 @@
 //
 // `soak`: a dedicated World with sv_maxclients 64, 63 bots and one network client over loopback, in simulated time.
 // The client gets the last client number (63), its snapshots carry the client states of all 64, the scores command
-// lists 64 rows, a 65th client is refused, and the game goes on (kills, no script errors). Prints the measurements:
-// server CPU per frame, snapshot sizes at 60 snapshots a second, the rate they need, peak memory.
+// lists 64 rows, a 65th client is refused, and the game goes on (kills, no script errors); a bot kills client 63.
+// Prints the measurements: server CPU per frame, snapshot sizes at 60 snapshots a second, the rate they need, peak
+// memory.
 #include <sys/resource.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -25,6 +27,7 @@
 #include <vector>
 
 #include "fs/vfs.h"
+#include "game/mpbots.h"
 #include "game/world.h"
 #include "net/gameclient.h"
 #include "net/oob.h"
@@ -260,6 +263,37 @@ void soak(const char* mainDir, int seconds) {
     step(2000); // spawns settle
     game::Entity* human = w.mpClientEntity(63);
     CHECK(human && human->obj->get("sessionstate").toString() == "playing");
+    // A bot killed client 63 (the obituary names a bot as the attacker).
+    auto botKilled63 = [&w] {
+        for (const auto& ob : w.mpState().obituaryLog)
+            if (ob.victim == 63 && ob.attacker >= 0 && ob.attacker < 63) return true;
+        return false;
+    };
+    // The playing bot nearest to `h` with rounds in its clip (a bot that has fired all its ammunition fires no more) goes
+    // to a spot 200 units from it with a clear line (the movement restarts there), facing it.
+    int botsBrought = 0;
+    auto bringBot = [&w](game::Entity& h) {
+        const auto t = h.obj->get("origin").asVector();
+        game::Entity* best = nullptr;
+        float bestD = 1e9f;
+        for (int c = 0; c < 63; ++c)
+            if (game::Entity* b = w.mpClientEntity(c); b && b->obj->get("sessionstate").toString() == "playing" && w.mpBot(c) &&
+                                                       w.mpBot(c)->clip >= 3) {
+                const auto o = b->obj->get("origin").asVector();
+                if (const float d = std::hypot(o[0] - t[0], o[1] - t[1]); d < bestD) best = b, bestD = d;
+            }
+        if (!best) return;
+        for (int k = 0; k < 16; ++k) {
+            const float a = float(k) * 3.14159265f / 8.0f;
+            const script::Vec3 c{t[0] + std::cos(a) * 200.0f, t[1] + std::sin(a) * 200.0f, t[2]};
+            const auto tr = w.collision().trace({t[0], t[1], t[2] + 40}, {c[0], c[1], c[2] + 40}, {-16, -16, -16}, {16, 16, 16},
+                                                game::Contents::PlayerClipMask, h.number);
+            if (tr.fraction < 1 || tr.startSolid) continue;
+            best->obj->set("origin", script::Value(c));
+            best->obj->set("angles", script::Value(script::Vec3{0.0f, std::atan2(t[1] - c[1], t[0] - c[0]) * 180.0f / 3.14159265f, 0.0f}));
+            return;
+        }
+    };
     const int64_t snaps0 = server.client(slot).snapshotsSent, bytes0 = server.client(slot).snapshotBytes;
     const int64_t simStart = now;
     const double cpu0 = cpuSeconds();
@@ -285,13 +319,14 @@ void soak(const char* mainDir, int seconds) {
             }
         }
         if (sec == seconds / 2) client.addReliableCommand("score");
-        // Client 63 standing at its spawn is not always found by the bots (their paths depend on every hit); when it is
-        // still alive at two thirds of the soak a bot's shot kills it, so its body and killcam always run.
-        if (sec == seconds * 2 / 3)
-            if (game::Entity* h = w.mpClientEntity(63); h && h->obj->get("sessionstate").toString() == "playing") {
-                const auto d = h->obj->get("deaths");
-                if (!d.isInt() || d.asInt() == 0) w.mpDebugDamage(63, 0, 1000, "MOD_RIFLE_BULLET", "torso_upper");
-            }
+        // Client 63 stands at its spawn and never fires: whether a bot's path passes it depends on every hit of the
+        // soak (the bots' poses, their aim and so their fights), so in some runs none comes by. From a third of the soak
+        // on, while no bot has killed it, the nearest bot with rounds in its clip is brought every two seconds to a clear
+        // spot 200 units away, facing it; the bot's own sight, aim and bullets (through client 63's posed hit boxes) do
+        // the rest.
+        if (sec >= seconds / 3 && sec % 2 == 0 && !botKilled63())
+            if (game::Entity* h = w.mpClientEntity(63); h && h->obj->get("sessionstate").toString() == "playing")
+                bringBot(*h), ++botsBrought;
     }
     const double cpu = cpuSeconds() - cpu0;
     const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
@@ -328,12 +363,14 @@ void soak(const char* mainDir, int seconds) {
     // 60 a second while it plays; a killcam gets the frame snapshots only (20 a second, docs/spec/net.md section 10).
     CHECK(double(snaps) / simSeconds > 30.0);
     CHECK(deaths > 0);
-    // Client 63 died (its body, the killcam of the highest client number) and plays again.
+    // Client 63 was killed by a bot (its body, the killcam of the highest client number) and plays again.
     human = w.mpClientEntity(63);
     const auto hd = human ? human->obj->get("deaths") : script::Value();
-    std::printf("mp64 soak: client 63 deaths %d, session state %s\n", hd.isInt() ? hd.asInt() : -1,
-                human ? human->obj->get("sessionstate").toString().c_str() : "-");
+    std::printf("mp64 soak: client 63 deaths %d, session state %s, killed by a bot %d (a bot brought to it %d times)\n",
+                hd.isInt() ? hd.asInt() : -1, human ? human->obj->get("sessionstate").toString().c_str() : "-", int(botKilled63()),
+                botsBrought);
     CHECK(hd.isInt() && hd.asInt() > 0);
+    CHECK(botKilled63());
     // The scores command with all 64 rows.
     bool scores = false;
     for (const std::string& c : client.takeServerCommands())
