@@ -207,6 +207,19 @@ After the 9 header bytes the rest is unscrambled and Huffman-decompressed; then 
   snapshot; with op 1 the server sends a full snapshot.
 - 3 = end.
 - `serverId` is the low byte of the `sv_serverid` value of the system-info configstring (index 1).
+- How the server picks it (VAs in the 1.3 Linux dedicated server): the id is one byte the server keeps (0x8423008) and
+  writes to the `sv_serverid` dvar (registered at 0x8093dc2) whenever it changes. A map load (0x8093813..0x8093848)
+  adds 0x10 to the byte, keeping 8 bits, and adds 0x10 once more when the high nibble came out 0; the low nibble stays.
+  A restart that keeps the loaded level (0x808bf20..0x808bf55, which also flips snapshot flag 4) raises only the low
+  nibble, modulo 16, and keeps the high one: that is the "only the high nibble equal" case below. So two map loads in
+  a row never share an id (the high nibble walks 1..15 and skips 0), and a client tells a new map from a gamestate sent
+  again by the id alone. The byte lives in zero-initialised storage and no other writer was found, so the first map
+  gets 0x10; `TODO(spec)`: a clear of the structure around it at a server shutdown was not looked for. openiw2
+  (`net::nextMapServerId`, used by the dedicated server and iw2view's listen server) applies the map-load rule to every
+  level it loads, the restarts included, since it reloads the level for those too (docs/spec/mp.md, map rotation). Before,
+  openiw2 took a time-based byte, which repeated the previous id about once in 256 loads; the clients then kept the
+  old level under the new map's snapshots (seen in the network soak: an sd map turret that dm had deleted stayed
+  hidden after a change from dm to sd on mp_toujane).
 - The packet's `serverId` decides what is read (0x809114e):
   - equal to the server's (or the client is downloading): the operations above are read;
   - only the high nibble equal (a map restart in progress): nothing is read; a primed client enters the world with
@@ -1335,7 +1348,8 @@ level counter, not by the World's address, which a new level may reuse.) The cli
 server info (`mapname`), then goes on with the snapshots of the new map; the team and weapon menus come again from the
 gametype's connect. Implemented: iw2view counts the gamestates (`GameClient::gamestates`) and starts the level load for
 each one newer than the one its level was built from that carries another server id (a gamestate sent again
-  while the client was still loading is not a new map). TODO(spec): the client's state machine during that load (the
+  while the client was still loading is not a new map). This relies on the server rule of section 4 that a map load never
+  keeps the previous id. TODO(spec): the client's state machine during that load (the
 exe's client states 5..7) is not modelled; snapshots arriving meanwhile are applied to the new world.
 Tested end to end by tests/test_mpmapchange.cpp (ctest `mpmapchange_e2e`): two network clients and 50 bots on
 mp_toujane dm, the console's `map mp_carentan`; both clients stay connected, get the new gamestate, join through the
@@ -1484,7 +1498,8 @@ Names the scripts register later in the game reach the clients as `d <index> <te
   script deleted, such as the objects of the other gametypes: the sd bombs and their targets, the ctf flags, the hq
   radios) is neither drawn nor solid on the client; openiw2 spawns the map locally to keep the numbering, so the
   remote view hides every map entity with a model that the newest snapshot lacks and shows it again when it returns.
-  A map turret (eType 9) counts as sent; its aim (pitch, yaw relative to its angles) is angles2[0] / [1] (docs/spec/turrets.md "Multiplayer").
+  A map turret (eType 9) counts as sent, is shown again like any other when it returns and is hidden while its
+  entity state has openiw2's hidden bit (0x20, as a script model); its aim (pitch, yaw relative to its angles) is angles2[0] / [1] (docs/spec/turrets.md "Multiplayer").
 - Other players are drawn with the body model (+8) and the attached models (+12..+32) of their client state, for
   network players and bots alike (bots have client states like any client).
 

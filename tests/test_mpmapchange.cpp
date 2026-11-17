@@ -3,7 +3,8 @@
 // more from `addtestclient`), the console types `map mp_carentan`. Both clients must stay connected (no drop of any
 // reason), get a new gamestate naming mp_carentan, join again through the gametype's menus and spawn at one of
 // mp_carentan's deathmatch spawn points. Every spawn a client sees is checked against the spawn points of the map its
-// gamestate names, so a player of one level shown with the other level's spawn (under the ground) fails too.
+// gamestate names, so a player of one level shown with the other level's spawn (under the ground) fails too. The new
+// gamestate carries the next server id of the map-load rule.
 // Needs IW2_MAIN (and IW2_NAV_CACHE for the bots' graph).
 #include <algorithm>
 #include <array>
@@ -25,6 +26,7 @@
 #include "fs/vfs.h"
 #include "net/gameclient.h"
 #include "net/oob.h"
+#include "net/server.h"
 #include "netgame/dedicated.h"
 #include "netgame/netmove.h"
 
@@ -203,6 +205,7 @@ int main() {
     run(3000, {});
     for (const auto& p : players) CHECK(p->client.state() == net::ClientState::Active);
     const int gamestatesBefore = players[0]->client.gamestates;
+    const int serverIdBefore = players[0]->client.serverId;
 
     console.push("map mp_carentan");
     // The level loads (with a cached bot graph well under a second), then both players join and spawn again.
@@ -214,6 +217,9 @@ int main() {
         CHECK(p->client.state() == net::ClientState::Active);
         CHECK(p->client.dropReason.empty());
         CHECK(p->client.gamestates > gamestatesBefore);
+        // The new map's server id is the next one of the map-load rule (docs/spec/net.md section 4): never the old one,
+        // so the client always takes the gamestate for a new map.
+        CHECK(p->client.serverId == net::nextMapServerId(serverIdBefore));
         bool onCarentan = false;
         for (const Spawn& sp : p->spawns) {
             const bool ok = atSpawnPoint(sp.origin, sp.map == "mp_carentan" ? carentan : toujane);

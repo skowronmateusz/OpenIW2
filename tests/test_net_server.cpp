@@ -444,7 +444,30 @@ void frameCapTest() {
     CHECK(out == "Hitch warning: 800 msec frame time\n");
 }
 
+// The server id of a map load (docs/spec/net.md section 4, "How the server picks it"): the high nibble goes up by one
+// and skips 0, the low nibble stays; so a map load never keeps the previous id and a client always sees a new map.
+void serverIdTest() {
+    CHECK(nextMapServerId(0) == 0x10);
+    CHECK(nextMapServerId(0x10) == 0x20);
+    CHECK(nextMapServerId(0x37) == 0x47);
+    CHECK(nextMapServerId(0xe5) == 0xf5);
+    CHECK(nextMapServerId(0xf5) == 0x15); // wraps past 0x05: the high nibble 0 is skipped
+    CHECK(nextMapServerId(0xff) == 0x1f);
+    for (int start = 0; start < 256; ++start) {
+        int id = start;
+        for (int load = 0; load < 40; ++load) {
+            const int next = nextMapServerId(id);
+            CHECK(next != id && next >= 0x10 && next <= 0xff);
+            CHECK((next & 0x0f) == (start & 0x0f));
+            CHECK((next & 0xf0) != (id & 0xf0)); // never taken for a restart of the same map either
+            id = next;
+        }
+    }
+    std::printf("server id: every map load changes the high nibble and keeps the low one\n");
+}
+
 int main() {
+    serverIdTest();
     frameWaitTest();
     frameCapTest();
     baselineOnceTest();

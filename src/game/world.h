@@ -623,7 +623,7 @@ public:
         int animFlip = 0;                      // a body: eFlags bit 2; a new value is a new body in the slot
         bool animDone = false;                 // a body seen after its death: the last frame, not the animation
         std::vector<std::string> attachments;  // a body: the attached models of its client (tag "")
-        bool presentOnly = false;              // a map entity drawn as before (a turret): only marks it as sent
+        bool presentOnly = false;              // a map entity drawn from the map (a turret): marks it as sent, shown or `hidden`
         bool trajectory = false;               // placed per rendered frame from its trajectory (mpPlaceRemoteModel)
     };
     // A network client on a map turret (src/game/mpturret.cpp): the turret entity of this World the server put the

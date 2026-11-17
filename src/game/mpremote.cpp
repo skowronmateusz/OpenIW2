@@ -280,7 +280,12 @@ void World::mpSetRemoteModels(const std::vector<RemoteModel>& models) {
                 e->obj->set("$netabsent", Value());
                 e->obj->set("$notsolid", Value());
             }
-            if (m.presentOnly) continue;
+            // A map turret is drawn from the map: only shown or hidden here, also when it returns after being absent
+            // (docs/spec/net.md section 11).
+            if (m.presentOnly) {
+                e->obj->set("$hidden", m.hidden ? Value(true) : Value());
+                continue;
+            }
         } else {
             seen.insert(m.wire);
             auto it = remoteModels_.find(m.wire);

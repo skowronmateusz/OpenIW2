@@ -151,6 +151,12 @@ void Server::sendOutOfBand(const NetAddress& to, const std::string& text) {
     sock_.sendTo(to, pkt.data(), static_cast<int>(pkt.size()));
 }
 
+int nextMapServerId(int current) {
+    int id = (current + 0x10) & 0xff; // 0x8093813..0x809381f
+    if ((id & 0xf0) == 0) id += 0x10; // 0x8093824..0x8093830
+    return id;
+}
+
 void Server::newMap(int newServerId) {
     serverId = newServerId;
     baselinesBuilt_ = false; // the new level's baselines come with its first gamestate

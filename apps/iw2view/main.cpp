@@ -10270,7 +10270,7 @@ int main(int argc, char** argv) {
                     listenWorldGeneration = worldGeneration;
                     game::World* const listenWorld = world.get();
                     const std::string map = world->cvars["mapname"], gt = world->mpState().gametype;
-                    const int serverId = int((netNowMs() + 1 + listenServer->serverId) & 0xff);
+                    const int serverId = net::nextMapServerId(listenServer->serverId); // never the previous map's id
                     // sv_maxclients takes effect at a map load (docs/spec/mp.md "sv_maxclients"): the new level's World
                     // read it at its start; the network slots follow, never below the highest slot in use + 1.
                     {

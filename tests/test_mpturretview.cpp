@@ -4,14 +4,20 @@
 // viewLockEntity), its prediction holds it behind the gun, the turret aim arrives in the turret's angles2, attack fires
 // the turret and kills a second client in front of it with the turret weapon in the obituary, and a second use press
 // gets it off. Run on a listen server (gunner = MP client 2) and on a dedicated-style server where the gunner is MP
-// client 0, the client whose player state is the World's own. Needs IW2_MAIN.
+// client 0, the client whose player state is the World's own. The turret stays drawn on the gunner's and another
+// client's front end through all of it: its use, a kill, its release, the gunner dying on it, a client disconnecting
+// on it and the intermission; a turret that comes back into the snapshots after being absent (a client that kept the
+// level of the map before) is drawn again, and openiw2's hidden bit hides it. Needs IW2_MAIN.
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #include "fs/vfs.h"
@@ -240,6 +246,14 @@ void run(fs::Vfs& vfs, bool listen) {
         }
     };
 
+    // Whether a front end draws its copy of the turret (docs/spec/net.md section 11).
+    auto drawn = [&](World& w) {
+        for (const auto& e : w.entities())
+            if (e->turret && e->mapIndex == t->mapIndex && !e->obj->removed) return !e->obj->get("$hidden").truthy();
+        return false;
+    };
+    const int turretWire = netgame::kFirstMapEntity + t->mapIndex - 1;
+
     pg->obj->set("origin", Value(behind));
     cg.yaw = ta[1];
     for (int i = 0; i < 20; ++i) {
@@ -264,6 +278,7 @@ void run(fs::Vfs& vfs, bool listen) {
     CHECK(psf.viewLockEntity >= 64 && psf.viewLockEntity < 1022);
     CHECK(view.playerOnTurret());
     CHECK(view.playerTurretWeapon() == "30cal_stand_mp");
+    CHECK(drawn(view) && drawn(wview));
     // The prediction keeps the server's place behind the gun, whatever the commands' move.
     cg.forward = 1.0f;
     for (int i = 0; i < 6; ++i) {
@@ -309,6 +324,7 @@ void run(fs::Vfs& vfs, bool listen) {
     }
     CHECK(killed);
     CHECK(lockFired);
+    CHECK(drawn(view) && drawn(wview));
     // Every shot of the server is drawn once: predicted and matched by its event, not played a second time.
     std::cout << label << ": flashes " << flashes - flashes0 << " for " << t->turret->fireCount - shots0 << " server shots, "
               << pt.pending() << " predicted shots unmatched\n";
@@ -447,6 +463,125 @@ void run(fs::Vfs& vfs, bool listen) {
     CHECK(!t->turret->inUse);
     CHECK((psf.eFlags & 0x300) == 0 && psf.viewLockEntity == 1023);
     CHECK(!view.playerOnTurret());
+    std::cout << label << ": turret drawn after its use: gunner " << drawn(view) << " watcher " << drawn(wview) << "\n";
+    CHECK(drawn(view) && drawn(wview));
+    // A snapshot without the turret (a client that kept the level of the map before, where the gametype had deleted
+    // it), then the snapshots with it again: hidden while absent, drawn again when it returns. The hidden bit of its
+    // entity state hides it as it hides a script model.
+    {
+        net::ClientSnapshot absent = *cw.net->latest();
+        CHECK(absent.entities.erase(turretWire) == 1);
+        absent.messageNum = -1001; // a snapshot of its own: the view applies each message once
+        wrv.apply(wview, absent, cw.net->configstrings, watcher, wview.timeMs());
+        const bool hiddenWhileAbsent = !drawn(wview);
+        g.frame();
+        showWatcher();
+        const bool drawnOnReturn = drawn(wview);
+        net::ClientSnapshot flagged = *cw.net->latest();
+        bool flagSet = false;
+        if (auto it = flagged.entities.find(turretWire); it != flagged.entities.end() && it->second.size() >= 12) {
+            const int32_t flags = getI(it->second, 8) | netgame::kEfHidden;
+            std::memcpy(it->second.data() + 8, &flags, 4);
+            flagSet = true;
+        }
+        flagged.messageNum = -1002;
+        wrv.apply(wview, flagged, cw.net->configstrings, watcher, wview.timeMs());
+        const bool hiddenByFlag = !drawn(wview);
+        g.frame();
+        showWatcher();
+        std::cout << label << ": turret absent from a snapshot: hidden " << hiddenWhileAbsent << ", drawn on its return " << drawnOnReturn
+                  << ", hidden by the hidden bit " << hiddenByFlag << ", drawn after it " << drawn(wview) << "\n";
+        CHECK(hiddenWhileAbsent && drawnOnReturn && flagSet && hiddenByFlag && drawn(wview));
+    }
+    // The gunner dies on the gun: the turret is free, and drawn on both front ends through the death, the killcam and
+    // after the respawn (use presses).
+    {
+        for (int i = 0; i < 4; ++i) {
+            g.frame();
+            show();
+        }
+        pg->obj->set("origin", Value(behind));
+        cg.yaw = ta[1];
+        cg.buttons = game::Button::Activate;
+        for (int i = 0; i < 2; ++i) g.frame();
+        cg.buttons = 0;
+        for (int i = 0; i < 6; ++i) {
+            g.frame();
+            show();
+        }
+        CHECK(g.host.mpClientOnTurret(gunner) && view.playerOnTurret());
+        g.host.vm().start("maps/mp/iw2test_turretview", "suicideof", {}, Value(pg->obj));
+        int hiddenFrames = 0, frames = 0;
+        bool dead = false, back = false;
+        for (int i = 0; i < 400 && !back; ++i) {
+            if (dead) cg.buttons = (i % 4) < 2 ? game::Button::Activate : 0u;
+            g.frame();
+            show();
+            ++frames;
+            if (!drawn(view) || !drawn(wview)) ++hiddenFrames;
+            const Entity* p = g.host.mpClientEntity(gunner);
+            dead = dead || !p || p->obj->get("sessionstate").toString() != "playing" || p->obj->get("health").asInt() <= 0;
+            back = dead && p && p->obj->get("sessionstate").toString() == "playing" && p->obj->get("health").asInt() > 0;
+        }
+        cg.buttons = 0;
+        for (int i = 0; i < 6; ++i) {
+            g.frame();
+            show();
+        }
+        std::cout << label << ": gunner died on the turret: dead " << dead << ", back " << back << ", frames with the turret hidden "
+                  << hiddenFrames << " of " << frames << ", turret in use " << t->turret->inUse << "\n";
+        CHECK(dead && back);
+        CHECK(!g.host.mpClientOnTurret(gunner) && !t->turret->inUse && !view.playerOnTurret());
+        CHECK(hiddenFrames == 0 && drawn(view) && drawn(wview));
+        pg = g.host.mpClientEntity(gunner);
+        CHECK(pg != nullptr);
+        if (!pg) return;
+    }
+    // A client disconnects on the gun: the turret is free and stays drawn on the others' front ends.
+    {
+        pg->obj->set("origin", Value(front)); // the gunner leaves the place behind the gun
+        Client& cv = g.clients[1];
+        bool alive = false;
+        for (int i = 0; i < 400 && !alive; ++i) {
+            cv.buttons = (i % 4) < 2 ? game::Button::Activate : 0u;
+            g.frame();
+            show();
+            const Entity* p = g.host.mpClientEntity(victim);
+            alive = p && p->obj->get("sessionstate").toString() == "playing" && p->obj->get("health").asInt() > 0;
+        }
+        cv.buttons = 0;
+        for (int i = 0; i < 4; ++i) {
+            g.frame();
+            show();
+        }
+        Entity* p = g.host.mpClientEntity(victim);
+        CHECK(alive && p);
+        if (!p) return;
+        p->obj->set("origin", Value(behind));
+        cv.yaw = ta[1];
+        for (int i = 0; i < 4; ++i) { // the use search picks the turret from there
+            g.frame();
+            show();
+        }
+        cv.buttons = game::Button::Activate;
+        for (int i = 0; i < 2; ++i) g.frame();
+        cv.buttons = 0;
+        for (int i = 0; i < 6; ++i) {
+            g.frame();
+            show();
+        }
+        const bool mounted = g.host.mpClientOnTurret(victim);
+        cv.net->disconnect();
+        int hiddenFrames = 0;
+        for (int i = 0; i < 20; ++i) {
+            g.frame();
+            show();
+            if (!drawn(view) || !drawn(wview)) ++hiddenFrames;
+        }
+        std::cout << label << ": a client disconnected on the turret: mounted " << mounted << ", turret in use " << t->turret->inUse
+                  << ", frames with the turret hidden " << hiddenFrames << "\n";
+        CHECK(mounted && !t->turret->inUse && hiddenFrames == 0);
+    }
     // On the gun with attack held when the map ends (dm.gsc endMap -> spawnIntermission): the intermission spawn takes
     // the gunner off (docs/spec/turrets.md "Multiplayer"); his snapshot says so, the turret stops, the front end fires
     // nothing more.
@@ -481,6 +616,7 @@ void run(fs::Vfs& vfs, bool listen) {
     CHECK(!g.host.mpClientOnTurret(gunner) && !t->turret->inUse && !view.playerOnTurret());
     CHECK(flashes == endFlashes && t->turret->fireCount == endShots);
     CHECK(!looping(loopPlr));
+    CHECK(drawn(view) && drawn(wview));
     CHECK(g.host.vm().errors().empty());
 }
 
@@ -507,8 +643,15 @@ int main() {
     }
     fs::Vfs vfs;
     vfs.mountDirectory(main);
+    // A small script for the gunner's death on the gun (written to a per-process temporary directory).
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / ("iw2test_mpturretview_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir / "maps/mp");
+    std::ofstream(dir / "maps/mp/iw2test_turretview.gsc") << "suicideof() { self suicide(); }\n";
+    vfs.mountDirectory(dir.string());
     run(vfs, true);
     run(vfs, false);
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
     if (failures) std::cerr << failures << " failure(s)\n";
     return failures ? 1 : 0;
 }

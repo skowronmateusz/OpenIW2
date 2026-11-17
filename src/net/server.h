@@ -62,6 +62,10 @@ public:
 // the current server id; Active: in the world (docs/spec/net.md section 4, "Map change").
 enum class ServerClientState { Free, Connected, Primed, Active };
 
+// The server id of the next map load from the current one (docs/spec/net.md section 4, "How the server picks it"): the
+// high nibble goes up by one and skips 0, the low nibble stays, so a map load never keeps the previous map's id.
+int nextMapServerId(int current);
+
 class Server {
 public:
     explicit Server(ServerGame& game, uint32_t seed = 1);

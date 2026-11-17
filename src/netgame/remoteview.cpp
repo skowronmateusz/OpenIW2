@@ -488,6 +488,7 @@ void RemoteView::apply(game::World& w, const net::ClientSnapshot& snap, const st
             game::World::RemoteModel m;
             m.wire = number;
             m.presentOnly = true;
+            m.hidden = (getI(es, 8) & kEfHidden) != 0;
             for (const auto& e : w.entities())
                 if (e->mapIndex > 0 && kFirstMapEntity + e->mapIndex - 1 == number) {
                     m.mapNumber = e->number;

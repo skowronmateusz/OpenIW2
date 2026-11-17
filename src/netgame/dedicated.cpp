@@ -97,7 +97,7 @@ public:
         map_ = map;
         gametype_ = gametype;
         console->cvars["mapname"] = map;
-        const int serverId = static_cast<int>((nowMs() + 1 + server->serverId) & 0xff);
+        const int serverId = iw2::net::nextMapServerId(server->serverId); // never the previous map's id
         game->setWorld(world_.get(), map, gametype, serverId);
         game->hostname = hostname();
         server->info().mapname = map;
