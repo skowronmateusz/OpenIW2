@@ -207,6 +207,35 @@ void playoutTests() {
         }
         CHECK(!held);
     }
+    // A stall of the server's own process inside the wait of a poll (twice within the window, 900 ms apart; the client
+    // and its path are even): the packets that came during the stall are read when it ends. Dated by the poll's time
+    // (before its wait) they look 0 to 70 ms early, so the ones after them look late against that and the path looked
+    // bursty (seen as holds of the clients' commands under a busy server host); dated by their arrival (packetArrivalMs)
+    // nothing is held. The poll after the stall reads after a pause of over 30 ms and is left out, as in Server::poll.
+    for (const bool byArrival : {true, false}) {
+        CommandPlayout p;
+        bool held = false;
+        int64_t lastPoll = -5, nextPacket = 0;
+        for (int64_t now = 0; now < 6000; now += 5) {
+            const bool stall = now == 2000 || now == 2900;
+            const int64_t readAt = stall ? now + 70 : now; // the wait began at `now`; the stall ends at readAt
+            const bool leftOut = now - lastPoll > 30;      // kLateReadMs
+            for (; nextPacket <= readAt; nextPacket += 10) {
+                const int64_t ageUs = (readAt - nextPacket) * 1000;
+                const int64_t dated = byArrival ? packetArrivalMs(now, (readAt - now) * 1000, ageUs) : now;
+                if (!leftOut) p.packet(dated, int(nextPacket - 60));
+            }
+            lastPoll = now;
+            if (stall) now += 70;
+            if (now % 50 == 0) {
+                (void)p.due(now);
+                held = held || p.holding();
+            }
+        }
+        std::printf("server stalls inside the wait, packets dated by %s: %s\n", byArrival ? "arrival" : "the poll's time", held ? "held" : "not held");
+        CHECK(held == !byArrival);
+    }
+    CHECK(packetArrivalMs(1000, 30000, 50000) == 1000 && packetArrivalMs(1000, 30000, 10000) == 1020 && packetArrivalMs(1000, 4000, 0) == 1004);
     // A queue that only grows (commands far in the future) is cut at maxQueue.
     {
         CommandPlayout p;
@@ -444,6 +473,53 @@ void frameCapTest() {
     CHECK(out == "Hitch warning: 800 msec frame time\n");
 }
 
+// The cap by the kind of server (MP 0x434cb0): 5000 ms dedicated, 200 ms for a listen server (sv_running), 5000 ms with
+// no server. A listen server's poll after a long host frame makes up four game frames, not a hundred.
+void listenFrameCapTest() {
+    static_assert(frameMsecCap(true, true) == 5000 && frameMsecCap(true, false) == 5000);
+    static_assert(frameMsecCap(false, true) == 200 && frameMsecCap(false, false) == 5000);
+    StubGame game;
+    Server server(game, 9);
+    if (!server.open(0)) return;
+    server.maxFrameMsec = frameMsecCap(false, true);
+    int64_t now = 5000;
+    for (int i = 0; i < 10; ++i) server.poll(now += 10, 0);
+    int before = game.time;
+    server.poll(now += 3000, 0); // a level load of the host or a stall of 3 s
+    std::printf("listen frame cap: a 3 s gap made up %d ms of game frames\n", game.time - before);
+    CHECK(game.time - before >= 150 && game.time - before <= 250);
+    before = game.time;
+    server.poll(now += 150, 0); // a gap under the cap is made up in full
+    CHECK(game.time - before >= 100 && game.time - before <= 200);
+}
+
+// A listen server's world steps on the host's clock (WorldGame::worldOwnedByHost): the game frames of the server do not
+// move the time, the host does, at most 200 ms after a long host frame. A host frame of 560 ms is still a jump of the
+// server's time (the clients' clocks are reset), although the 200 ms cap leaves the schedule only 200 ms behind.
+void listenTimeJumpTest() {
+    struct HostGame : StubGame {
+        void runFrame(int) override {}
+    } game;
+    Server server(game, 11);
+    if (!server.open(0)) return;
+    server.maxFrameMsec = frameMsecCap(false, true);
+    int64_t now = 5000;
+    int64_t hostClock = 0;
+    auto hostFrame = [&](int ms) { // the host's world: 50 ms frames, at most 200 ms a drawn frame
+        hostClock += std::min(ms, 200);
+        while (hostClock >= 50) game.time += 50, hostClock -= 50;
+        server.poll(now += ms, 0);
+    };
+    for (int i = 0; i < 50; ++i) hostFrame(10);
+    CHECK(server.timeJumps() == 0);
+    hostFrame(300); // a hitch under the jump threshold
+    for (int i = 0; i < 10; ++i) hostFrame(10);
+    CHECK(server.timeJumps() == 0);
+    hostFrame(560);
+    std::printf("listen time jump: %d jumps after a 560 ms host frame\n", server.timeJumps());
+    CHECK(server.timeJumps() == 1);
+}
+
 // The server id of a map load (docs/spec/net.md section 4, "How the server picks it"): the high nibble goes up by one
 // and skips 0, the low nibble stays; so a map load never keeps the previous id and a client always sees a new map.
 void serverIdTest() {
@@ -470,6 +546,8 @@ int main() {
     serverIdTest();
     frameWaitTest();
     frameCapTest();
+    listenFrameCapTest();
+    listenTimeJumpTest();
     baselineOnceTest();
     playoutTests();
     snapshotRateTest();

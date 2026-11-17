@@ -863,7 +863,7 @@ void WorldGame::runFrame(int frameMs) {
         auto mv = moves_.find(slot);
         EvenTrack::Vec at{};
         if (plainPlayers || mv == moves_.end() || !mv->second.havePs || mv->second.trackSampledAt == snapshotTime ||
-            !mv->second.track.sample(snapshotTime, at)) {
+            !mv->second.track.sample(snapshotTime, at, worldOwnedByHost ? 0 : frameLateMs_)) {
             if (plainPlayers || mv == moves_.end() || !mv->second.havePs) w_->mpClearSentOrigin(client);
             continue;
         }

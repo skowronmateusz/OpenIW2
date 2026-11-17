@@ -121,12 +121,16 @@ const NavGraph& World::mpNav() {
         // PathGraph links hold 16-bit node numbers: a coarser grid when a large map gives more nodes.
         NavParams np;
         np.mantle = &bots_->mantle;
+        const auto genStart = std::chrono::steady_clock::now();
         for (;;) {
             bots_->nav = generateNavGraph(*collision_, mins, maxs, seeds, np);
             if (bots_->nav->size() < 65536 || np.cell > 64.0f) break;
             np.cell *= 1.5f;
         }
         if (!path.empty()) saveNavGraph(path, *bots_->nav, key);
+        // A miss costs seconds (tens on a busy machine): say so, with the file, so a slow map load can be told apart.
+        std::printf("navigation graph %s: generated in %.1f s, %zu nodes\n", path.empty() ? mapName_.c_str() : path.c_str(),
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - genStart).count(), bots_->nav->size());
     }
     paths_ = bots_->nav->toPathGraph(); // A* (PathGraph::findPath) runs on it
     return *bots_->nav;

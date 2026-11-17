@@ -38,6 +38,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -166,7 +167,8 @@ struct ServerProcess {
         while ((p = buffer.find('\n')) != std::string::npos) {
             std::string l = buffer.substr(0, p);
             buffer.erase(0, p + 1);
-            if (log) log << l << "\n";
+            // The run time the line was read at (a long map change shows as a gap between two lines).
+            if (log) log << "[t=" << std::fixed << std::setprecision(1) << runSeconds() << "] " << l << "\n";
             lines.push_back(std::move(l));
         }
     }

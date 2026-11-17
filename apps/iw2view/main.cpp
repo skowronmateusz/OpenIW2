@@ -10244,6 +10244,9 @@ int main(int argc, char** argv) {
                     listenGame = std::make_unique<netgame::WorldGame>(nullptr, "", "", 0, 64);
                     listenGame->worldOwnedByHost = true;
                     listenServer = std::make_unique<net::Server>(*listenGame, uint32_t(netNowMs()));
+                    // A listen server's frame makes up at most 200 ms after a long host frame, like the host's own world
+                    // (docs/spec/net.md section 10 "Command steps").
+                    listenServer->maxFrameMsec = net::frameMsecCap(false, true);
                     listenGame->sendCommand = [s = listenServer.get()](int slot, const std::string& text) { s->sendServerCommand(slot, text); };
                     listenGame->clientPing = [s = listenServer.get()](int slot) { return s->client(slot).ping; };
                     listenGame->onRestart = [s = listenServer.get()] { s->snapFlags ^= 4; };

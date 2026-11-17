@@ -41,7 +41,10 @@ public:
     virtual void clientCommand(int slot, const std::string& text) = 0;
     virtual void clientThink(int slot, const UserCmd& cmd) = 0;
     virtual void clientDisconnect(int slot) = 0;
-    // Advances the game by one server frame of frameMs.
+    // Advances the game by one server frame of frameMs. frameLate: called before it with how far the real time is past
+    // the frame's place in the schedule (0 when on time; a frame made up after a long frame or a stall of the server's
+    // process runs later by that much).
+    virtual void frameLate(int lateMs) { (void)lateMs; }
     virtual void runFrame(int frameMs) = 0;
     virtual int serverTime() const = 0;
     virtual SnapshotView snapshot(int slot) = 0;
@@ -61,6 +64,19 @@ public:
 // Connected: waiting for a gamestate; Primed: the gamestate was sent, the client has not yet sent user commands of
 // the current server id; Active: in the world (docs/spec/net.md section 4, "Map change").
 enum class ServerClientState { Free, Connected, Primed, Active };
+
+// The most time one common frame hands to the server frame (docs/spec/net.md section 10 "Command steps"; MP 0x434cb0,
+// called from the common frame at 0x43502a): 5000 ms on a dedicated server, 200 ms while a server runs in the game
+// itself (a listen server, `sv_running`), 5000 ms when none runs.
+constexpr int frameMsecCap(bool dedicated, bool serverRunning) { return dedicated || !serverRunning ? 5000 : 200; }
+
+// When a packet read in a poll arrived, on the poll's clock (docs/spec/net.md section 10 "Commands on a bursty path"):
+// nowMs (the time before the poll's wait) for one that was waiting already, else the moment it came during the wait:
+// sinceWaitUs is the time from the start of the wait to the read, ageUs the packet's age at the read (the socket's
+// receive time; 0 when unknown).
+inline int64_t packetArrivalMs(int64_t nowMs, int64_t sinceWaitUs, int64_t ageUs) {
+    return nowMs + (sinceWaitUs > ageUs ? (sinceWaitUs - ageUs) / 1000 : 0);
+}
 
 // The server id of the next map load from the current one (docs/spec/net.md section 4, "How the server picks it"): the
 // high nibble goes up by one and skips 0, the low nibble stays, so a map load never keeps the previous map's id.
@@ -114,10 +130,9 @@ public:
     int timeoutMs = 240000;      // sv_timeout 240 s (docs/spec/net.md section 4a)
     int zombieMs = 2000;         // sv_zombietime 2 s
     bool publicServer = false;   // dedicated 2: a LAN address does not lift the rate
-    // The most time one poll makes up in game frames (docs/spec/net.md section 10 "Command steps", 0x8062594: 5000 ms
-    // on a dedicated server); the rest of a longer gap is dropped. hitchWarning: print the dedicated server's line for a
-    // gap over 500 ms.
-    int maxFrameMsec = 5000;
+    // The most time one poll makes up in game frames (frameMsecCap: 5000 ms on a dedicated server, 200 ms on a listen
+    // server); the rest of a longer gap is dropped. hitchWarning: print the dedicated server's line for a gap over 500 ms.
+    int maxFrameMsec = frameMsecCap(true, true);
     bool hitchWarning = false;
     int maxRate = 0;             // sv_maxRate (0: no cap)
     bool floodProtect = true;    // sv_floodProtect
@@ -183,6 +198,8 @@ public:
         int maxSnapshotBytes = 0;
     };
     const Client& client(int slot) const { return clients_[static_cast<size_t>(slot)]; }
+    // Jumps of the server's own time seen so far (a poll behind the frame schedule by more than kTimeJumpMs).
+    int timeJumps() const { return timeJumps_; }
 
 private:
     void handleOutOfBand(const NetAddress& from, const uint8_t* data, int len, int64_t nowMs);
@@ -214,6 +231,8 @@ private:
     int lastSubTime_ = -1;  // the last snapshot time prepared between two frames
     int64_t clockResetUntilMs_ = -1;  // end of the window in which a client may run one older command
     int64_t timeDriftBase_ = INT64_MAX;  // real time minus server time at the last jump (or its lowest since)
+    int timeJumps_ = 0;
+    int64_t packetArrivalMs_ = 0;  // the packet being read: when it arrived (poll)
     static constexpr int kTimeJumpMs = 500;           // a server behind its frame schedule by more: a time jump
     static constexpr int kClockResetMs = 400;         // a command older than the last one run by more: a clock reset
     static constexpr int kLateReadMs = 30;            // socket reads further apart: the receive time is the server's own delay

@@ -176,6 +176,7 @@ public:
     void clientCommand(int slot, const std::string& text) override;
     void clientThink(int slot, const net::UserCmd& cmd) override;
     void clientDisconnect(int slot) override;
+    void frameLate(int lateMs) override { frameLateMs_ = lateMs; }
     void runFrame(int frameMs) override;
     int serverTime() const override;
     net::SnapshotView snapshot(int slot) override;
@@ -237,6 +238,7 @@ private:
     };
     std::map<int, FramePlace> framePrev_, frameCur_;
     int frameLenMs_ = 50;
+    int frameLateMs_ = 0;         // the coming frame's lateness against the server's schedule (frameLate)
     int64_t frameSeenTime_ = -1;  // the world time the frame places were last taken at
     int64_t frameSeenAtMs_ = 0;   // a host-owned world: the real time its last step was seen at
     void noteFrame();

@@ -436,6 +436,7 @@ int runDedicated(fs::Vfs& vfs, const DedicatedSettings& s) {
     game.clientPing = [&server](int slot) { return server.client(slot).ping; };
     game.onRestart = [&server] { server.snapFlags ^= 4; };
     server.maxClients = maxClients;
+    server.maxFrameMsec = iw2::net::frameMsecCap(true, true);
     server.hitchWarning = true;  // a dedicated server prints a long frame (docs/spec/net.md section 10 "Command steps")
     server.snapshotHz = std::clamp(std::atoi(console.cvar("sv_snaps").c_str()), 20, 100);
     server.checksumFeed = static_cast<int>(nowMs() * 2654435761u);

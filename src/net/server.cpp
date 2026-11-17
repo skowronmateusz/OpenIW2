@@ -195,10 +195,16 @@ void Server::poll(int64_t nowMs, int waitMs) {
     }
     // The time since the last poll counts for at most maxFrameMsec (docs/spec/net.md section 10 "Command steps"): after a
     // longer gap (a map load, a stall) the missed game frames are made up only that far, the rest is not.
+    // A server that was behind its schedule by more than kTimeJumpMs before the cap moved the schedule had a time jump
+    // (with the listen server's 200 ms cap the schedule is never that far behind afterwards).
+    bool cappedJump = false;
     if (lastNowMs_ > 0 && nowMs > lastNowMs_) {
         const int64_t msec = nowMs - lastNowMs_;
         if (hitchWarning && msec > 500 && msec < 500000) std::printf("Hitch warning: %i msec frame time\n", static_cast<int>(msec));
-        if (msec > maxFrameMsec) nextFrameMs_ += msec - maxFrameMsec;
+        if (msec > maxFrameMsec) {
+            cappedJump = nowMs - nextFrameMs_ > kTimeJumpMs;
+            nextFrameMs_ += msec - maxFrameMsec;
+        }
     }
     static uint8_t buf[kMaxPacketLen + 64];
     NetAddress from;
@@ -215,9 +221,16 @@ void Server::poll(int64_t nowMs, int waitMs) {
             waitMs = static_cast<int>(std::clamp<int64_t>(nextStep - sub, 0, waitMs));
         }
     }
+    const auto waitStart = std::chrono::steady_clock::now();
     for (int wait = waitMs;; wait = 0) {
-        int n = sock_.receive(buf, kMaxPacketLen, from, wait);
+        int64_t ageUs = 0;
+        int n = sock_.receive(buf, kMaxPacketLen, from, wait, &ageUs);
         if (n <= 0) break;
+        // A packet that arrived during this poll's wait is dated by its arrival (the socket's receive time), not by
+        // nowMs: a stall of the server's process inside the wait would otherwise date the packets that came during it
+        // too early, and the next ones would look late to the command hold. Earlier packets keep nowMs.
+        const int64_t sinceUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - waitStart).count();
+        packetArrivalMs_ = packetArrivalMs(nowMs, sinceUs, ageUs);
         if (n >= 4 && std::memcmp(buf, "\xff\xff\xff\xff", 4) == 0)
             handleOutOfBand(from, buf, n, nowMs);
         else
@@ -225,12 +238,13 @@ void Server::poll(int64_t nowMs, int waitMs) {
     }
     lastNowMs_ = nowMs;
     // A long frame (a fast restart rebuilds the level, a map load) leaves the server behind its frame schedule.
-    bool timeJump = nowMs - nextFrameMs_ > kTimeJumpMs;
+    bool timeJump = cappedJump || nowMs - nextFrameMs_ > kTimeJumpMs;
     bool framesRan = false;
     if (timeJump) flushCommands();
     while (nowMs >= nextFrameMs_) {
         runDueCommands(nextFrameMs_);
         const auto frameStart = std::chrono::steady_clock::now();
+        game_.frameLate(static_cast<int>(std::min<int64_t>(nowMs - nextFrameMs_, 1 << 20)));
         game_.runFrame(frameMs);
         if (log::eventsEnabled()) logWatch_.frame(nowMs - nextFrameMs_);
         if (frameTrace_)  // IW2_NET_TRACE=2 (docs/debug-flags.md): the frame's lateness against its schedule and its length
@@ -248,6 +262,7 @@ void Server::poll(int64_t nowMs, int waitMs) {
     // After such a jump the clients' clocks are reset back (docs/spec/net.md section 10 "Client time"): each client
     // may run one older command within the window (parseMove).
     if (timeJump) {
+        ++timeJumps_;
         flushCommands();
         for (Client& c : clients_) c.clockResetAllowed = true;
         clockResetUntilMs_ = nowMs + kClockResetWindowMs;
@@ -529,7 +544,7 @@ void Server::parseMove(int slot, Msg& msg, bool delta, int64_t nowMs) {
     bool hold = false;
     if (commandPlayout) {
         // A packet read after a pause of the server's own socket reads (a long frame) says nothing about the path.
-        if (lastNowMs_ > 0 && nowMs - lastNowMs_ <= kLateReadMs) c.playout.packet(nowMs, cmds.back().serverTime);
+        if (lastNowMs_ > 0 && nowMs - lastNowMs_ <= kLateReadMs) c.playout.packet(packetArrivalMs_, cmds.back().serverTime);
         hold = c.playout.holding();
     }
     ++c.tracePackets;

@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <deque>
+#include <vector>
 
 namespace iw2::netgame {
 
@@ -15,8 +17,9 @@ public:
     using Vec = std::array<float, 3>;
     static constexpr int kWindowMs = 3000;  // the snapshots of this long set the lag by their distance to the last command
     static constexpr int kFallMs = 50;      // the lag falls by 1 ms per this much snapshot time
-    static constexpr int kMaxSpreadMs = 35; // the lag never exceeds the window's smallest distance by more than this
+    static constexpr int kMaxSpreadMs = 35; // the lag never exceeds the window's low end by more than this
     static constexpr int kKeepMs = 400;     // places older than this before the newest one are dropped
+    static constexpr int kLowShare = 20;    // the window's low end leaves out its lowest 1 / kLowShare of the distances
 
     // The place after the command with that time. A command not newer than the last one is ignored.
     void add(int commandTime, const Vec& origin) {
@@ -33,15 +36,24 @@ public:
     }
     // The place for a snapshot time. False when there is nothing to sample (no command yet). The lag is brought up to
     // date once per snapshot time, in rising order; an earlier or repeated time is sampled with the lag as it is.
-    bool sample(int snapshotTime, Vec& out) {
+    // lateMs: how far the real time is past the snapshot time (a frame the server makes up after a stall of its own):
+    // the commands read meanwhile are that much newer, so the distance is measured from the snapshot time plus it.
+    bool sample(int snapshotTime, Vec& out, int lateMs = 0) {
         if (track_.empty()) return false;
         if (lags_.empty() || snapshotTime > lags_.back().time) {
-            const int distance = snapshotTime - track_.back().time;
+            const int distance = snapshotTime + std::max(lateMs, 0) - track_.back().time;
             const int passed = lags_.empty() ? 0 : snapshotTime - lags_.back().time;
             lags_.push_back({snapshotTime, distance});
             while (lags_.front().time <= snapshotTime - kWindowMs) lags_.pop_front();
-            int lo = distance, hi = distance;
-            for (const Lag& l : lags_) lo = std::min(lo, l.distance), hi = std::max(hi, l.distance);
+            // The low end of the window leaves out its lowest twentieth: a single short distance (a snapshot built when
+            // the server's own process was held up after it had read newer commands, or a command clock that leapt
+            // for a moment) would otherwise cap the lag below his usual distance for the whole window.
+            int hi = distance;
+            scratch_.clear();
+            for (const Lag& l : lags_) hi = std::max(hi, l.distance), scratch_.push_back(l.distance);
+            const auto low = scratch_.begin() + static_cast<std::ptrdiff_t>(scratch_.size() / kLowShare);
+            std::nth_element(scratch_.begin(), low, scratch_.end());
+            const int lo = *low;
             // The distance swings by one command interval as his frame rate beats against the snapshots, also while
             // the window happens to hold only one end of the swing: the lag covers the whole swing from the start.
             const int interval = track_.size() > 1 ? (track_.back().time - track_.front().time + static_cast<int>(track_.size()) - 2) /
@@ -82,6 +94,7 @@ private:
         int time, distance;
     };
     std::deque<Lag> lags_;
+    std::vector<int> scratch_;
     int lag_ = 0;
     int fallRest_ = 0;
 };

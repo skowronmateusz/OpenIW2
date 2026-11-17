@@ -75,8 +75,20 @@ int main() {
     }
     iw2::fs::Vfs vfs;
     vfs.mountDirectory(main);
-    const char* cache = std::getenv("IW2_NAV_CACHE");
-    // One cache file per map and key (mp_toujane_<crc>.nav): remove them all so the first graph is generated.
+    // The first graph must be generated, so this test caches into a folder of its own inside IW2_NAV_CACHE and removes
+    // it at the end. Removing the shared mp_toujane files instead made every other process that loads mp_toujane at the
+    // same time generate its graph again (a parallel test pass: the network soak's server held its sd map load up for
+    // 13 s in a measured run).
+    std::string ownCache;
+    if (const char* shared = std::getenv("IW2_NAV_CACHE"); shared && *shared) {
+        ownCache = std::string(shared) + "/mpbots." + std::to_string(::getpid());
+        std::error_code ec;
+        std::filesystem::remove_all(ownCache, ec);
+        std::filesystem::create_directories(ownCache, ec);
+        setenv("IW2_NAV_CACHE", ownCache.c_str(), 1);
+    }
+    const char* cache = ownCache.empty() ? nullptr : ownCache.c_str();
+    // One cache file per map and key (mp_toujane_<crc>.nav).
     auto toujaneCaches = [&] {
         std::vector<std::filesystem::path> v;
         std::error_code ec;
@@ -84,8 +96,7 @@ int main() {
             if (e.path().filename().string().rfind("mp_toujane_", 0) == 0 && e.path().extension() == ".nav") v.push_back(e.path());
         return v;
     };
-    if (cache)
-        for (const auto& p : toujaneCaches()) std::filesystem::remove(p);
+    if (cache) CHECK(toujaneCaches().empty());
 
     // 1. The graph: generated once, then loaded from the cache; all DM spawn points sit on one strongly connected graph.
     {
@@ -357,5 +368,9 @@ int main() {
     }
 
     if (failures) std::cerr << failures << " check(s) failed\n";
+    if (!ownCache.empty()) {
+        std::error_code ec;
+        std::filesystem::remove_all(ownCache, ec);
+    }
     return failures ? 1 : 0;
 }

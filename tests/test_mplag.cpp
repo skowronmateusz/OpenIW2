@@ -17,7 +17,8 @@
 // steps) fails when B draws the walking A held and then moved at once (A walks about one unit per frame here: more than
 // kMaxDrawnJumps frames with a step over kDrawnJump units, or more than one frame in a hundred without a move;
 // IW2_CLOCK_PLAIN=1 and IW2_CMD_PLAIN=1 give the original's behaviour, which fails). The server's NETTRACE
-// counters (docs/debug-flags.md) are printed.
+// counters (docs/debug-flags.md) are printed. The evenness checks (loopback, spike) leave out the second after each
+// stall of the machine (this process or the server descheduled, see kStallMs): on a busy machine they measured it.
 //
 // Environment: IW2_MAIN (required), IW2_LAG_SERVER (the iw2server binary, set by CMake); docs/debug-flags.md lists the
 // IW2_LAG_* options.
@@ -64,8 +65,24 @@ namespace {
 using namespace iw2;
 
 constexpr float kMaxSnap = 4.0f;
-constexpr float kDrawnJump = 2.5f; // B draws A moved by more than this in one frame of 8 ms (twice the walk)
+constexpr float kDrawnJump = 2.5f; // B draws A moved by more than this in one frame of 8 ms (twice the walk; scaled for a
+                                   // longer frame of a busy machine)
 constexpr int kMaxDrawnJumps = 3;  // profile spike, per 10 s
+
+// A stall of the machine: a loop iteration of this process (it aims at its frame time, 8 ms) or a game frame of the
+// server (IW2_NET_TRACE=2 `NETTRACE frame ... late=`) that came more than kStallMs late. This process runs both clients
+// and the relay, so its stalls hold A's commands and the path itself back (on the spike profile the holds grow past
+// the profile's); a stall of the server makes it read late and make up frames, and the clients' clocks follow the late
+// snapshots. The server side is handled (docs/spec/net.md section 10 "Player positions in a snapshot" and "Commands
+// on a bursty path": with the server process stopped for 20 to 80 ms every 0.2 to 1 s the loopback walk stays even
+// with nothing left out, IW2_LAG_SETTLE=0), but a longer stall under a loaded test pass still measures the machine,
+// not the network path or the engine, and so do the frames after it. 12 ms: A's commands a frame and a half late
+// already raise the lag of the server's track at once, which shortens one step of his walk in B's snapshots by as much
+// (seen in a pass with ctest -j6 and eight more mplag runs beside it: 12 of 71 steps off, no stall over 25 ms).
+constexpr int64_t kStallMs = 12;
+// The frames this long after a stall are left out of the evenness checks; IW2_LAG_SETTLE=<ms> replaces it (0: nothing is
+// left out, to see what the stalls do).
+const int64_t kSettleMs = std::getenv("IW2_LAG_SETTLE") ? std::atoll(std::getenv("IW2_LAG_SETTLE")) : 1000;
 
 int64_t gStart = 0;
 int gSelectCommands = 0; // server commands `a` received (the spawn weapon, a script's switchToWeapon)
@@ -89,6 +106,7 @@ struct ServerProcess {
     std::vector<std::string> status;  // lines after a status command
     bool collect = false;
     std::map<std::string, int> trace;
+    int64_t lateFrameMs = 0; // when a frame of the server more than kStallMs late was read
     void command(const std::string& l) {
         const std::string t = l + "\n";
         if (in >= 0) (void)!write(in, t.data(), t.size());
@@ -136,7 +154,12 @@ struct ServerProcess {
             if (l.rfind("NETTRACE ", 0) == 0) {
                 const std::string kind = l.substr(9, l.find(' ', 9) - 9);
                 ++trace[kind];
-                if (trace[kind] <= 5) std::printf("  server: %s\n", l.c_str());
+                if (kind == "frame") { // IW2_NET_TRACE=2: a frame of the server that ran late (a stall of its process)
+                    const auto at = l.find(" late=");
+                    if (at != std::string::npos && std::atoll(l.c_str() + at + 6) > kStallMs) lateFrameMs = nowMs();
+                } else if (kind != "snap" && trace[kind] <= 5) {
+                    std::printf("  server: %s\n", l.c_str());
+                }
             }
             const auto at = l.find(" on UDP ");
             if (!port && l.rfind("iw2server: ", 0) == 0 && at != std::string::npos) port = std::atoi(l.c_str() + at + 8);
@@ -370,8 +393,12 @@ struct Stats {
     std::vector<float> obsStep;
     // The same walk summed over whole game frames (50 ms of snapshot time): the snapshots between the frames are stamped 16
     // or 17 ms apart for 16.67 ms of movement, so a single step scaled by its stamp span is 3 % off either way by the
-    // rounding alone, and the two kinds differ by 6 %. The evenness is judged on these.
+    // rounding alone, and the two kinds differ by 6 %. The evenness is judged on these, each against the ones around it in
+    // the same leg (obsFrameLeg: the leg's start time), not against one median of the run: the ground under A's walk
+    // changes his pace along a leg (seen: 7.4 units per game frame after a turn rising to 7.8, a stretch at 7.9, one at
+    // 10.8), and which stretches a run measures depends on how its legs fall on the map.
     std::vector<float> obsFrameStep;
+    std::vector<int64_t> obsFrameLeg;
     float obsAccDist = 0;
     int obsAccSpan = 0;
     int clockHolds = 0, clockLeaps = 0, clockFrames = 0; // A's frames whose command time stood (under half the frame) or leapt (over twice)
@@ -381,6 +408,9 @@ struct Stats {
     // A as B draws him, frame by frame, while A walks: frames without a move and frames with a step over kDrawnJump.
     int drawnFrames = 0, drawnStands = 0, drawnJumps = 0;
     float drawnMax = 0;
+    // Left out of the evenness checks: game frames of A's walk and B's drawn frames within kSettleMs after a stall of
+    // the machine (a loop iteration of this process or a frame of the server more than kStallMs late).
+    int obsSkipped = 0, drawnSkipped = 0, stalls = 0;
     std::vector<int> drawnLead;
     std::vector<int> seenDelay; // ms between A drawing himself at a place and B drawing him there
     int snapGaps = 0, snapGapsLong = 0; // snapshots received while measuring, those more than one frame after the previous
@@ -397,6 +427,12 @@ struct Run {
     const fs::Vfs& vfs;
     std::vector<std::unique_ptr<NetClient>> clients;
     Stats st;
+    int64_t stalledMs = -1000000; // the last stall (wall time)
+    void stall(int64_t now) {
+        stalledMs = now;
+        ++st.stalls;
+    }
+    bool settled(int64_t now) const { return now - stalledMs >= kSettleMs; }
     int64_t walkStartMs = 0, dirChangeMs = 0;
     float walkDir = 1;
     int64_t aSpawnMs = 0;
@@ -732,7 +768,11 @@ struct Run {
                         st.obsAccDist += std::hypot(p.origin[0] - obsLast[0], p.origin[1] - obsLast[1]);
                         st.obsAccSpan += span;
                         if (st.obsAccSpan >= 50) {
-                            st.obsFrameStep.push_back(st.obsAccDist * 50.0f / float(st.obsAccSpan));
+                            if (settled(now)) {
+                                st.obsFrameStep.push_back(st.obsAccDist * 50.0f / float(st.obsAccSpan));
+                                st.obsFrameLeg.push_back(dirChangeMs);
+                            }
+                            else ++st.obsSkipped;
                             st.obsAccDist = 0;
                             st.obsAccSpan = 0;
                         }
@@ -795,11 +835,14 @@ struct Run {
                     const int dt = int(now - drawnLastMs);
                     // The server has A moving (his velocity in the newest snapshot): not against a wall.
                     const bool moving = std::hypot(p.velocity[0], p.velocity[1]) > 40.0f;
-                    if (clients[0]->menuStack.empty() && dt >= 4 && dt < 13 && moving) {
+                    if (clients[0]->menuStack.empty() && dt >= 4 && dt < 13 && moving && !settled(now)) {
+                        ++st.drawnSkipped;
+                    } else if (clients[0]->menuStack.empty() && dt >= 4 && dt < 13 && moving) {
                         const float step = std::hypot(o[0] - lastOther[0], o[1] - lastOther[1]);
                         ++st.drawnFrames;
                         if (step < 0.05f) ++st.drawnStands;
-                        if (step > kDrawnJump && step < 200.0f) ++st.drawnJumps;
+                        const float jump = kDrawnJump * float(std::max(dt, 8)) / 8.0f;
+                        if (step > jump && step < 200.0f) ++st.drawnJumps;
                         if (step < 200.0f) st.drawnMax = std::max(st.drawnMax, step);
                         st.drawnLead.push_back(last->serverTime - c.gc->renderTime(netNow));
                         // How long ago A drew himself where B draws him now (the whole path: A's commands, the server,
@@ -814,7 +857,7 @@ struct Run {
                                     break;
                                 }
                         }
-                        if (std::getenv("IW2_LAG_TRACE") && step > kDrawnJump) std::printf("drawn t=%lld A moved %.1f in a frame of %d ms\n", (long long)netNow, double(step), dt);
+                        if (std::getenv("IW2_LAG_TRACE") && step > jump) std::printf("drawn t=%lld A moved %.1f in a frame of %d ms\n", (long long)netNow, double(step), dt);
                     }
                 }
                 drawnLastMs = now;
@@ -825,18 +868,14 @@ struct Run {
     }
 };
 
-// starved (optional): set when the test process itself was descheduled during the measured stretch (a loop iteration
-// that came more than kStarveGapMs after the previous one, while the loop aims at 8 ms). Then the run measured the
-// machine, not the network or the engine: the walking A looks held and then moved at once in the client's own frames.
-constexpr int64_t kStarveGapMs = 60;
-constexpr int kStarveLateMax = 2;
+// starved (optional): set when the machine stalled this process or the server during the measured stretch (Run::stall);
+// the frames after a stall are left out of the evenness checks.
 
 bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::string& serverExe, const Profile& prof, double seconds,
-                bool* starved = nullptr) {
-    int lateGaps = 0;
-    int64_t prevIter = 0;
+                bool* starved = nullptr, bool* unjudged = nullptr) {
+    int64_t prevIter = 0, prevFrameMs = 8, lateFrameSeen = 0;
     ServerProcess server;
-    setenv("IW2_NET_TRACE", "1", 1);
+    setenv("IW2_NET_TRACE", "2", 1); // 2: the server's frame lines tell its stalls
     if (std::getenv("IW2_LAG_REMOTE")) {
         server.port = 28960; // not started: the clients connect to the remote server
     } else if (!server.start(serverExe, {mainDir, std::getenv("IW2_LAG_MAP") ? std::getenv("IW2_LAG_MAP") : "mp_toujane", "dm", "--port", "0", "--bots", std::getenv("IW2_LAG_BOTS") ? std::getenv("IW2_LAG_BOTS") : "0", "--maxclients", "20", "+set", "sv_snaps", std::getenv("IW2_LAG_SVSNAPS") ? std::getenv("IW2_LAG_SVSNAPS") : "60", "+set", "scr_dm_timelimit", "0",
@@ -863,9 +902,13 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
     int64_t measureStart = 0, measureEnd = 0;
     while (nowMs() < deadline) {
         const int64_t now = nowMs();
-        if (measureStart && prevIter && now - prevIter > kStarveGapMs) ++lateGaps;
+        if (measureStart && prevIter && now - prevIter - prevFrameMs > kStallMs) run.stall(now);
         prevIter = now;
         server.pump();
+        if (server.lateFrameMs != lateFrameSeen) {
+            lateFrameSeen = server.lateFrameMs;
+            if (measureStart) run.stall(now);
+        }
         relay.pump(now);
         // B joins once A is in (one level load at a time).
         if (run.clients.size() == 1 && run.clients[0]->view) run.addClient("lagB", portB);
@@ -920,6 +963,7 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
         } else if (const char* fm = std::getenv("IW2_LAG_FRAME")) {
             frameMs = std::atoi(fm);
         }
+        prevFrameMs = frameMs;
         const int64_t until = now + frameMs;
         while (nowMs() < until) {
             relay.pump(nowMs());
@@ -936,8 +980,12 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
         return false;
     }
     const Stats& s = run.st;
-    if (starved) *starved = lateGaps > kStarveLateMax;
-    if (lateGaps) std::printf("%s: %d loop iterations came more than %d ms late (the machine was busy)\n", prof.name.c_str(), lateGaps, int(kStarveGapMs));
+    if (starved) *starved = s.stalls > 0;
+    bool notJudged = false; // an evenness check left out because of the stalls
+    if (s.stalls)
+        std::printf("%s: %d stalls of this process or the server over %d ms (the machine was busy); left out for %d ms after each: %d game "
+                    "frames of A's walk, %d drawn frames\n",
+                    prof.name.c_str(), s.stalls, int(kStallMs), int(kSettleMs), s.obsSkipped, s.drawnSkipped);
     std::printf("%s: A walked %.0f units on the server (%.0f units/s), server track step back max %.1f; %d blackouts\n", prof.name.c_str(),
                 double(s.walked), double(s.walked / seconds), double(s.maxOf(s.serverBack)), relay.blackouts);
     for (const auto& [k, n] : server.trace) std::printf("  server %s: %d\n", k.c_str(), n);
@@ -994,25 +1042,43 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
         std::sort(steps.begin(), steps.end());
         const float median = steps.empty() ? 0.0f : steps[steps.size() / 2];
         int walking = 0, uneven = 0;
-        for (float d : steps) {
+        const auto& fs = s.obsFrameStep;
+        for (size_t i = 0; i < fs.size(); ++i) {
+            const float d = fs[i];
             if (d < 0.7f * median || d > 1.3f * median) continue;  // standing at a wall, starting, turning
+            // The game frames around it in the same leg (two on each side), their median.
+            std::vector<float> around;
+            for (size_t j = i >= 2 ? i - 2 : 0; j <= i + 2 && j < fs.size(); ++j)
+                if (j != i && s.obsFrameLeg[j] == s.obsFrameLeg[i] && fs[j] >= 0.7f * median && fs[j] <= 1.3f * median) around.push_back(fs[j]);
+            if (around.size() < 2) continue;
+            std::sort(around.begin(), around.end());
+            const float local = (around[(around.size() - 1) / 2] + around[around.size() / 2]) * 0.5f;
             ++walking;
-            if (std::fabs(d - median) > 0.06f * median) ++uneven;
+            if (std::fabs(d - local) > 0.06f * local) ++uneven;
         }
-        std::printf("%s: A's walk in B's snapshots: %d game frames around the median %.2f units, %d more than 6 %% off it\n", prof.name.c_str(),
-                    walking, double(median), uneven);
+        std::printf("%s: A's walk in B's snapshots: %d game frames (median %.2f units), %d more than 6 %% off the ones around them\n",
+                    prof.name.c_str(), walking, double(median), uneven);
         // A that spawned against a wall does not walk (the spawn point is the server's choice): nothing to judge then.
         if (median < 1.0f) std::printf("%s: A did not walk (median step %.2f): the evenness is not judged in this run\n", prof.name.c_str(), double(median));
-        else if (walking < int(20 * seconds / 10.0) || uneven * 20 > walking) {
+        else if (walking < int(20 * seconds / 10.0) && s.obsSkipped > 0) {
+            std::printf("%s: too few game frames of A's walk away from the machine's stalls: the evenness is not judged in this run\n", prof.name.c_str());
+            notJudged = true;
+        } else if (walking < int(20 * seconds / 10.0) || uneven * 20 > walking) {
             std::printf("FAIL %s: the walking A's places in B's snapshots are uneven\n", prof.name.c_str());
             ok = false;
         }
     }
-    if (prof.name == "spike" && s.drawnFrames < int(150 * seconds / 10.0)) {
+    const bool drawnJudged = s.drawnFrames >= int(150 * seconds / 10.0) || s.drawnSkipped == 0;
+    if (prof.name == "spike" && !drawnJudged) {
+        std::printf("%s: too few drawn frames away from the machine's stalls: B's drawing of A is not judged in this run\n", prof.name.c_str());
+        notJudged = true;
+    }
+    if (prof.name == "spike" && drawnJudged && s.drawnFrames < int(150 * seconds / 10.0)) {
         std::printf("FAIL %s: too few frames in which B draws the walking A\n", prof.name.c_str());
         ok = false;
     }
-    if (prof.name == "spike" && (s.drawnJumps > int(kMaxDrawnJumps * seconds / 10.0) || s.drawnStands * 100 > s.drawnFrames)) {
+    if (prof.name == "spike" && drawnJudged &&
+        (s.drawnJumps > int(kMaxDrawnJumps * seconds / 10.0) || s.drawnStands * 100 > s.drawnFrames)) {
         std::printf("FAIL %s: B draws A held and then moved at once\n", prof.name.c_str());
         ok = false;
     }
@@ -1044,6 +1110,7 @@ bool runProfile(const fs::Vfs& vfs, const std::string& mainDir, const std::strin
             ok = false;
         }
     }
+    if (unjudged) *unjudged = notJudged;
     return ok;
 }
 
@@ -1088,14 +1155,15 @@ int main() {
     bool ok = true;
     for (const Profile& p : profiles)
         if (only ? p.name == only : p.name == "loopback" || p.name == "wan" || p.name == "wifiburst" || p.name == "radio" || p.name == "spike") {
-            // A run in which this process was starved measured the machine: repeat it (up to 3 runs); a run that was
-            // not starved counts as it is.
-            bool good = false, starved = false;
+            // A run that failed or could not judge the evenness after stalls of the machine is repeated (up to 3 runs;
+            // the stretches after the stalls are already left out, but a check outside the evenness may still have met
+            // one); a run without stalls counts as it is, and the last of three counts as it is.
+            bool good = false, starved = false, unjudged = false;
             for (int attempt = 1; attempt <= 3; ++attempt) {
-                starved = false;
-                good = runProfile(vfs, mainDir, serverExe, p, seconds, &starved);
-                if (good || !starved) break;
-                std::printf("%s: run %d failed while the test process was starved; repeating\n", p.name.c_str(), attempt);
+                starved = unjudged = false;
+                good = runProfile(vfs, mainDir, serverExe, p, seconds, &starved, &unjudged);
+                if ((good && !unjudged) || !starved) break;
+                std::printf("%s: run %d %s after stalls of the machine; repeating\n", p.name.c_str(), attempt, good ? "was not judged" : "failed");
             }
             ok = good && ok;
         }

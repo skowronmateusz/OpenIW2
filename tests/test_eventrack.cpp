@@ -156,6 +156,64 @@ int main() {
         check(t.sample(1540, a) && t.sample(1590, b), "two samples");
         check(b[0] >= a[0] && t.lagMs() <= 1540 - 1472 + EvenTrack::kMaxSpreadMs, "a second frame without new commands");
     }
+    // Stalls of the server's own process (docs/spec/net.md section 10 "Player positions in a snapshot"), every 500 ms
+    // (a busy server host): the server stops for 120 ms, then reads every command that arrived meanwhile and makes up
+    // the two frames it missed, 70 and 20 ms after their times. Measured from those snapshot times his newest command
+    // looks up to 70 ms ahead of the snapshot; with so many of those in the window its low end held the lag under his
+    // usual distance and his places came from the newest command, a command more or less per snapshot. Measured from
+    // the real time (the frame's lateness added) the places stay 50 ms of his walk apart.
+    for (const bool withLateness : {true, false}) {
+        EvenTrack t;
+        double next = 0;
+        std::vector<float> even;
+        auto arrive = [&](int64_t until) {
+            for (;; next += 1000.0 / 119.0) {
+                if (1000 + next + 3 > double(until)) break;
+                const int commandTime = 940 + static_cast<int>(next);
+                t.add(commandTime, {0.2f * static_cast<float>(commandTime - 940), 0, 0});
+            }
+        };
+        for (int s = 1; s <= 300; ++s) {
+            const int snapshotTime = 1000 + s * 50;
+            int late = 0;
+            if (s > 100 && s % 10 == 1) {
+                arrive(snapshotTime - 50 + 120); // the stall ends 120 ms after the snapshot before
+                late = 70;
+            } else if (s > 100 && s % 10 == 2) {
+                late = 20;
+            } else {
+                arrive(snapshotTime);
+            }
+            EvenTrack::Vec at{};
+            if (t.sample(snapshotTime, at, withLateness ? late : 0)) even.push_back(at[0]);
+        }
+        const auto [lo, hi] = steps(even, 90);
+        std::printf("server stalls, lateness %s: steps %.2f..%.2f units per snapshot (10 = 50 ms), lag %d ms\n", withLateness ? "added" : "not added",
+                    double(lo), double(hi), t.lagMs());
+        if (withLateness) check(lo > 9.5f && hi < 10.5f, "stalls of the server: the places stay 50 ms of the walk apart");
+        else check(hi - lo > 1.5f, "without the lateness the stalls make the places uneven (the case this guards)");
+    }
+    // One snapshot for which his newest command looks ahead of the snapshot time (built after a stall that the server
+    // did not see as a late frame, or a command clock that leapt for a moment): the low end of the window leaves it out,
+    // so the lag is not held under his usual distance and the places stay even.
+    {
+        EvenTrack t;
+        double next = 0;
+        std::vector<float> even;
+        for (int s = 1; s <= 300; ++s) {
+            const int snapshotTime = 1000 + s * 50;
+            for (;; next += 1000.0 / 119.0) {
+                if (1000 + next + 3 > double(snapshotTime + (s == 150 ? 120 : 0))) break;
+                const int commandTime = 940 + static_cast<int>(next);
+                t.add(commandTime, {0.2f * static_cast<float>(commandTime - 940), 0, 0});
+            }
+            EvenTrack::Vec at{};
+            if (t.sample(snapshotTime, at)) even.push_back(at[0]);
+        }
+        const auto [lo, hi] = steps(even, 90);
+        std::printf("one short distance: steps %.2f..%.2f units per snapshot, lag %d ms\n", double(lo), double(hi), t.lagMs());
+        check(lo > 9.5f && hi < 10.5f, "one short distance does not make the places uneven");
+    }
     // A standing client and a command that is not newer.
     {
         EvenTrack t;

@@ -832,7 +832,12 @@ by the size of his late stretches and runs them on an even schedule.
   snapshot of a level or when it moves behind a path's late stretches, and that is not a delay of the path). Two separate
   stretches of late packets (200 ms or more apart) within 1500 ms make the path bursty; the window is looked at once
   per server frame. Packets read after a pause of more than 30 ms between two socket reads (a long frame of the
-  server itself) are left out. Otherwise, and for every client with `IW2_CMD_PLAIN=1` in the server's environment,
+  server itself) are left out. The receive time of a packet that came during a poll's wait is its arrival (the time
+  of the wait's start plus the time to the read minus the packet's age from the socket's receive timestamp,
+  `net::packetArrivalMs`); one that was waiting already gets the poll's time. Before, every packet of a poll got the
+  poll's time: when the server's process was stopped inside the wait (a busy server host), the packets that came
+  meanwhile looked up to the stop's length early, the next ones late against them, and an even path was held as a
+  bursty one (1 to 3 holds per 10 s with the process stopped for 20 to 80 ms every 0.2 to 1 s; none since). Otherwise, and for every client with `IW2_CMD_PLAIN=1` in the server's environment,
   the commands run on arrival as in the original.
 - While the path is bursty the accepted commands (the command loop's tests are made on arrival) wait in the client's
   queue. Before each game frame the server runs those whose time is not after `frame time - least delay - hold`
@@ -1064,7 +1069,19 @@ place he had at `snapshot time - lag`, taken between the two commands around tha
 interval if that is more (the distance swings by one command as the two rates beat, also when the window has seen only
 one end of the swing), at most 35 ms above the smallest (one command of a client at 30 frames a second; a path with
 larger late stretches is the business of the command hold below, and every ms of lag is a ms the others see him
-later); it rises at once and falls by 1 ms per 50 ms of snapshot time. So the other clients get his walk sampled every 50 ms of his own command
+later); it rises at once and falls by 1 ms per 50 ms of snapshot time. "The smallest" leaves out the lowest twentieth
+of the window's distances, and a game frame the server makes up late (after a stall of its own process: it reads every
+command that came meanwhile and only then runs the missed frames) measures its distance from the snapshot time plus
+the frame's lateness against the server's schedule (`ServerGame::frameLate`). Both are against a busy server host:
+before them one short distance (commands read up to the real time, a snapshot time 20 to 70 ms behind it, the newest
+command apparently ahead of the snapshot) held the lag under his usual distance for the whole 3 s window, and the
+snapshots carried his newest place (traced in the server). Measured with tests/test_mplag.cpp profile `loopback`, the
+server process stopped for 20 to 80 ms every 0.2 to 1 s and nothing left out (`IW2_LAG_SETTLE=0`), the share of the
+walking client's 50 ms steps in the other client's snapshots more than 6 % off the median: 10 to 36 % before
+(4 runs), 3 to 14 % with these two changes (6 runs), 7 to 30 % with only the arrival time of "Commands on a bursty path"
+(9 runs), 0 with all three (3 runs). `TODO(spec)`: what was left with these two alone is taken to be the command hold
+that the stops started (holds were seen in such runs), not shown separately.
+So the other clients get his walk sampled every 50 ms of his own command
 time, whatever arrived when. Nothing is drawn ahead of his commands: the place is one he was at, at most `lag` minus
 the present distance earlier (4 ms on average for the 120 frames a second above, never over 35 ms). When his newest
 command is older than `snapshot time - lag` (a packet later than everything in the window) the snapshot carries his
@@ -1084,8 +1101,10 @@ separated in the measurement), which the original has as well.
 Tests: tests/test_eventrack.cpp (a walk at a constant speed whose commands arrive 5, 6 or 7 per snapshot: the
 snapshot places are 50 ms of the walk apart within 0.01 units, against 42 to 51 ms without it; a late packet holds the
 newest place and the lag then falls by 1 ms per snapshot; a restart forgets the track; command times that start again
-earlier) and tests/test_mplag.cpp profile `loopback` (two clients and a real server: the places of the walking client
-in the other client's snapshots; fails with `IW2_PLAYER_PLAIN=1`).
+earlier; stalls of the server every 500 ms with and without the lateness; one short distance) and tests/test_mplag.cpp
+profile `loopback` (two clients and a real server: the places of the walking client in the other client's snapshots;
+fails with `IW2_PLAYER_PLAIN=1`; each 50 ms step is judged against the steps around it in the same leg, since the
+ground changes his pace along a leg, and the second after a stall of the machine is left out).
 
 ### Prediction and interpolation
 
@@ -1126,19 +1145,30 @@ VAs in the 1.3 Linux dedicated server unless marked MP (the patch 1.3 MP executa
   command runs against the old level time and the catch-up frames follow. `TODO(spec)`: 0x809b016 is taken to be the
   snapshot archive (it calls the player-state writer 0x806a200 for every client) and 0x809bcce the sending of the
   client messages; both are named by what they call, not read in full.
-- The time a common frame hands to the server frame is capped (0x8062594, called at 0x80627b4): the milliseconds since
-  the last common frame, at least 1, at most 5000 on a dedicated server (the `dedicated` dvar set; a frame over 500 ms
-  and under 500000 ms first prints `Hitch warning: %i msec frame time`), else at most 5000 while `sv_running` is 0 and
-  200 while it is 1 (a listen server). After a frame longer than the cap (a map load, a stall of the machine) the
-  server frame runs at most the cap's worth of missed game frames (100 at 20 a second); the rest of the time is not
-  made up, so the level time stays behind the real time by it. (The same routine first applies `fixedtime` or the
-  `timescale` dvars; not modelled.)
-  openiw2 (src/net/server.cpp, `Server::maxFrameMsec`, 5000; `hitchWarning` set by the dedicated server) made up every
-  missed frame at once before. Seen then: after a map change that took 40 s on a busy machine both clients of the
-  network soak were dropped with `EXE_SERVERCOMMANDOVERFLOW` as soon as they had the new level (5 runs of 5); that the
-  burst of made-up frames caused it is inferred, not shown, and why that map change took 40 s was not found. iw2view's
-  listen server uses the same Server and so the dedicated cap (`TODO(spec)`: 200 there, not yet tried with iw2view's
-  level loads).
+- The time a common frame hands to the server frame is capped (0x8062594, called at 0x80627b4; MP 0x434cb0, called
+  from the common frame at MP 0x43502a): the milliseconds since the last common frame, at least 1, at most 5000 on a
+  dedicated server (the `dedicated` dvar set, MP 0xc22f00; a frame over 500 ms and under 500000 ms first prints
+  `Hitch warning: %i msec frame time`), else at most 200 while `sv_running` (MP 0xc26108) is set (a listen server: the
+  game runs its own server) and 5000 while it is not. The MP executable's common frame hands the same capped value to
+  the server frame (MP 0x45c550: it tests `sv_running` and is where the server is ended with `EXE_SERVERKILLED`) and,
+  when not dedicated, to the client frame (MP 0x40f770: it scales its time by the timescale factor the cap routine
+  stores at MP 0xc2610c and runs the client's own work such as a silent screenshot; `TODO(spec)`: both named by
+  what they touch, not read in full). After a frame longer
+  than the cap (a map load, a stall of the machine) the server frame runs at most the cap's worth of missed game
+  frames (100 at 20 a second on a dedicated server, 4 on a listen server); the rest of the time is not made up, so
+  the level time stays behind the real time by it. (The same routine first applies `fixedtime` or the `timescale`
+  dvars; not modelled.)
+  openiw2: `net::frameMsecCap` (src/net/server.h) gives the cap, `Server::maxFrameMsec` holds it (the dedicated server
+  5000 with `hitchWarning`, iw2view's listen server 200, the same 200 ms its host world steps with at most,
+  src/game/framescale.h). The time jump of "Client time" (a server behind its frame schedule by more than 500 ms) is
+  judged before the cap moves the schedule, so a listen host's frame of 500 ms or more is still a jump although the
+  cap leaves the schedule only 200 ms behind. Before, every missed frame was made up at once. Seen then: after a map change that took
+  40 s on a busy machine both clients of the network soak were dropped with `EXE_SERVERCOMMANDOVERFLOW` as soon as
+  they had the new level (5 runs of 5); that the burst of made-up frames caused it is inferred, not shown. The long
+  map change itself is taken to be the bots' navigation graph generated again: tests/test_mpbots.cpp removed the
+  shared cached mp_toujane graphs while the soak ran (reproduced once with a parallel test pass: the soak server's mp_toujane sd load took 13 s, its
+  `Hitch warning` line; the test now caches into a folder of its own, and a generated graph prints a line with its
+  time).
 - The game's client think (0x80f5d2e) clamps the command's time to level time - 1000 .. + 200 (0x80f5d54..0x80f5d92)
   and takes the difference to the player state's `commandTime`. A difference below 1 ms ends the routine at once
   (0x80f5da6..0x80f5dcb, unless the client follows another one): nothing of that command runs, neither the movement
