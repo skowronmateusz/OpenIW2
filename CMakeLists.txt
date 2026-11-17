@@ -1036,6 +1036,10 @@ else()
   add_test(NAME mpbots_world COMMAND test_mpbots)
 endif()
 
+add_executable(test_mantlehint tests/test_mantlehint.cpp)
+target_link_libraries(test_mantlehint PRIVATE iw2_netgame iw2_game)
+add_test(NAME mantlehint COMMAND test_mantlehint)
+
 add_executable(test_netmantle tests/test_netmantle.cpp)
 target_link_libraries(test_netmantle PRIVATE iw2_netgame iw2_game)
 if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")

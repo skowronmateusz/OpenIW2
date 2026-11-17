@@ -183,6 +183,7 @@ game::PlayerState predictPlayer(const game::CollisionWorld& world, const PsField
     int prev = server.commandTime;
     if (server.eFlags & 0x300) {
         ps.velocity = {0, 0, 0};
+        ps.mantleFlags &= ~8u; // the move still runs on a turret and drops the hint flag (docs/spec/pmove.md "Mantle hint")
         return ps;
     }
     for (const net::UserCmd& c : commands) {

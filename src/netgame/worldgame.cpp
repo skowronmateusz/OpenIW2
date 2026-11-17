@@ -738,6 +738,7 @@ void WorldGame::clientThink(int slot, const net::UserCmd& sent) {
     if (onTurret) {
         m.ps.origin = {o[0], o[1], o[2]};
         m.ps.velocity = {0, 0, 0};
+        m.ps.mantleFlags &= ~8u; // the move still drops the mantle hint flag (docs/spec/pmove.md "Mantle hint")
     } else {
         for (const game::KnockbackHit& hit : w_->mpTakeKnockbacks(it->second)) game::applyKnockback(m.ps, hit, w_->cvarFloat("g_knockback", 1000.0f));
         setMantleAnims(w_->mpMantleAnims());

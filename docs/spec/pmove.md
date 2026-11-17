@@ -153,6 +153,22 @@ Mantle brushes are found with contents
 0x1000000 and surface flags 0x2000000 (MANTLE_ON) / 0x4000000 (MANTLE_OVER); the move follows the delta translation
 of player_mantle_up_* (+ player_mantle_over_*) rotated by the mantle yaw.
 
+### Mantle hint
+
+The hint ("press the jump key to mantle", ownerdraw CG_MANTLE_HINT) is drawn from one bit only: bit 8 of the mantle flags
+of the player state (the cgame draw, MP 0x4c6050, tests that bit and a draw dvar, cg_drawMantleHint, and nothing else:
+no turret, use-hint or pm_type test). The bit is owned by the movement. PmoveSingle clears it at the start of every
+step, before the move type dispatch (MP 0x51aab5), so it is dropped for every move type and also on a turret or in a
+vehicle, where the movement is skipped afterwards. Only the mantle check of the walking move (0x5257f0 in the
+single-player executable, MP 0x512780) sets it again when a ledge is found in range, and the mantle move clears it.
+The hint therefore disappears the moment the player is on a turret even if it was shown together with the use hint
+("press F to use") a step before. The use search is independent of it (it returns nothing only while mantling).
+
+Implementation: `game::playerMove` clears the bit at the top of every step; the network prediction and the server keep
+the bit clear while the client is held by a turret (eFlags 0x300), where no move runs here; the viewer takes the hint
+from the state after the move on every frame, including the frames of the turret, vehicle and link branches that do not
+run the move. Single-player shares the same rule (same PmoveSingle).
+
 ## Ladder (0x50bd90 check, 0x50c070 move, 0x541560 jump, 0x54f409 step, 0x4de91b weapon)
 
 - Grab (0x50bd90): a box 6 units narrower than the player (feet raised to z +8) is swept 8 units (walking) or 30

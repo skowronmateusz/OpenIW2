@@ -1524,6 +1524,9 @@ void moveStep(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, i
     // before the step state is set up, and clears the command's forward / right moves (Pmove 0x50cc10 and 0x50c4bf also drop every button but
     // the stance ones). Gravity still acts, but only one step's worth, so the player stands still and falls slowly.
     if (in.controlsFrozen) ps.velocity = {0, 0, 0};
+    // The mantle hint flag is dropped at the start of every step of every move type (MP 0x51aab5, before the move type dispatch);
+    // only the mantle check of the walking move sets it again (docs/spec/pmove.md "Mantle hint").
+    ps.mantleFlags &= ~8u;
     Pml pml;
     pml.frametime = float(ms) * 0.001f;
     pml.mask = mp.traceMask;

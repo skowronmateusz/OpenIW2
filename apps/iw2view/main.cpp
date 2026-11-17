@@ -10872,6 +10872,9 @@ int main(int argc, char** argv) {
                 }
             };
             aimSpreadBeforeCmd = ps.aimSpread; // ClientThink keeps ps+0x5b0 / 255 at client +0x8670 (0x4e7c7d) before Pmove; the shot's spread reads that (0x531c85)
+            // PmoveSingle drops the mantle hint flag at the start of every step, whatever the move type (MP 0x51aab5); only the
+            // mantle check of the walking move sets it again, so a turret, a vehicle, a link or the free camera shows no hint.
+            ps.mantleFlags &= ~8u;
             if (onTurret) {
                 // The eye is the turret's tag_player (0x4e8b70); the turret code places the player behind it.
                 game::Vec3 eye;
@@ -11100,7 +11103,6 @@ int main(int argc, char** argv) {
                             std::cout << "player fell out of the world; wrote pmove_replay.bin (iw2game <main> <map> --replay pmove_replay.bin)\n";
                     }
                 }
-                mantleHint = (ps.mantleFlags & 8) != 0;
                 // PM_Weapon (0x4dfce0): crawling or meleeing keeps the aim spread at its maximum.
                 if ((ps.stance == game::Stance::Prone && (in.forward != 0 || in.right != 0)) || pweapon.stateNumber() == 10 ||
                     pweapon.stateNumber() == 11)
@@ -11218,6 +11220,7 @@ int main(int argc, char** argv) {
                 if (keys[SDL_SCANCODE_C]) move = move + Vec3{0, 0, -1};
                 cam.pos = cam.pos + normalize(move) * speed;
             }
+            mantleHint = (ps.mantleFlags & 8) != 0;
 
             hudAimSpread = ps.aimSpread; // on every branch: the crosshair of a linked player too
             hudViewHeight = ps.viewHeight;
