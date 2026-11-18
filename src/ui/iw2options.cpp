@@ -87,6 +87,15 @@ std::string enhancedMenuSource() {
         "\tonESC { close " + std::string(kEnhancedPage) + "; open iw2_options; }\n"
         "\titemDef\n\t{\n\t\tname iw2_enh_title\n\t\ttype 0\n\t\ttext \"@IW2_ENH_TITLE\"\n\t\torigin 48 64\n\t\ttextscale .5\n\t\tforecolor 1 1 1 1\n\t\tvisible 1\n\t\tdecoration\n\t}\n";
     const std::string presetOnOff = "\t\tdvarFloatList { \"@IW2_ENH_PRESET\" -1 \"@MENU_ON\" 1 \"@MENU_OFF\" 0 }\n";
+    // Row spacing: 15 units, closer when more rows are shown (the stage 5 rows) so the page ends no lower than it does without
+    // them (above the bottom line): the gaps between the non-master rows take at most what the always-shown rows take at 15.
+    int shown = 0, always = 0;
+    for (const EnhancedRow& r : enhancedRows()) {
+        if (r.master) continue;
+        shown += enhancedRowAvailable(r);
+        always += r.needs == EnhancedRow::Always;
+    }
+    const int step = std::min(15, 15 * std::max(always - 1, 1) / std::max(shown - 1, 1));
     int y = 0;
     for (const EnhancedRow& r : enhancedRows()) {
         if (!enhancedRowAvailable(r)) continue;
@@ -98,7 +107,7 @@ std::string enhancedMenuSource() {
             list += " }\n";
         }
         s += row(r.name, r.label, 12, r.cvar, list.c_str(), y, r.master ? kNoGate : kOnWithEnhanced);
-        y += r.master ? 20 : 15;
+        y += r.master ? 20 : step;
     }
     // The experimental note, always shown (above the rows, under the title).
     s += "\titemDef\n\t{\n\t\tname iw2_enh_note\n\t\ttype 0\n\t\ttext \"@IW2_ENH_NOTE\"\n\t\trect 0 -36 300 13\n\t\torigin 50 120\n"
@@ -120,6 +129,8 @@ const std::vector<EnhancedRow>& enhancedRows() {
         {"iw2_enh_contact", "@IW2_ENH_CONTACT", "r_enhContactShadows", EnhancedRow::PresetOnOff, {}, false},
         {"iw2_enh_taa", "@IW2_ENH_TAA", "r_enhTAA", EnhancedRow::PresetOnOff, {}, false},
         {"iw2_enh_metalfx", "@IW2_ENH_METALFX", "r_enhMetalFX", EnhancedRow::Choices, C{{"@MENU_OFF", "0"}, {"@MENU_ON", "1"}}, false, EnhancedRow::MetalFx},
+        {"iw2_enh_scale", "@IW2_ENH_SCALE", "r_enhRenderScale", EnhancedRow::Choices,
+         C{{"@IW2_ENH_SCALE_NATIVE", "1"}, {"@IW2_ENH_SCALE_Q", "0.77"}, {"@IW2_ENH_SCALE_B", "0.67"}, {"@IW2_ENH_SCALE_P", "0.5"}}, false, EnhancedRow::MetalFx},
         {"iw2_enh_ggx", "@IW2_ENH_GGX", "r_enhGGX", EnhancedRow::PresetOnOff, {}, false},
         {"iw2_enh_ssr", "@IW2_ENH_SSR", "r_enhSSR", EnhancedRow::PresetOnOff, {}, false},
         {"iw2_enh_lights", "@IW2_ENH_LIGHTS", "r_enhLightShadows", EnhancedRow::PresetOnOff, {}, false},
@@ -162,6 +173,11 @@ std::vector<std::pair<std::string, std::string>> openIw2Strings(const std::strin
         {"IW2_ENH_CONTACT", "Contact shadows", "Contact shadows"},
         {"IW2_ENH_TAA", "Temporal anti-aliasing", "Temporal anti-aliasing"},
         {"IW2_ENH_METALFX", "MetalFX anti-aliasing", "MetalFX anti-aliasing"},
+        {"IW2_ENH_SCALE", "MetalFX render resolution", "MetalFX render resolution"},
+        {"IW2_ENH_SCALE_NATIVE", "Native", "Native"},
+        {"IW2_ENH_SCALE_Q", "Quality (77%)", "Quality (77%)"},
+        {"IW2_ENH_SCALE_B", "Balanced (67%)", "Balanced (67%)"},
+        {"IW2_ENH_SCALE_P", "Performance (50%)", "Performance (50%)"},
         {"IW2_ENH_GGX", "Highlights and reflections", "Highlights and reflections"},
         {"IW2_ENH_SSR", "Screen reflections (water, metal)", "Screen reflections (water, metal)"},
         {"IW2_ENH_LIGHTS", "Shadows of flashes and lamps", "Shadows of flashes and lamps"},

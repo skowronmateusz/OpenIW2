@@ -35,7 +35,9 @@ struct EnhFragU {
     float4 bsColor[2];     // rgb the light's colour times intensity, w: its tile row in the light shadow atlas
     float4 bsParams;       // x: count, y: near plane
     float4 probeGrid[2];   // reflection probes: xyz grid origin, w 1 / cell size; xyz cells per axis, w > 0.5: probes present
+    float4 mipBias;        // x: log2 of the render scale (stage 5), the material textures' mip bias
 };
+#define IW2_MIP , bias(eu.mipBias.x)
 // Fragment uniform slot 2: per draw (model items).
 struct EnhDrawU {
     float4 lattice; // x: first point, y, z, w: points per axis (w > 0.5: lattice present)

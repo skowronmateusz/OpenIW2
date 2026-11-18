@@ -91,6 +91,7 @@ struct EnhancedSettings {
     float volumetric = 0.0f; // r_enhVolumetric: strength of the sun shafts (light scattered in the air, 0 = off, up to 2)
     int grade = 0;           // r_enhGrade: colour grade, 0 neutral, 1 period film (contrast, desaturation, warm shadows, grain)
     bool metalFx = false;    // r_enhMetalFX: MetalFX temporal anti-aliasing instead of ours (needs TAA on and a MetalFX GPU / build)
+    float renderScale = 1.0f; // r_enhRenderScale: scene resolution as a fraction of the window, upscaled by MetalFX (0.5..1)
     float dof = 0.0f;        // r_enhDOF: depth of field while aiming down the sights (0 = off, 1 = default strength, up to 2)
     float motionBlur = 0.0f; // r_enhMotionBlur: motion blur amount (0 = off, 1 = one frame of motion)
     bool gridPerPixel = true; // r_enhGridPerPixel: light-grid lattice per model instead of one sample
@@ -141,6 +142,7 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhMotionBlur", f)) s.motionBlur = std::clamp(f, 0.0f, 2.0f);
     if (num("r_enhDOF", f)) s.dof = std::clamp(f, 0.0f, 2.0f);
     if (num("r_enhMetalFX", f)) s.metalFx = f != 0.0f;
+    if (num("r_enhRenderScale", f)) s.renderScale = std::clamp(f, 0.5f, 1.0f);
     if (num("r_enhMotionDebug", f)) s.motionDebug = std::clamp(int(f), 0, 2);
     if (num("r_enhBloomIntensity", f)) s.bloomIntensity = std::clamp(f, 0.0f, 1.0f);
     if (const std::string v = get("r_enhExposureBias"); !v.empty()) s.exposureBias = std::clamp(float(std::atof(v.c_str())), -2.0f, 2.0f); // signed
@@ -444,8 +446,8 @@ inline float halton(int i, int b) {
 }
 
 // Sub-pixel projection jitter of frame n for a w x h target, in NDC: Halton (2, 3) over 8 frames, centred, one pixel wide.
-inline std::array<float, 2> taaJitter(uint32_t frame, int w, int h) {
-    const int i = int(frame % 8u) + 1;
+inline std::array<float, 2> taaJitter(uint32_t frame, int w, int h, uint32_t phases = 8) {
+    const int i = int(frame % std::max(phases, 1u)) + 1;
     return {(halton(i, 2) - 0.5f) * 2.0f / float(w), (halton(i, 3) - 0.5f) * 2.0f / float(h)};
 }
 
@@ -666,6 +668,15 @@ inline std::array<float, 2> metalFxJitterPixels(float ndcX, float ndcY, unsigned
     return {ndcX * float(w) * 0.5f, -ndcY * float(h) * 0.5f};
 }
 inline std::array<float, 2> metalFxMotionScale(unsigned w, unsigned h) { return {-float(w) * 0.5f, float(h) * 0.5f}; }
+
+// The scene's render scale: below 1 only while MetalFX does the anti-aliasing (it upscales; our TAA works at the output size).
+inline float effectiveRenderScale(float scale, bool metalFxActive) { return metalFxActive ? std::clamp(scale, 0.5f, 1.0f) : 1.0f; }
+// Jitter phases while upscaling: 8 per output pixel area, 8 x (1 / scale)^2 (so each output pixel gets about 8 samples).
+inline uint32_t taaJitterPhases(float scale) { return uint32_t(std::ceil(8.0f / (scale * scale) - 1e-3f)); }
+// The render size for an output size and scale: rounded, at least 1 x 1.
+inline std::array<uint32_t, 2> renderSize(uint32_t w, uint32_t h, float scale) {
+    return {std::max(1u, uint32_t(std::lround(float(w) * scale))), std::max(1u, uint32_t(std::lround(float(h) * scale)))};
+}
 
 inline bool metalRayTracingAllowed(bool supportsRaytracing, bool apple9, bool forcedOff) {
     return supportsRaytracing && apple9 && !forcedOff;

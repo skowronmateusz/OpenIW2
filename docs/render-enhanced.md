@@ -39,6 +39,7 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhGrade` | 0 | Colour grade: 0 neutral, 1 "period film" (contrast, desaturation, warm shadows, grain). |
 | `r_enhMapLightSpec` | preset | GGX specular from the map's light entities near the camera (their diffuse stays baked). |
 | `r_enhMetalFX` | 0 | MetalFX temporal anti-aliasing instead of ours (needs TAA, a MetalFX GPU and the patched SDL; see "Stage 5"). |
+| `r_enhRenderScale` | 1 | With MetalFX: the scene's resolution as a fraction of the window (0.5..1; the page offers 1, 0.77, 0.67, 0.5), upscaled by MetalFX. |
 | `r_enhProbes` | preset | Reflection probes captured when the map loads: rooms reflect themselves instead of the sky (off in the low preset). |
 | `r_enhDOF` | 0 | Depth of field while aiming down the sights (0 off .. 2). |
 | `r_enhMotionBlur` | 0 | Motion blur amount (0 off, 1 = one frame of motion; needs TAA). |
@@ -309,6 +310,22 @@ un-anti-aliased frame at the end angle (mean difference 3.0 against 3.2 for our 
 history is reset where ours is invalid. Cost at 1920 x 1080 (high preset, duhoc beach): 8.25 ms against 6.63 ms with our TAA,
 and from a cut it needs about a second to become as sharp as ours does in 12 frames, so it is off by default; it is the base
 for rendering below the output size.
+
+Render scale (`r_enhRenderScale`, the page's "MetalFX render resolution": Native, Quality 77 %, Balanced 67 %, Performance
+50 %; only with MetalFX on, `game::effectiveRenderScale`, `game::renderSize`): the frame's scene part (depth, `$floatz` and
+motion vectors, AO, the scene and post-sun images, sun shafts) runs at the render size; MetalFX writes the output size into the
+TAA history, and from there on (motion blur, depth of field, the tone pass, bloom, glow, the HUD) the frame is at the window
+size. The `$floatz` and post-sun images stay at the render size for the rest of the frame (read by UV); the composite gets a
+depth buffer of the output size. Three things the scaling needs:
+- The projection keeps the window's aspect (`frameAspect`): the render size's own ratio differs by rounding, and a matrix that
+  differs from the previous frame's reads as motion (it smeared the image sideways).
+- More jitter phases: 8 x (1 / scale)^2 (`game::taaJitterPhases`, 18 at 67 %, 32 at 50 %), about 8 samples per output pixel.
+- A texture mip bias of log2(scale) on the material samples of the scene shaders (`IW2_MIP`, empty in the default library;
+  SDL's sampler LOD bias does nothing on Metal), so textures keep the window size's detail.
+The jitter signs were checked again against a supersampled reference (2560 x 1440 without TAA, downscaled): mean difference 3.6
+at 67 % and 4.3 at 50 % with these signs, 6.3 and 7.7 with both flipped (which look sharper, but alias), 3.1 for MetalFX at
+native size and for our TAA. Cost at 1920 x 1080, high preset, duhoc beach: native with our TAA 6.64 ms; MetalFX at 77 % 6.10,
+67 % 5.35, 50 % 4.26 ms; medium preset 5.73 ms, with MetalFX at 67 % 4.86 ms. The reflection probes capture at native size.
 
 ## Cost
 

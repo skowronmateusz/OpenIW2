@@ -406,6 +406,13 @@ int main() {
         const float ndcMotionX = 20.0f / 1280.0f; // current - previous: 10 pixels right
         chk(near(ndcMotionX * ms[0], -10.0f) && near(0.1f * ms[1], 36.0f), __LINE__);
     }
+    // Render scale: only with MetalFX, clamped to 0.5..1; sizes rounded.
+    chk(effectiveRenderScale(0.67f, false) == 1.0f && effectiveRenderScale(0.67f, true) == 0.67f && effectiveRenderScale(0.2f, true) == 0.5f, __LINE__);
+    chk(renderSize(1920, 1080, 0.67f)[0] == 1286 && renderSize(1920, 1080, 0.67f)[1] == 724 && renderSize(1, 1, 0.5f)[0] == 1, __LINE__);
+    chk(renderSize(1920, 1080, 1.0f)[0] == 1920, __LINE__);
+    chk(taaJitterPhases(1.0f) == 8 && taaJitterPhases(0.5f) == 32 && taaJitterPhases(0.67f) == 18, __LINE__);
+    chk(taaJitter(8, 100, 100) == taaJitter(0, 100, 100) && taaJitter(8, 100, 100, 18) != taaJitter(0, 100, 100, 18), __LINE__);
+
     // Ray tracing only with hardware intersection (Apple family 9), never when forced off.
     chk(metalRayTracingAllowed(true, true, false) && !metalRayTracingAllowed(true, false, false) &&
             !metalRayTracingAllowed(false, true, false) && !metalRayTracingAllowed(true, true, true), __LINE__);

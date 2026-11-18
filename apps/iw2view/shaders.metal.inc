@@ -6,6 +6,9 @@
 R"MSL(
 #include <metal_stdlib>
 using namespace metal;
+#ifndef IW2_MIP
+#define IW2_MIP // enhanced render scale: a texture mip bias on the material samples (empty in the default library)
+#endif
 
 struct VertexIn {
     float3 position [[attribute(0)]];
@@ -165,23 +168,23 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
 #endif
                         ) {
     const float2 uv = in.uv - float2(0.0, u.scroll.x);
-    float4 tex0 = colorMap.sample(colorSampler, uv);
+    float4 tex0 = colorMap.sample(colorSampler, uv IW2_MIP);
     // Detail texture (shade library, USE_DETAIL variant): the detail sample, centred on 0.5, is added to the base colour before the vertex colour multiply.
-    if (u.scroll.y > 0.5) tex0.rgb += detailMap.sample(detailSampler, in.uv * u.scroll.zw).rgb - 0.5;
+    if (u.scroll.y > 0.5) tex0.rgb += detailMap.sample(detailSampler, in.uv * u.scroll.zw IW2_MIP).rgb - 0.5;
     float4 base = tex0 * in.color;
     if (!uses_coverage_ramp(u.params.x) && alpha_rejected(u.params.x, base.a)) discard_fragment();
     const float outA = u.params.x > 3.5 ? coverage_alpha(u.params.x, base.a) : u.params.x < -0.5 ? 1.0 : base.a; // params.x -1: USE_ALPHA 0 technique (MatInfo::alphaOne)
 
     if (u.params.y > 4.5) { // multiply fog fix-up (second pass of vertcol_mul_lfog / _efog, stateMap multiply_fog: One, One):
         // adds (1 - Cm) · fogColor · (1 - f), so a multiply decal darkens the unfogged colour only (lib/multiply_fog.hlsl).
-        float4 t = colorMap.sample(colorSampler, in.uv);
+        float4 t = colorMap.sample(colorSampler, in.uv IW2_MIP);
         const float3 oneMinusCm = in.color.a - t.rgb * in.color.rgb * in.color.a;
         const float d = length(in.eyeVec);
         const float f = u.fogParams.w != 0.0 ? exp(d * u.fogParams.w) : d * u.fogParams.y + u.fogParams.z;
         return float4(oneMinusCm * saturate(1.0 - f) * u.fogColor.rgb, 1.0);
     }
     if (u.params.y > 3.5) { // effect_multiply: blends the texture towards white by the vertex alpha, no light
-        float4 t = colorMap.sample(colorSampler, in.uv);
+        float4 t = colorMap.sample(colorSampler, in.uv IW2_MIP);
         return float4((1.0 - in.color.a) + t.rgb * in.color.rgb * in.color.a, 1.0);
     }
     float3 light;
@@ -410,14 +413,14 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
 #endif
                         ) {
     // Textured diffuse with the detail variant: same detail add as above (detail scale in lmWeights.xy, flag in .z)
-    float4 tex = colorMap.sample(colorSampler, in.uv);
-    if (u.lmWeights.z > 0.5) tex.rgb += detailMap.sample(detailSampler, in.uv * u.lmWeights.xy).rgb - 0.5;
+    float4 tex = colorMap.sample(colorSampler, in.uv IW2_MIP);
+    if (u.lmWeights.z > 0.5) tex.rgb += detailMap.sample(detailSampler, in.uv * u.lmWeights.xy IW2_MIP).rgb - 0.5;
     float4 base = tex * in.color;
     if (!uses_coverage_ramp(u.params.x) && alpha_rejected(u.params.x, base.a)) discard_fragment();
     const float outA = u.params.x > 3.5 ? coverage_alpha(u.params.x, base.a) : u.params.x < -0.5 ? 1.0 : base.a; // params.x -1: USE_ALPHA 0 technique (MatInfo::alphaOne)
     if (u.params.w > 0.5) return float4(apply_fog(base.rgb, length(in.eyeVec), u), outA);
     // Normal_GetSample (PC: channels wy = alpha, green) and Normal_DecodeNormalizedWorldSpace: N + (2x-1) T + (2y-1) B.
-    const float4 ns = normalMap.sample(normalSampler, in.uv);
+    const float4 ns = normalMap.sample(normalSampler, in.uv IW2_MIP);
     const float3 n = normalize(in.normal + (2.0 * ns.a - 1.0) * in.tangent + (2.0 * ns.g - 1.0) * in.binormal);
     float4 r = lmCoeffs.sample(lmSampler, in.lmUv, 0);
     float4 g = lmCoeffs.sample(lmSampler, in.lmUv, 1);
@@ -445,7 +448,7 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
 #endif
     const float3 sunDiffuse = vis * max(dot(u.sunDirection.xyz, n), 0.0) * u.sunColor.rgb;
     // Phong_SpecularLighting / Phong_SpecularVisibility.
-    const float4 ss = specularMap.sample(specSampler, in.uv);
+    const float4 ss = specularMap.sample(specSampler, in.uv IW2_MIP);
     const float nh = dot(normalize(in.halfAngle), n);
     const float3 strength = float3(specularity.sample(specularitySampler, float2(ss.a, nh)).r);
 #ifdef IW2_ENHANCED
@@ -520,15 +523,15 @@ fragment float4 fs_probe(ProbeVertexOut in [[stage_in]],
 #endif
                          ) {
     const float2 uv = in.uv - float2(0.0, u.scroll.x);
-    float4 tex = colorMap.sample(colorSampler, uv);
-    if (u.lmWeights.z > 0.5) tex.rgb += detailMap.sample(detailSampler, uv * u.lmWeights.xy).rgb - 0.5; // lib/shade.hlsl USE_DETAIL
+    float4 tex = colorMap.sample(colorSampler, uv IW2_MIP);
+    if (u.lmWeights.z > 0.5) tex.rgb += detailMap.sample(detailSampler, uv * u.lmWeights.xy IW2_MIP).rgb - 0.5; // lib/shade.hlsl USE_DETAIL
     const float4 base = tex * in.color;
     if (!uses_coverage_ramp(u.params.x) && alpha_rejected(u.params.x, base.a)) discard_fragment();
     const float outA = u.params.x > 3.5 ? coverage_alpha(u.params.x, base.a) : u.params.x < -0.5 ? 1.0 : base.a;
     if (u.params.w > 0.5) return float4(apply_fog(base.rgb, length(in.eyeVec), u), outA);
     float3 n = in.normal;
     if (u.params.z > 0.5) { // Normal_GetSample (wy = alpha, green) and Normal_DecodeNormalizedWorldSpace
-        const float4 ns = normalMap.sample(normalSampler, uv);
+        const float4 ns = normalMap.sample(normalSampler, uv IW2_MIP);
         n += (2.0 * ns.a - 1.0) * in.tangent + (2.0 * ns.g - 1.0) * in.binormal;
     }
     n = normalize(n);
@@ -548,7 +551,7 @@ fragment float4 fs_probe(ProbeVertexOut in [[stage_in]],
     const float3 sunDiffuse = vis * max(dot(u.sunDirection.xyz, n), 0.0) * u.sunColor.rgb;
     float3 spec = float3(0.0);
     if (u.params.y > 0.5) { // Phong_SpecularLighting / Phong_SpecularVisibility
-        const float4 ss = specularMap.sample(specSampler, uv);
+        const float4 ss = specularMap.sample(specSampler, uv IW2_MIP);
         const float nh = dot(normalize(in.halfAngle), n);
         const float3 strength = float3(specularity.sample(specularitySampler, float2(ss.a, nh)).r);
         spec = mix(0.3, 1.0, vis) * (u.sunColor.rgb * ss.rgb * strength) * u.sunColor.w;
@@ -631,15 +634,15 @@ fragment float4 fs_smodel(SModelOut in [[stage_in]],
                           , ENH_FS_ARGS(5)
 #endif
                           ) {
-    float4 tex = colorMap.sample(colorSampler, in.uv);
-    if (u.lmWeights.z > 0.5) tex.rgb += detailMap.sample(detailSampler, in.uv * u.lmWeights.xy).rgb - 0.5;
+    float4 tex = colorMap.sample(colorSampler, in.uv IW2_MIP);
+    if (u.lmWeights.z > 0.5) tex.rgb += detailMap.sample(detailSampler, in.uv * u.lmWeights.xy IW2_MIP).rgb - 0.5;
     const float4 base = tex * in.color;
     if (!uses_coverage_ramp(u.params.x) && alpha_rejected(u.params.x, base.a)) discard_fragment();
     const float outA = u.params.x > 3.5 ? coverage_alpha(u.params.x, base.a) : u.params.x < -0.5 ? 1.0 : base.a;
     if (u.params.w > 0.5) return float4(apply_fog(base.rgb, length(in.eyeVec), u), outA);
     float3 n = in.normal;
     if (u.params.z > 0.5) {
-        const float4 ns = normalMap.sample(normalSampler, in.uv);
+        const float4 ns = normalMap.sample(normalSampler, in.uv IW2_MIP);
         n += (2.0 * ns.a - 1.0) * in.tangent + (2.0 * ns.g - 1.0) * in.binormal;
     }
     n = normalize(n);
@@ -662,7 +665,7 @@ fragment float4 fs_smodel(SModelOut in [[stage_in]],
     const float3 sunDiffuse = vis * max(dot(u.sunDirection.xyz, n), 0.0) * u.sunColor.rgb;
     float3 spec = float3(0.0);
     if (u.params.y > 0.5) {
-        const float4 ss = specularMap.sample(specSampler, in.uv);
+        const float4 ss = specularMap.sample(specSampler, in.uv IW2_MIP);
         const float nh = dot(normalize(in.halfAngle), n);
         const float3 strength = float3(specularity.sample(specularitySampler, float2(ss.a, nh)).r);
         spec = mix(0.3, 1.0, vis) * (u.sunColor.rgb * ss.rgb * strength) * u.sunColor.w;

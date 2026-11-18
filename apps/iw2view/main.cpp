@@ -2560,6 +2560,7 @@ struct Renderer {
         float mlPos[8][4]; float mlColor[8][4]; float mlDir[8][4]; float mlParams[4];
         float bsPos[2][4]; float bsColor[2][4]; float bsParams[4];
         float probeGrid[2][4]; // reflection probes: xyz grid origin, w 1 / cell size; xyz cells per axis, w 1 = probes present
+        float mipBias[4];      // x: log2 of the render scale (stage 5)
     };
     std::vector<const game::MapLight*> bakedShadowLights; // this frame's baked lights with moving-caster shadows (atlas rows 4, 5)
     // Materials (stage 3): the sky cube with a mip chain for rough reflections, and this frame's history / depth for reflections.
@@ -2616,6 +2617,7 @@ struct Renderer {
             }
         }
         if (n.taa != enh.taa) taaHistValid = false, taaPrevVPValid = false;
+        if (n.metalFx != enh.metalFx || n.renderScale != enh.renderScale) taaHistValid = false; // MetalFX or its render size changed
         if (n.ggx != enh.ggx) envFor = nullptr; // rebuild the environment cube
         enh = n;
     }
@@ -2672,7 +2674,51 @@ struct Renderer {
         if (!velocityTex) sdlFail("velocity texture");
         velocityW = w, velocityH = h;
     }
-    void enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam);
+    void enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_t rh, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam);
+    // Render scale (stage 5): the scene passes' targets at the render size, swapped in for the frame's scene part.
+    SDL_GPUTexture* sceneLo = nullptr;
+    SDL_GPUTexture* postSunLo = nullptr;
+    SDL_GPUTexture* floatzLo = nullptr;
+    SDL_GPUTexture* sceneHi = nullptr;
+    SDL_GPUTexture* postSunHi = nullptr;
+    SDL_GPUTexture* floatzHi = nullptr;
+    uint32_t loW = 0, loH = 0;
+    uint32_t outW = 0, outH = 0; // this frame's output size (the TAA history's)
+    float renderScaleNow = 1.0f;
+    // The frame's projection aspect: the output size's, also for passes at the render size (whose own ratio differs by rounding;
+    // a different aspect from the previous frame's matrix would read as motion).
+    float frameAspect() const { return outH > 0 ? float(outW) / float(outH) : 1.0f; }
+    SDL_GPUTexture* outDepth = nullptr; // the composite's depth at the output size while the scene is scaled
+    uint32_t outDepthW = 0, outDepthH = 0;
+    bool scaledActive = false; // sceneTex is the render-size one (until the resolve)
+    bool scaledAux = false;    // postSunTex / floatzTex are (until the end of the frame; they are read by UV after the resolve too)
+    void ensureScaledTargets(uint32_t rw, uint32_t rh) {
+        if (!sceneLo || loW != rw || loH != rh) {
+            for (SDL_GPUTexture** t : {&sceneLo, &postSunLo, &floatzLo})
+                if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
+            SDL_GPUTextureCreateInfo info{};
+            info.type = SDL_GPU_TEXTURETYPE_2D;
+            info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            info.width = rw, info.height = rh, info.layer_count_or_depth = 1, info.num_levels = 1;
+            info.format = sceneFormat;
+            sceneLo = SDL_CreateGPUTexture(dev, &info);
+            postSunLo = SDL_CreateGPUTexture(dev, &info);
+            info.format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT; // $floatz
+            floatzLo = SDL_CreateGPUTexture(dev, &info);
+            if (!sceneLo || !postSunLo || !floatzLo) sdlFail("render scale targets");
+            loW = rw, loH = rh;
+        }
+        sceneHi = sceneTex, postSunHi = postSunTex, floatzHi = floatzTex;
+        sceneTex = sceneLo, postSunTex = postSunLo, floatzTex = floatzLo;
+        scaledActive = scaledAux = true;
+    }
+    void restoreScaledScene() {
+        if (scaledActive) sceneTex = sceneHi, scaledActive = false;
+    }
+    void restoreScaledTargets() {
+        restoreScaledScene();
+        if (scaledAux) postSunTex = postSunHi, floatzTex = floatzHi, scaledAux = false;
+    }
     // Stage 5 (docs/render-enhanced.md): MetalFX temporal scaling in place of our TAA resolve where the GPU and SDL allow it.
     metal::Caps metalCaps;
     metal::TemporalScaler metalFx;
@@ -2682,7 +2728,8 @@ struct Renderer {
     SDL_GPUTexture* mfxDepth = nullptr;
     uint32_t mfxW = 0, mfxH = 0;
     bool metalFxLogged = false;
-    bool enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam, const void* taaUniforms, size_t taaUniformSize);
+    bool enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_t rh, uint32_t w, uint32_t h, const Camera& cam, const void* taaUniforms,
+                           size_t taaUniformSize);
     void enhFloatzVelocity(SDL_GPUCommandBuffer* cmd, const SDL_GPUColorTargetInfo& fz, const SDL_GPUDepthStencilTargetInfo& fds, const Scene& scene,
                            const Camera& cam, const Camera& camIn, const std::vector<DrawItem>& items, uint32_t w, uint32_t h);
     void enhTaaEndFrame(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& camIn, uint32_t w, uint32_t h, const std::vector<DrawItem>& items);
@@ -3807,11 +3854,18 @@ struct Renderer {
         // Enhanced TAA (docs/render-enhanced.md "Temporal anti-aliasing"): every scene pass of the frame uses the jittered camera.
         Camera cam = camIn;
         const bool taaOn = enh.enabled && enh.taa;
+        // Stage 5 render scale (docs/render-enhanced.md): with MetalFX upscaling the scene passes run at rw x rh and MetalFX
+        // writes the output size; everything after the resolve (post, HUD) stays at w x h.
+        const float rscale = taaOn ? game::effectiveRenderScale(enh.renderScale, enh.metalFx && metalCaps.metalFx && !capturingProbes) : 1.0f;
+        const auto rsz = game::renderSize(w, h, rscale);
+        const uint32_t rw = rsz[0], rh = rsz[1];
+        const bool scaled = rw != w || rh != h;
+        outW = w, outH = h, renderScaleNow = float(rw) / float(w);
         if (taaOn) {
-            const auto j = game::taaJitter(taaFrame, int(w), int(h));
+            const auto j = game::taaJitter(taaFrame, int(rw), int(rh), game::taaJitterPhases(rscale));
             cam.jitterX = j[0], cam.jitterY = j[1];
         }
-        ensureDepth(w, h);
+        ensureDepth(rw, rh);
         if (const char* dt = std::getenv("IW2_DLIGHT_TEST")) { // debug: one white dynamic light dist units ahead, 40 up, of radius r
             float d = 120.0f, r = 300.0f;
             std::sscanf(dt, "%f,%f", &d, &r);
@@ -3819,7 +3873,7 @@ struct Renderer {
             if (dlights.empty() || dlights.back().radius != r) dlights.push_back({{at.x, at.y, at.z}, r, {1.0f, 0.9f, 0.7f}});
         }
         cullWorld(cmd, scene, cam, cam.viewProj(float(w) / float(h)));
-        if (enh.enabled) enhPrepare(cmd, scene, cam, items, w, h);
+        if (enh.enabled) enhPrepare(cmd, scene, cam, items, rw, rh);
         {   // gameTime for every vs_main / vs_dlight draw of this command buffer (vertex uniform slot 1)
             const assets::GameTimeConst g = assets::gameTimeConst(renderTimeMs);
             const float gt[4] = {g.x, g.y, g.z, g.w};
@@ -3834,6 +3888,7 @@ struct Renderer {
         const bool post = blurA > 0.0f || glowOn || ghostActive || sceneSamples > 1 || enh.enabled; // the resolve target is sceneTex
         if (post) {
             ensureBlurTargets(w, h);
+            if (scaled) ensureScaledTargets(rw, rh); // the scene passes' own targets at the render size
             GpuVertex bv[12]{};
             // quad 0: scene, 1: blur, 2: shock ghost (previous composed frame); alpha = min(0.01^(elapsed/blend), 0.99) (gfx 0x10031160)
             const float ghostA = ghostBlendMs > 0.0f && ghostElapsedMs >= 0.0f && ghostElapsedMs < ghostBlendMs
@@ -3966,7 +4021,7 @@ struct Renderer {
             fds.store_op = SDL_GPU_STOREOP_DONT_CARE;
             fds.texture = depth; // $floatz is single-sampled
             velocityFromFloatz = false;
-            if (taaOn) enhFloatzVelocity(cmd, fz, fds, scene, cam, camIn, items, w, h); // enhanced TAA: $floatz + motion vectors
+            if (taaOn) enhFloatzVelocity(cmd, fz, fds, scene, cam, camIn, items, rw, rh); // enhanced TAA: $floatz + motion vectors
             else {
             SDL_GPURenderPass* fp = SDL_BeginGPURenderPass(cmd, &fz, 1, &fds);
             stats.phase = 1;
@@ -4009,7 +4064,7 @@ struct Renderer {
                 // vectors read $floatz).
                 if (!enh.enabled && assets::litTechniqueSlot(assets::kTechBuildFloatz, 31, int(&it - items.data()), 0, it.shadowReceiver ? 0x100 : 0) < 0)
                     continue;
-                const SDL_GPUViewport fzRange{0, 0, float(w), float(h), 0.0f, it.depthMax};
+                const SDL_GPUViewport fzRange{0, 0, float(rw), float(rh), 0.0f, it.depthMax};
                 SDL_SetGPUViewport(fp, &fzRange);
                 SDL_GPUBufferBinding mvb{it.model->vertices, it.model->vertexOffset};
                 SDL_BindGPUVertexBuffers(fp, 0, &mvb, 1);
@@ -4024,7 +4079,7 @@ struct Renderer {
             stats.phase = 0;
             }
             if (enh.enabled) frameDepth = floatzTex; // screen-space reflections read it
-            if (enh.enabled && (enh.ao || enh.contactShadows)) enhAO(cmd, w, h, cam);
+            if (enh.enabled && (enh.ao || enh.contactShadows)) enhAO(cmd, rw, rh, cam);
         }
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &ds);
 
@@ -4136,13 +4191,13 @@ struct Renderer {
             SDL_BindGPUIndexBuffer(pass, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
             stream = -1;
             if (it.depthMax < 1.0f) {
-                const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
+                const SDL_GPUViewport vpDepth{0, 0, float(rw), float(rh), 0.0f, it.depthMax};
                 SDL_SetGPUViewport(pass, &vpDepth);
             }
         };
         auto unbindItem = [&](const DrawItem& it) {
             if (it.depthMax < 1.0f) {
-                const SDL_GPUViewport vpFull{0, 0, float(w), float(h), 0.0f, 1.0f};
+                const SDL_GPUViewport vpFull{0, 0, float(rw), float(rh), 0.0f, 1.0f};
                 SDL_SetGPUViewport(pass, &vpFull);
             }
         };
@@ -4390,7 +4445,7 @@ struct Renderer {
                 SDL_GPUTextureLocation src{}, dst{};
                 src.texture = sceneTex;
                 dst.texture = postSunTex;
-                SDL_CopyGPUTextureToTexture(cp, &src, &dst, w, h, 1, false);
+                SDL_CopyGPUTextureToTexture(cp, &src, &dst, rw, rh, 1, false);
                 SDL_EndGPUCopyPass(cp);
             }
             SDL_GPUColorTargetInfo again = color;
@@ -4461,7 +4516,7 @@ struct Renderer {
                 if (!it.model) continue;
                 bool bound = false;
                 if (it.depthMax < 1.0f) {
-                    const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
+                    const SDL_GPUViewport vpDepth{0, 0, float(rw), float(rh), 0.0f, it.depthMax};
                     SDL_SetGPUViewport(pass, &vpDepth);
                 }
                 for (const Batch& b : it.model->batches) {
@@ -4556,7 +4611,7 @@ struct Renderer {
                     }
                 }
                 if (it.depthMax < 1.0f) {
-                    const SDL_GPUViewport vpFull{0, 0, float(w), float(h), 0.0f, 1.0f};
+                    const SDL_GPUViewport vpFull{0, 0, float(rw), float(rh), 0.0f, 1.0f};
                     SDL_SetGPUViewport(pass, &vpFull);
                 }
                 if (bound) {
@@ -4603,7 +4658,7 @@ struct Renderer {
                 for (const Batch& b : it.model->batches) any = any || b.pass == Pass::Objective;
                 if (!any) continue;
                 if (it.depthMax < 1.0f) {
-                    const SDL_GPUViewport vpDepth{0, 0, float(w), float(h), 0.0f, it.depthMax};
+                    const SDL_GPUViewport vpDepth{0, 0, float(rw), float(rh), 0.0f, it.depthMax};
                     SDL_SetGPUViewport(pass, &vpDepth);
                 }
                 SDL_GPUBufferBinding mvb{it.model->vertices, it.model->vertexOffset};
@@ -4615,7 +4670,7 @@ struct Renderer {
                 if (it.depthMax < 1.0f) applyViewModelSpace(mu, cam, it, float(w) / float(h));
                 for (const Batch& b : it.model->batches) drawObjective(b, mu);
                 if (it.depthMax < 1.0f) {
-                    const SDL_GPUViewport vpFull{0, 0, float(w), float(h), 0.0f, 1.0f};
+                    const SDL_GPUViewport vpFull{0, 0, float(rw), float(rh), 0.0f, 1.0f};
                     SDL_SetGPUViewport(pass, &vpFull);
                 }
                 SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
@@ -4626,12 +4681,13 @@ struct Renderer {
         if (nq && !post) drawOverlay(pass, cmd, scene, overlay, nq);
         SDL_EndGPURenderPass(pass);
         if (enh.enabled && enh.volumetric > 0.0f && frameDepth && sceneFormat == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT)
-            enhVolume(cmd, w, h, scene, cam);
+            enhVolume(cmd, rw, rh, scene, cam);
         if (taaOn && velocityFromFloatz) {
-            enhTaaResolve(cmd, w, h, scene, cam);
+            enhTaaResolve(cmd, rw, rh, w, h, scene, cam); // with a render scale the scene targets go back to the output size here
             if (enh.motionBlur > 0.0f) enhMotionBlur(cmd, w, h);
             if (enh.dof > 0.0f && adsFrac > 0.01f) enhDof(cmd, w, h, cam);
         } else taaHistValid = false;
+        restoreScaledScene();
         if (enh.enabled) enhPost(cmd, w, h, cam, postSunWanted);
         if (post) {
             // Screen filter chain, docs/spec/effects.md "Glow and the blurred screen". Passes alternate between the pingpong images, the
@@ -4720,6 +4776,19 @@ struct Renderer {
             c2.store_op = SDL_GPU_STOREOP_STORE;
             SDL_GPUDepthStencilTargetInfo d2 = ds;
             d2.texture = depth; // the composite pass is single-sampled
+            if (scaled) { // render scale: the scene depth is at the render size; the composite (which clears it) needs the output size
+                if (!outDepth || outDepthW != w || outDepthH != h) {
+                    if (outDepth) SDL_ReleaseGPUTexture(dev, outDepth);
+                    SDL_GPUTextureCreateInfo di{};
+                    di.type = SDL_GPU_TEXTURETYPE_2D, di.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+                    di.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+                    di.width = w, di.height = h, di.layer_count_or_depth = 1, di.num_levels = 1;
+                    outDepth = SDL_CreateGPUTexture(dev, &di);
+                    if (!outDepth) sdlFail("output depth");
+                    outDepthW = w, outDepthH = h;
+                }
+                d2.texture = outDepth;
+            }
             SDL_GPURenderPass* p2 = SDL_BeginGPURenderPass(cmd, &c2, 1, &d2);
             if (enh.enabled) { // tone mapping (docs/render-enhanced.md): the HDR scene, exposure and bloom into the frame
                 if (enhToneSrc) {
@@ -4822,6 +4891,7 @@ struct Renderer {
             SDL_EndGPURenderPass(p2);
         }
         if (taaOn) enhTaaEndFrame(cmd, scene, camIn, w, h, items);
+        restoreScaledTargets();
     }
 
     SDL_GPUBuffer* ensureOverlayIndices() {
@@ -4869,7 +4939,7 @@ struct Renderer {
 
 // ---- enhanced mode passes (docs/render-enhanced.md) ----
 
-void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& cam, const std::vector<DrawItem>& items, uint32_t w, uint32_t h) {
+void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& cam, const std::vector<DrawItem>& items, uint32_t, uint32_t) { // sizes: the render size (the aspect is frameAspect())
     enhStats = {};
     EnhFragUC f{};
     sunDirForAO[0] = scene.sunDirection.x, sunDirForAO[1] = scene.sunDirection.y, sunDirForAO[2] = scene.sunDirection.z;
@@ -5109,7 +5179,7 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
     // Materials: GGX, reflections (the sky cube with mips; screen-space from the previous frame while TAA has a history).
     ensureEnvCube(cmd, scene);
     {
-        const Mat4 vp = cam.viewProj(float(w) / float(h));
+        const Mat4 vp = cam.viewProj(frameAspect());
         std::memcpy(f.viewProj, vp.data(), sizeof f.viewProj);
         std::memcpy(f.prevViewProj, (taaPrevVPValid ? taaPrevVP : vp).data(), sizeof f.prevViewProj);
         game::Mat4c cur{};
@@ -5117,11 +5187,12 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
         const Vec3 fw = cam.forward();
         const float eye[3] = {cam.pos.x, cam.pos.y, cam.pos.z}, fwd[3] = {fw.x, fw.y, fw.z};
         const auto zl = game::clipDepthLine(cur, eye, fwd);
-        const bool ssrOn = enh.ggx && enh.ssr && enh.taa && taaHistValid && taaPrevVPValid && taaHist[taaCur] && taaW == w && taaH == h;
+        const bool ssrOn = enh.ggx && enh.ssr && enh.taa && taaHistValid && taaPrevVPValid && taaHist[taaCur] && taaW == outW && taaH == outH;
         f.ssrParams[0] = zl[0], f.ssrParams[1] = zl[1], f.ssrParams[2] = ssrOn ? 1.0f : 0.0f, f.ssrParams[3] = 262144.0f * 2.0f * 1.7f;
         frameHist = ssrOn ? taaHist[taaCur] : nullptr;
         frameDepth = nullptr;
         f.specParams[0] = enh.ggx ? 1.0f : 0.0f, f.specParams[1] = enh.specScale, f.specParams[2] = enh.envScale, f.specParams[3] = float(std::max(envLevels - 1, 0));
+        f.mipBias[0] = std::log2(renderScaleNow); // textures at the output size's detail while the scene renders smaller
         if (enh.probes && probeCount > 0 && probeIdxBuf && !capturingProbes) {
             for (int a = 0; a < 3; ++a) f.probeGrid[0][a] = probeGrid.origin[a], f.probeGrid[1][a] = float(probeGrid.dims[a]);
             f.probeGrid[0][3] = 1.0f / probeGrid.cell, f.probeGrid[1][3] = 1.0f;
@@ -5261,7 +5332,7 @@ void Renderer::enhFloatzVelocity(SDL_GPUCommandBuffer* cmd, const SDL_GPUColorTa
     ct[1].store_op = SDL_GPU_STOREOP_STORE;
     SDL_GPURenderPass* fp = SDL_BeginGPURenderPass(cmd, ct, 2, &fds);
     stats.phase = 1;
-    const float aspect = float(w) / float(h);
+    const float aspect = frameAspect();
     struct VVU { Mat4 vp; float eye[4]; Mat4 model; Mat4 curVP; Mat4 prevVP; Mat4 prevModel; };
     const Mat4 vpJ = cam.viewProj(aspect), vpU = camIn.viewProj(aspect);
     const Mat4 prevVP = taaPrevVPValid ? taaPrevVP : vpU;
@@ -5341,7 +5412,7 @@ void Renderer::enhFloatzVelocity(SDL_GPUCommandBuffer* cmd, const SDL_GPUColorTa
 }
 
 // The history resolve into the scene image (before exposure, bloom and the tone curve).
-void Renderer::enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam) {
+void Renderer::enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_t rh, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam) {
     if (!taaHist[0] || taaW != w || taaH != h) {
         for (SDL_GPUTexture*& t : taaHist) {
             if (t) SDL_ReleaseGPUTexture(dev, t);
@@ -5369,8 +5440,18 @@ void Renderer::enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, 
     std::memcpy(u.inv, inv.data(), sizeof u.inv);
     std::memcpy(u.prev, (taaPrevVPValid ? taaPrevVP : vp).data(), sizeof u.prev);
     u.z[0] = zl[0], u.z[1] = zl[1], u.z[2] = 262144.0f * 2.0f * 1.7f, u.z[3] = taaHistValid && taaPrevVPValid ? 1.0f : 0.0f;
-    u.size[0] = 1.0f / float(w), u.size[1] = 1.0f / float(h), u.size[2] = cam.jitterX, u.size[3] = cam.jitterY;
-    if (enh.metalFx && metalCaps.metalFx && enhMetalFxResolve(cmd, w, h, cam, &u, sizeof u)) return;
+    u.size[0] = 1.0f / float(rw), u.size[1] = 1.0f / float(rh), u.size[2] = cam.jitterX, u.size[3] = cam.jitterY;
+    if (enh.metalFx && metalCaps.metalFx && enhMetalFxResolve(cmd, rw, rh, w, h, cam, &u, sizeof u)) return;
+    if (scaledActive) { // MetalFX failed with a render scale: stretch the scene to the output size, no anti-aliasing this frame
+        SDL_GPUBlitInfo bi{};
+        bi.source.texture = sceneTex, bi.source.w = rw, bi.source.h = rh;
+        restoreScaledScene();
+        bi.destination.texture = sceneTex, bi.destination.w = w, bi.destination.h = h;
+        bi.load_op = SDL_GPU_LOADOP_DONT_CARE, bi.filter = SDL_GPU_FILTER_LINEAR;
+        SDL_BlitGPUTexture(cmd, &bi);
+        taaHistValid = false;
+        return;
+    }
     SDL_GPUColorTargetInfo ct{};
     ct.texture = taaHist[1 - taaCur];
     ct.load_op = SDL_GPU_LOADOP_DONT_CARE;
@@ -5395,19 +5476,20 @@ void Renderer::enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, 
 
 // MetalFX temporal scaling (docs/render-enhanced.md "Stage 5"): the motion of every pixel and a device depth from $floatz, then
 // the scaler on SDL's command buffer (no SDL pass open) into the history texture, which replaces the scene image as the TAA's does.
-bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam, const void* u, size_t usize) {
-    if (!mfxMotion || mfxW != w || mfxH != h) {
+bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_t rh, uint32_t w, uint32_t h, const Camera& cam,
+                                 const void* u, size_t usize) {
+    if (!mfxMotion || mfxW != rw || mfxH != rh) {
         for (SDL_GPUTexture** t : {&mfxMotion, &mfxDepth}) if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
         SDL_GPUTextureCreateInfo ti{};
         ti.type = SDL_GPU_TEXTURETYPE_2D;
         ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        ti.width = w, ti.height = h, ti.layer_count_or_depth = 1, ti.num_levels = 1;
+        ti.width = rw, ti.height = rh, ti.layer_count_or_depth = 1, ti.num_levels = 1;
         ti.format = SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
         mfxMotion = SDL_CreateGPUTexture(dev, &ti);
         ti.format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
         mfxDepth = SDL_CreateGPUTexture(dev, &ti);
         if (!mfxMotion || !mfxDepth) return false;
-        mfxW = w, mfxH = h;
+        mfxW = rw, mfxH = rh;
     }
     auto pass = [&](SDL_GPUGraphicsPipeline* pipe, SDL_GPUTexture* dst, const SDL_GPUTextureSamplerBinding* tb, uint32_t n) {
         SDL_GPUColorTargetInfo ct{};
@@ -5426,11 +5508,12 @@ bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t
     const SDL_GPUTextureSamplerBinding db[1] = {{floatzTex, pointClampSampler}};
     pass(enhMfxDepthPipe, mfxDepth, db, 1);
     const bool reset = !(taaHistValid && taaPrevVPValid);
-    if (!metalFx.encode(dev, cmd, sceneTex, mfxDepth, mfxMotion, taaHist[1 - taaCur], w, h, w, h, cam.jitterX, cam.jitterY, reset)) {
+    if (!metalFx.encode(dev, cmd, sceneTex, mfxDepth, mfxMotion, taaHist[1 - taaCur], rw, rh, w, h, cam.jitterX, cam.jitterY, reset)) {
         if (!metalFxLogged) metalFxLogged = true, std::cout << metalFx.describe() << " (our TAA instead)\n";
         return false;
     }
     if (!metalFxLogged) metalFxLogged = true, std::cout << metalFx.describe() << "\n";
+    restoreScaledScene(); // from here on the frame is at the output size
     SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureLocation src{}, dst{};
     src.texture = taaHist[1 - taaCur];
@@ -5486,7 +5569,7 @@ void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Ca
         }
         aoW = hw, aoH = hh;
     }
-    const Mat4 vp = cam.viewProj(float(w) / float(h));
+    const Mat4 vp = cam.viewProj(frameAspect());
     game::Mat4c cur{}, inv{};
     std::memcpy(cur.data(), vp.data(), sizeof(float) * 16);
     if (!game::invertMat(cur, inv)) return;
@@ -5640,7 +5723,7 @@ void Renderer::enhVolume(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, cons
         if (!volTex) return;
         volW = hw, volH = hh;
     }
-    const Mat4 vp = cam.viewProj(float(w) / float(h));
+    const Mat4 vp = cam.viewProj(frameAspect());
     game::Mat4c cur{}, inv{};
     std::memcpy(cur.data(), vp.data(), sizeof(float) * 16);
     if (!game::invertMat(cur, inv)) return;
