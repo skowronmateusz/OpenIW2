@@ -159,6 +159,22 @@ int main() {
         chk(periodFilmGrade({1.5f, 1.5f, 1.5f})[1] > 1.4f, __LINE__); // HDR values kept
     }
 
+    // Map light falloff: 1 at the light, 0 at the radius, the spot cone cuts behind and fades between the angles.
+    {
+        MapLight l;
+        l.radius = 100.0f;
+        const float at[3] = {0, 0, 0}, half[3] = {50, 0, 0}, out[3] = {150, 0, 0};
+        chk(near(mapLightFalloff(l, at), 1.0f) && near(mapLightFalloff(l, half), 0.25f) && mapLightFalloff(l, out) == 0.0f, __LINE__);
+        l.dir[0] = 0, l.dir[1] = 0, l.dir[2] = -1; // pointing down
+        l.cosOuter = std::cos(60.0f * 3.14159265f / 180.0f), l.cosInner = std::cos(30.0f * 3.14159265f / 180.0f);
+        const float below[3] = {0, 0, -50}, side[3] = {50, 0, -5}, above[3] = {0, 0, 50};
+        chk(near(mapLightFalloff(l, below), 0.25f) && mapLightFalloff(l, side) == 0.0f && mapLightFalloff(l, above) == 0.0f, __LINE__);
+    }
+
+    // Aim depth of field: sharp near, full radius far, scaled by the ADS fraction and the strength.
+    chk(aimDofRadius(20.0f, 1.0f, 1.0f) == 0.0f && near(aimDofRadius(1000.0f, 1.0f, 1.0f), 2.5f) && near(aimDofRadius(240.0f, 1.0f, 1.0f), 1.25f), __LINE__);
+    chk(aimDofRadius(1000.0f, 0.0f, 1.0f) == 0.0f && near(aimDofRadius(1000.0f, 0.5f, 2.0f), 2.5f), __LINE__);
+
     // Tone curve: identity up to the knee, continuous with slope 1 there, monotonic, below white, approaching white.
     for (float x = 0.0f; x <= kToneKnee; x += 0.01f) chk(toneShoulder(x, kToneKnee, 1.0f) == x, __LINE__);
     {

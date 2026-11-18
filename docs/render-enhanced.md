@@ -37,6 +37,8 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhLightShadows` | preset | Shadows of the dynamic (effect) lights, up to four lights. |
 | `r_enhVolumetric` | preset | Sun shafts: light scattered in the air through the sun's shadow (0 off .. 2; 0.35 in the high preset, else 0). |
 | `r_enhGrade` | 0 | Colour grade: 0 neutral, 1 "period film" (contrast, desaturation, warm shadows, grain). |
+| `r_enhMapLightSpec` | preset | GGX specular from the map's light entities near the camera (their diffuse stays baked). |
+| `r_enhDOF` | 0 | Depth of field while aiming down the sights (0 off .. 2). |
 | `r_enhMotionBlur` | 0 | Motion blur amount (0 off, 1 = one frame of motion; needs TAA). |
 | `r_enhMotionDebug` | 0 | Debug views instead of the frame: 1 the motion vectors, 2 AO (red) and contact shadow (green). |
 
@@ -148,7 +150,31 @@ neither (they are not in the opaque depth).
   the reflection; at a hit, the previous frame's resolved image (the TAA history) at the hit point's previous screen position
   replaces the sky, faded at the screen edges and with roughness. Needs TAA. On all specular surfaces this cost about 4.7 ms on
   the bench, hence the restriction.
-- Not done: reflection probes made at load, and specular from the map's baked light entities (both left for later).
+- Not done: reflection probes made at load (left for later).
+
+## Map light specular
+
+The map's light entities survive in the entity text (`light`: origin, radius, intensity, _color; spot lights a target and
+fov_inner / fov_outer); their diffuse light is baked into the lightmaps and the light grid. The engine never reads these keys,
+so the model is our own (`game::MapLight`, `game::mapLightFalloff`): colour times intensity, falloff (1 - d / r)^2, the spot cone
+smooth between half the inner and outer angles around the direction to the target. The eight lights nearest the camera (those
+reaching within 1500 units) add GGX specular on the specular surfaces and the reflective classes. They cast no shadow, so the
+specular is scaled by the surface's own baked light (three times its brightness, clamped to 1): a dark wall behind a lamp does
+not shine.
+
+## Baked light shadows (moving objects)
+
+The two strongest map lights near the camera (power = colour x radius / distance, within 600 units of their reach) that reach a
+moving model get a shadow map of the moving casters, in rows 4 and 5 of the light shadow atlas. Where a world surface, static
+model or the water is in such a shadow, our estimate of that light's contribution (falloff x N.L x colour, at most the baked
+light itself) is taken from the baked light. So soldiers cast shadows under street lamps at night. The estimate can disagree
+with the bake; it never makes a surface darker than black or brighter than before.
+
+## Depth of field while aiming
+
+`r_enhDOF` (off by default): while the player aims down the sights, the world beyond 40 units (the weapon and its sights stay
+sharp) is blurred with a 12-tap disc whose radius grows to 2.5 px at 440 units, times the aim fraction (`game::aimDofRadius`);
+samples on the weapon are not taken. After TAA, before the tone curve.
 
 ## Shadowed effect lights
 
@@ -168,7 +194,7 @@ takes four compare taps, with a normal offset. The baked light and the light's f
   put, values above 1 keep their excess), warmer shadows and a fine animated grain (`game::periodFilmGrade` describes the
   curve). No look-up tables: the game ships none, and a neutral default needs none.
 - Motion blur (off by default): eight taps along the TAA motion vector after the resolve, so the history stays sharp.
-- Not done: depth of field, shadows of the map's baked lights on moving objects.
+- Depth of field and the baked light shadows: below.
 
 ## Per-pixel light grid
 

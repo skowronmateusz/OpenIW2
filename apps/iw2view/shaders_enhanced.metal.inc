@@ -27,6 +27,13 @@ struct EnhFragU {
     float4x4 prevViewProj; // the previous frame's: where a reflected point was in the history image
     float4 ssrParams;      // x, y: clip z = x * w + y; z: 1 = reflections on (history valid); w: $floatz sky threshold
     float4 specParams;     // x: 1 = GGX specular, y: specular scale, z: environment reflection scale, w: environment mip count
+    float4 mlPos[8];       // map lights near the camera: xyz position, w radius
+    float4 mlColor[8];     // rgb colour times intensity, w: cos of the inner spot angle
+    float4 mlDir[8];       // xyz spot axis, w: cos of the outer spot angle (< -1: point light)
+    float4 mlParams;       // x: count
+    float4 bsPos[2];       // baked-light shadows of moving objects (b4): xyz light position, w radius
+    float4 bsColor[2];     // rgb the light's colour times intensity, w: its tile row in the light shadow atlas
+    float4 bsParams;       // x: count, y: near plane
 };
 // Fragment uniform slot 2: per draw (model items).
 struct EnhDrawU {
@@ -40,7 +47,9 @@ struct EnhDrawU {
     texture2d<float> aoTex [[texture(t + 2)]], sampler aoSampler [[sampler(t + 2)]], \
     texturecube<float> envCube [[texture(t + 3)]], sampler envSampler [[sampler(t + 3)]], \
     texture2d<float> histTex [[texture(t + 4)]], sampler histSampler [[sampler(t + 4)]], \
-    texture2d<float> depthTex [[texture(t + 5)]], sampler depthSampler [[sampler(t + 5)]]
+    texture2d<float> depthTex [[texture(t + 5)]], sampler depthSampler [[sampler(t + 5)]], \
+    depth2d<float> lightAtlas [[texture(t + 6)]], sampler lightAtlasSampler [[sampler(t + 6)]]
+#define ENH_BAKED_SHADOW eu, lightAtlas, lightAtlasSampler
 #define ENH_WORLD_SHADOWS eu, worldShadow, worldSampler
 #define ENH_REFLECT eu, envCube, envSampler, histTex, histSampler, depthTex, depthSampler
 
@@ -151,6 +160,29 @@ static float3 enh_ggx_sun(float3 n, float3 v, float3 l, float3 f0, float power) 
     return d * vis * f * nl * (6.2831853 / (power + 2.0));
 }
 
+// Specular of the map's baked lights near the camera (game::mapLightFalloff; diffuse stays in the lightmap). No shadows: the caller
+// scales it by an occlusion from the surface's own baked light.
+static float3 enh_map_light_spec(float3 wp, float3 n, float3 v, float3 f0, float power, constant EnhFragU& eu) {
+    float3 sum = 0.0;
+    const int count = int(eu.mlParams.x + 0.5);
+    for (int i = 0; i < count; ++i) {
+        const float3 d = eu.mlPos[i].xyz - wp;
+        const float dist = length(d);
+        if (dist >= eu.mlPos[i].w || dist < 1e-3) continue;
+        float f = (1.0 - dist / eu.mlPos[i].w);
+        f *= f;
+        const float3 l = d / dist;
+        if (eu.mlDir[i].w >= -1.0) {
+            const float c = dot(-l, eu.mlDir[i].xyz);
+            const float t = saturate((c - eu.mlDir[i].w) / max(eu.mlColor[i].w - eu.mlDir[i].w, 1e-4));
+            f *= t * t * (3.0 - 2.0 * t);
+        }
+        if (f <= 0.0) continue;
+        sum += enh_ggx_sun(n, v, l, f0, power) * eu.mlColor[i].rgb * f;
+    }
+    return sum;
+}
+
 // Reflection: the sky cube (blurred with roughness through its mips) or, where a screen-space ray hits the opaque depth, the
 // previous frame's image at that point. Returns the reflected light times the roughness-aware Fresnel.
 static float3 enh_reflection_color(float3 wp, float3 r, float a, float4 fragPos, constant EnhFragU& eu, texturecube<float> env,
@@ -209,7 +241,7 @@ static float enh_light_shadow(float3 v, float3 n, float4 ls, depth2d<float> atla
     const float d = dot(v, fwd);
     float2 uv = float2(dot(v, right), dot(v, up)) / d * float2(0.5, -0.5) + 0.5;
     const float2 tex = 1.0 / float2(atlas.get_width(), atlas.get_height());
-    const float2 tileSize = float2(1.0 / 3.0, 1.0 / (2.0 * 4.0));
+    const float2 tileSize = float2(1.0 / 3.0, 1.0 / (2.0 * 6.0)); // 4 dynamic lights + 2 baked lights
     uv = clamp(uv, 1.5 * tex / tileSize, 1.0 - 1.5 * tex / tileSize);
     const float2 base = float2(float(face % 3), float(face / 3) + 2.0 * ls.w) * tileSize;
     const float ref = ls.z / (ls.z - ls.y) - ls.z * ls.y / ((ls.z - ls.y) * d) - 0.0005;
@@ -219,6 +251,27 @@ static float enh_light_shadow(float3 v, float3 n, float4 ls, depth2d<float> atla
         lit += atlas.sample_compare(ss, base + uv * tileSize + o, ref);
     }
     return lit * 0.25;
+}
+
+// Shadows of moving objects in the map's baked lights (docs/render-enhanced.md "Baked light shadows"): for the strongest lights near
+// the camera the light shadow atlas holds the moving casters; where a point is in such a shadow, our estimate of that light's
+// contribution (game::mapLightFalloff times N.L times its colour), at most the baked light itself, is taken away.
+static float enh_light_shadow(float3 v, float3 n, float4 ls, depth2d<float> atlas, sampler ss);
+static float3 enh_baked_shadow_loss(float3 wp, float3 n, float3 baked, constant EnhFragU& eu, depth2d<float> atlas, sampler ss) {
+    float3 loss = 0.0;
+    const int count = int(eu.bsParams.x + 0.5);
+    for (int i = 0; i < count; ++i) {
+        const float3 d = eu.bsPos[i].xyz - wp;
+        const float dist = length(d);
+        if (dist >= eu.bsPos[i].w || dist < 1e-3) continue;
+        const float ndl = dot(n, d / dist);
+        if (ndl <= 0.0) continue;
+        const float sh = enh_light_shadow(wp - eu.bsPos[i].xyz, n, float4(1.0, eu.bsParams.y, eu.bsPos[i].w, eu.bsColor[i].w), atlas, ss);
+        if (sh >= 1.0) continue;
+        float f = 1.0 - dist / eu.bsPos[i].w;
+        loss += (1.0 - sh) * eu.bsColor[i].rgb * (f * f * ndl);
+    }
+    return min(loss, baked);
 }
 
 // The model's light-grid lattice (one point = six coefficient vectors + the sun bit) interpolated at a world point.

@@ -562,6 +562,7 @@ struct Scene {
     game::MarkSystem marks;
     game::OutdoorMap outdoor; // "$outdoor" (game/outdoor.h), built on first use by a Cloud with particle_cloud_outdoor
     std::unique_ptr<assets::LightGrid> grid;
+    std::vector<game::MapLight> mapLights;   // enhanced: the map's light entities (specular of baked lights)
     std::vector<float> smodelLight;          // static-model lighting blocks, 28 floats per instance (fs_smodel)
     SDL_GPUBuffer* smodelLightBuf = nullptr; // the same on the GPU (storage buffer)
     std::vector<uint8_t> texReflect; // enhanced: reflective surface class per Scene::textures index (0 none, 1 water, 2 glass / ice, 3 metal)
@@ -1731,6 +1732,41 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
     for (const auto& soup : bsp.soups()) material(bsp.materials()[soup.material].name);
     std::vector<MatInfo> mats;
     for (const auto& bm : bsp.materials()) mats.push_back(material(bm.name));
+    // Enhanced specular of the baked lights (docs/render-enhanced.md "Map light specular"): the light entities, spot axes from their
+    // targets (our own reading of keys the engine never reads).
+    {
+        std::unordered_map<std::string, std::array<float, 3>> targets;
+        for (const auto& e : bsp.entities())
+            if (const std::string* tn = e.get("targetname"); tn && e.get("origin")) {
+                const Vec3 o = parseVec3(*e.get("origin"));
+                targets[*tn] = {o.x, o.y, o.z};
+            }
+        for (const auto& e : bsp.entities()) {
+            const std::string* cls = e.get("classname");
+            if (!cls || *cls != "light" || !e.get("origin")) continue;
+            game::MapLight l;
+            const Vec3 o = parseVec3(*e.get("origin"));
+            l.pos[0] = o.x, l.pos[1] = o.y, l.pos[2] = o.z;
+            if (const std::string* r = e.get("radius")) l.radius = std::max(1.0f, float(std::atof(r->c_str())));
+            else if (const std::string* lt = e.get("light")) l.radius = std::max(1.0f, float(std::atof(lt->c_str())));
+            const float inten = e.get("intensity") ? float(std::atof(e.get("intensity")->c_str())) : 1.0f;
+            Vec3 col{1, 1, 1};
+            if (const std::string* c = e.get("_color")) col = parseVec3(*c);
+            l.color[0] = col.x * inten, l.color[1] = col.y * inten, l.color[2] = col.z * inten;
+            if (const std::string* t = e.get("target"); t && targets.count(*t) && e.get("fov_outer")) {
+                const auto& tp = targets[*t];
+                Vec3 d{tp[0] - o.x, tp[1] - o.y, tp[2] - o.z};
+                const float dl = std::sqrt(dot(d, d));
+                if (dl > 1e-3f) {
+                    l.dir[0] = d.x / dl, l.dir[1] = d.y / dl, l.dir[2] = d.z / dl;
+                    const float outer = float(std::atof(e.get("fov_outer")->c_str()));
+                    const float inner = e.get("fov_inner") ? float(std::atof(e.get("fov_inner")->c_str())) : outer * 0.5f;
+                    l.cosOuter = std::cos(outer * 0.5f * float(M_PI) / 180.0f), l.cosInner = std::cos(std::min(inner, outer) * 0.5f * float(M_PI) / 180.0f);
+                }
+            }
+            scene.mapLights.push_back(l);
+        }
+    }
     // Enhanced reflections (docs/render-enhanced.md "Materials"): the reflective surface classes of the world's materials (surface
     // type, surfaceFlags bits 20-24, src/game/playerevents.cpp names), per colour texture: 1 water, 2 glass / ice, 3 metal.
     for (size_t i = 0; i < mats.size(); ++i) {
@@ -2517,7 +2553,10 @@ struct Renderer {
         float worldVP[3][16]; float worldSphere[3][4]; float worldParams[4]; float worldBias[4];
         float aoParams[4];
         float viewProj[16]; float prevViewProj[16]; float ssrParams[4]; float specParams[4];
+        float mlPos[8][4]; float mlColor[8][4]; float mlDir[8][4]; float mlParams[4];
+        float bsPos[2][4]; float bsColor[2][4]; float bsParams[4];
     };
+    std::vector<const game::MapLight*> bakedShadowLights; // this frame's baked lights with moving-caster shadows (atlas rows 4, 5)
     // Materials (stage 3): the sky cube with a mip chain for rough reflections, and this frame's history / depth for reflections.
     SDL_GPUTexture* envCube = nullptr;
     const SDL_GPUTexture* envFor = nullptr;
@@ -2529,13 +2568,15 @@ struct Renderer {
     SDL_GPUTexture* frameDepth = nullptr;  // $floatz once built this frame, else null
     void ensureEnvCube(SDL_GPUCommandBuffer* cmd, const Scene& scene);
     // Atmosphere and grading (stage 4): sun shafts at half size, motion blur.
-    SDL_GPUGraphicsPipeline *enhVolumePipe = nullptr, *enhVolumeApplyPipe = nullptr, *enhMotionBlurPipe = nullptr;
+    SDL_GPUGraphicsPipeline *enhVolumePipe = nullptr, *enhVolumeApplyPipe = nullptr, *enhMotionBlurPipe = nullptr, *enhDofPipe = nullptr;
+    float adsFrac = 0.0f; // set by the caller each frame: the player's aim-down-sights fraction (depth of field)
+    void enhDof(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam);
     SDL_GPUTexture* volTex = nullptr;
     uint32_t volW = 0, volH = 0;
     void enhVolume(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam);
     void enhMotionBlur(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h);
     // Shadowed dynamic lights (docs/render-enhanced.md "Shadowed effect lights"): 6 faces of 256^2 per light, up to 4 lights.
-    static constexpr int kLightShadowSize = 256, kLightShadowMax = 4;
+    static constexpr int kLightShadowSize = 256, kLightShadowMax = 4, kLightShadowRows = 6; // rows 4, 5: baked lights
     SDL_GPUTexture* lightShadowAtlas = nullptr;
     int lightShadowsNow = 0;
     float lightShadowNear = 2.0f;
@@ -2659,6 +2700,7 @@ struct Renderer {
         enhVolumePipe = mk("fs_enh_volume", 3, 2, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhVolumeApplyPipe = mk("fs_enh_volume_apply", 1, 0, true, false, true, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhMotionBlurPipe = mk("fs_enh_motion_blur", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhDofPipe = mk("fs_enh_dof", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         {   // $floatz + motion vectors (two targets); the previous position comes from a second vertex stream
             SDL_GPUShaderCreateInfo sv = vs;
             sv.entrypoint = "vs_floatz_vel";
@@ -2837,14 +2879,15 @@ struct Renderer {
     void enhBind(SDL_GPURenderPass* pass, SDL_GPUCommandBuffer* cmd, uint32_t shadowSlot, const DrawItem* it, const std::vector<DrawItem>& items,
                  bool noScreenSpace = false, int reflectClass = 0) {
         if (!enh.enabled) return;
-        const SDL_GPUTextureSamplerBinding sb[6] = {
+        const SDL_GPUTextureSamplerBinding sb[7] = {
             {shadowCascadesNow > 0 ? shadowTex : shadowDummy, shadowCmpSampler},
             {worldCascadesNow > 0 ? worldShadowArray : shadowDummyArray, shadowCmpSampler},
             {aoReady ? aoTex[0] : aoWhite, clampSampler},
             {envCube ? envCube : envDummy, clampSampler},
             {frameHist ? frameHist : aoWhite, clampSampler},
-            {frameDepth ? frameDepth : aoWhite, pointClampSampler}};
-        SDL_BindGPUFragmentSamplers(pass, shadowSlot, sb, 6);
+            {frameDepth ? frameDepth : aoWhite, pointClampSampler},
+            {lightShadowAtlas ? lightShadowAtlas : shadowDummy, shadowCmpSampler}};
+        SDL_BindGPUFragmentSamplers(pass, shadowSlot, sb, 7);
         SDL_BindGPUFragmentStorageBuffers(pass, 0, &latticeBuf, 1);
         EnhDrawUC d{};
         if (it && size_t(it - items.data()) < itemLattice.size()) d = itemLattice[size_t(it - items.data())];
@@ -2893,7 +2936,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo fmain = fs;
         SDL_GPUShader* overlayFsh = nullptr; // enhanced: the HUD keeps the default fs_main (no shadow / lattice resources)
         if (enh.enabled) {
-            fmain.num_samplers = 10;       // + moving-caster shadows, world cascades, AO, environment cube, history, $floatz
+            fmain.num_samplers = 11;       // + moving-caster shadows, world cascades, AO, environment cube, history, $floatz
             fmain.num_uniform_buffers = 3; // + EnhFragU (slot 1) and EnhDrawU (slot 2)
             fmain.num_storage_buffers = 1; // the light-grid lattices
             SDL_GPUShaderCreateInfo plain = fs;
@@ -2930,7 +2973,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo sfsi = fs;
         sfsi.entrypoint = "fs_spec";
         sfsi.num_samplers = 8;
-        if (enh.enabled) sfsi.num_samplers = 14, sfsi.num_uniform_buffers = 3, sfsi.num_storage_buffers = 1;
+        if (enh.enabled) sfsi.num_samplers = 15, sfsi.num_uniform_buffers = 3, sfsi.num_storage_buffers = 1;
         SDL_GPUShaderCreateInfo dfsi = fs;
         dfsi.entrypoint = "fs_dlight";
         dfsi.num_samplers = 3;
@@ -2950,7 +2993,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo pfsi = fs;
         pfsi.entrypoint = "fs_probe";
         pfsi.num_samplers = 5;
-        if (enh.enabled) pfsi.num_samplers = 11, pfsi.num_uniform_buffers = 3, pfsi.num_storage_buffers = 1;
+        if (enh.enabled) pfsi.num_samplers = 12, pfsi.num_uniform_buffers = 3, pfsi.num_storage_buffers = 1;
         SDL_GPUShader* probeVsh = SDL_CreateGPUShader(dev, &pvsi);
         SDL_GPUShader* probeFsh = SDL_CreateGPUShader(dev, &pfsi);
         if (!probeVsh || !probeFsh) sdlFail("probe shaders");
@@ -3316,7 +3359,7 @@ struct Renderer {
             SDL_GPUShaderCreateInfo wfs = fs;
             wfs.entrypoint = "fs_water";
             wfs.num_samplers = 2;
-            if (enh.enabled) wfs.num_samplers = 8, wfs.num_uniform_buffers = 3, wfs.num_storage_buffers = 1;
+            if (enh.enabled) wfs.num_samplers = 9, wfs.num_uniform_buffers = 3, wfs.num_storage_buffers = 1;
             wfs.num_uniform_buffers = 1;
             SDL_GPUShader* wv = SDL_CreateGPUShader(dev, &wvs);
             SDL_GPUShader* wf = SDL_CreateGPUShader(dev, &wfs);
@@ -4507,6 +4550,7 @@ struct Renderer {
         if (taaOn && velocityFromFloatz) {
             enhTaaResolve(cmd, w, h, scene, cam);
             if (enh.motionBlur > 0.0f) enhMotionBlur(cmd, w, h);
+            if (enh.dof > 0.0f && adsFrac > 0.01f) enhDof(cmd, w, h, cam);
         } else taaHistValid = false;
         if (enh.enabled) enhPost(cmd, w, h, cam, postSunWanted);
         if (post) {
@@ -4951,7 +4995,36 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
         }
     }
     lightShadowsNow = 0;
-    if (enh.lightShadows && !dlights.empty()) renderLightShadows(cmd, scene, items);
+    // b4: the two strongest map lights near the camera that reach a moving model get its shadows (docs/render-enhanced.md)
+    bakedShadowLights.clear();
+    if (enh.lightShadows && !scene.mapLights.empty()) {
+        std::vector<std::pair<float, const game::MapLight*>> cand;
+        for (const game::MapLight& l : scene.mapLights) {
+            const float dx = l.pos[0] - cam.pos.x, dy = l.pos[1] - cam.pos.y, dz = l.pos[2] - cam.pos.z;
+            const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (d - l.radius > 600.0f) continue;
+            bool reaches = false;
+            for (const DrawItem& it : items) {
+                if (!it.model || it.effects || it.depthMax < 1.0f || !it.model->hasBounds) continue;
+                float mn[3], mx[3];
+                game::transformedBoxBounds(it.model->mins, it.model->maxs, it.transform.data(), mn, mx);
+                if (game::lightTouchesBox(l.pos, l.radius, mn, mx)) { reaches = true; break; }
+            }
+            if (!reaches) continue;
+            const float power = (l.color[0] + l.color[1] + l.color[2]) * l.radius / std::max(d, 50.0f);
+            cand.push_back({-power, &l});
+        }
+        std::sort(cand.begin(), cand.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (size_t k = 0; k < cand.size() && k < 2; ++k) {
+            const game::MapLight& l = *cand[k].second;
+            bakedShadowLights.push_back(&l);
+            for (int a = 0; a < 3; ++a) f.bsPos[k][a] = l.pos[a], f.bsColor[k][a] = l.color[a];
+            f.bsPos[k][3] = l.radius, f.bsColor[k][3] = float(kLightShadowMax + int(k));
+        }
+        f.bsParams[0] = float(bakedShadowLights.size()), f.bsParams[1] = lightShadowNear;
+    }
+    if (enh.lightShadows && (!dlights.empty() || !bakedShadowLights.empty())) renderLightShadows(cmd, scene, items);
+    if (!lightShadowAtlas) f.bsParams[0] = 0.0f;
     // Materials: GGX, reflections (the sky cube with mips; screen-space from the previous frame while TAA has a history).
     ensureEnvCube(cmd, scene);
     {
@@ -4968,6 +5041,23 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
         frameHist = ssrOn ? taaHist[taaCur] : nullptr;
         frameDepth = nullptr;
         f.specParams[0] = enh.ggx ? 1.0f : 0.0f, f.specParams[1] = enh.specScale, f.specParams[2] = enh.envScale, f.specParams[3] = float(std::max(envLevels - 1, 0));
+    }
+    if (enh.ggx && enh.mapLightSpec && !scene.mapLights.empty()) { // the 8 map lights nearest the camera that reach within 1500 units
+        std::vector<std::pair<float, size_t>> near;
+        for (size_t i = 0; i < scene.mapLights.size(); ++i) {
+            const game::MapLight& l = scene.mapLights[i];
+            const float dx = l.pos[0] - cam.pos.x, dy = l.pos[1] - cam.pos.y, dz = l.pos[2] - cam.pos.z;
+            const float d = std::sqrt(dx * dx + dy * dy + dz * dz) - l.radius;
+            if (d < 1500.0f) near.push_back({d, i});
+        }
+        std::sort(near.begin(), near.end());
+        const size_t n = std::min<size_t>(near.size(), 8);
+        for (size_t k = 0; k < n; ++k) {
+            const game::MapLight& l = scene.mapLights[near[k].second];
+            for (int a = 0; a < 3; ++a) f.mlPos[k][a] = l.pos[a], f.mlColor[k][a] = l.color[a], f.mlDir[k][a] = l.dir[a];
+            f.mlPos[k][3] = l.radius, f.mlColor[k][3] = l.cosInner, f.mlDir[k][3] = l.cosOuter;
+        }
+        f.mlParams[0] = float(n);
     }
     aoReady = false;
     if (enh.ao || enh.contactShadows) {
@@ -5312,11 +5402,21 @@ void Renderer::renderLightShadows(SDL_GPUCommandBuffer* cmd, const Scene& scene,
         ti.type = SDL_GPU_TEXTURETYPE_2D;
         ti.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
         ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        ti.width = uint32_t(3 * S), ti.height = uint32_t(2 * S * kLightShadowMax), ti.layer_count_or_depth = 1, ti.num_levels = 1;
+        ti.width = uint32_t(3 * S), ti.height = uint32_t(2 * S * kLightShadowRows), ti.layer_count_or_depth = 1, ti.num_levels = 1;
         lightShadowAtlas = SDL_CreateGPUTexture(dev, &ti);
         if (!lightShadowAtlas) return;
     }
     const int n = std::min<int>(int(dlights.size()), kLightShadowMax);
+    struct ShadowLight { float pos[3]; float radius; int row; bool world; int dl; };
+    std::vector<ShadowLight> lights;
+    for (int li = 0; li < n; ++li) {
+        const DLight& dl = dlights[size_t(li)];
+        lights.push_back({{dl.pos[0], dl.pos[1], dl.pos[2]}, dl.radius, li, true, li});
+    }
+    for (size_t k = 0; k < bakedShadowLights.size(); ++k) {
+        const game::MapLight& ml = *bakedShadowLights[k];
+        lights.push_back({{ml.pos[0], ml.pos[1], ml.pos[2]}, ml.radius, kLightShadowMax + int(k), false, -1});
+    }
     SDL_GPUDepthStencilTargetInfo dt{};
     dt.texture = lightShadowAtlas;
     dt.clear_depth = 1.0f;
@@ -5327,8 +5427,8 @@ void Renderer::renderLightShadows(SDL_GPUCommandBuffer* cmd, const Scene& scene,
     SDL_GPURenderPass* sp = SDL_BeginGPURenderPass(cmd, nullptr, 0, &dt);
     SDL_BindGPUGraphicsPipeline(sp, enhShadowPipe);
     struct SVU { float vp[16]; Mat4 model; float p[4]; };
-    for (int li = 0; li < n; ++li) {
-        const DLight& dl = dlights[size_t(li)];
+    for (const ShadowLight& dl : lights) {
+        const int li = dl.row;
         const float nr = lightShadowNear, fr = std::max(dl.radius, nr * 2.0f);
         std::vector<std::pair<const DrawItem*, int>> near; // items within the light's reach
         for (const DrawItem& it : items) {
@@ -5351,13 +5451,13 @@ void Renderer::renderLightShadows(SDL_GPUCommandBuffer* cmd, const Scene& scene,
             u.vp[12] = -d3(cf.right), u.vp[13] = -d3(cf.up), u.vp[14] = -A * d3(cf.fwd) + B, u.vp[15] = -d3(cf.fwd);
             const SDL_GPUViewport vp{float((f % 3) * S), float((f / 3 + 2 * li) * S), float(S), float(S), 0.0f, 1.0f};
             SDL_SetGPUViewport(sp, &vp);
-            if (culledIndexBuf && size_t(li) < culledLightBatches.size()) {
+            if (dl.world && culledIndexBuf && size_t(dl.dl) < culledLightBatches.size()) { // baked lights: moving casters only
                 const SDL_GPUBufferBinding vb{scene.vertices, 0};
                 SDL_BindGPUVertexBuffers(sp, 0, &vb, 1);
                 const SDL_GPUBufferBinding ib{culledIndexBuf, 0};
                 SDL_BindGPUIndexBuffer(sp, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 u.model = kIdentity;
-                for (const Batch& b : culledLightBatches[size_t(li)]) {
+                for (const Batch& b : culledLightBatches[size_t(dl.dl)]) {
                     if (!b.indexCount || (b.pass != Pass::Opaque && b.pass != Pass::AlphaTest)) continue;
                     u.p[0] = b.pass == Pass::AlphaTest ? 1.0f : 0.0f;
                     SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof u);
@@ -5444,6 +5544,36 @@ void Renderer::enhVolume(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, cons
     SDL_BindGPUFragmentSamplers(p, 0, &vb, 1);
     SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
     SDL_EndGPURenderPass(p);
+}
+
+// Depth of field while aiming: into the free history image, copied back into the scene image.
+void Renderer::enhDof(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam) {
+    SDL_GPUTexture* scratch = taaHist[1 - taaCur];
+    if (!scratch || !frameDepth) return;
+    game::Mat4c cur{};
+    const Mat4 vp = cam.viewProj(float(w) / float(h));
+    std::memcpy(cur.data(), vp.data(), sizeof(float) * 16);
+    const Vec3 fw = cam.forward();
+    const float eye[3] = {cam.pos.x, cam.pos.y, cam.pos.z}, fwd[3] = {fw.x, fw.y, fw.z};
+    const auto zl = game::clipDepthLine(cur, eye, fwd);
+    const float u[4] = {zl[0], zl[1], adsFrac * enh.dof, 262144.0f * 2.0f * 1.7f};
+    SDL_GPUColorTargetInfo ct{};
+    ct.texture = scratch;
+    ct.load_op = SDL_GPU_LOADOP_DONT_CARE;
+    ct.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(p, enhDofPipe);
+    const SDL_GPUTextureSamplerBinding tb[2] = {{sceneTex, clampSampler}, {frameDepth, pointClampSampler}};
+    SDL_BindGPUFragmentSamplers(p, 0, tb, 2);
+    SDL_PushGPUFragmentUniformData(cmd, 0, u, sizeof u);
+    SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(p);
+    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureLocation src{}, dst{};
+    src.texture = scratch;
+    dst.texture = sceneTex;
+    SDL_CopyGPUTextureToTexture(cp, &src, &dst, w, h, 1, false);
+    SDL_EndGPUCopyPass(cp);
 }
 
 // Motion blur along the TAA motion vectors, into the free history image, copied back into the scene image.
@@ -11210,6 +11340,7 @@ int main(int argc, char** argv) {
             shotIn.fire = fireSeconds > 0;
             shotIn.ads = shotAds;
             if (pweapon.update(fireSeconds, shotIn) > 0) viewShot();
+            renderer.adsFrac = pweapon.adsFrac(); // enhanced depth of field while aiming (--ads)
             shotIn.fire = false;
             shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
             // Debug: IW2_SHOT_SCRIPT=t:action,... (reload+/-, fire+/-, ads+/-, frag+/-, smoke+/-, melee+/-, weapon=name) runs
@@ -13832,6 +13963,7 @@ int main(int argc, char** argv) {
                 const uint64_t profC = SDL_GetTicksNS();
                 renderer.gameTimeSeconds = float(((world ? cgNowMs() : int64_t(SDL_GetTicks())) % 1000) / 1000.0); // gameTime.z = frac(t)
                 renderer.renderTimeMs = world ? cgNowMs() : int64_t(SDL_GetTicks()); // client render time, not the 20 Hz world time
+                renderer.adsFrac = world ? pweapon.adsFrac() : 0.0f; // enhanced depth of field while aiming
                 hudKillcam = killcamView;
                 const std::vector<Quad2D> hud = buildHud(w, h, cam);
                 hudKillcam.reset();

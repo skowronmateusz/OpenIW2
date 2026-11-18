@@ -242,6 +242,7 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
         const float2 aoW = ENH_AO(in.position);
         lm *= aoW.x;
         sunVis *= aoW.y;
+        if (eu.bsParams.x > 0.5) lm -= enh_baked_shadow_loss(in.eyeVec + eu.eye.xyz, normalize(in.normal), lm, ENH_BAKED_SHADOW);
         if (du.origin.x > 0.5 && eu.specParams.x > 0.5 && du.origin.w < 0.5) {
             // reflective surface class without a specular map (water, glass / ice, metal): our own GGX parameters
             const int cls = int(du.origin.x + 0.5);
@@ -250,7 +251,8 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
             const float3 nW = normalize(in.normal), vW = normalize(-in.eyeVec);
             const float occ = saturate(dot(lm + sunVis * ndl * u.sunColor.rgb, float3(0.333)) * 1.5);
             enhExtraSpec = enh_ggx_sun(nW, vW, u.sunDirection.xyz, f0, pw) * u.sunColor.rgb * sunVis * eu.specParams.y +
-                           enh_reflection(in.eyeVec + eu.eye.xyz, nW, vW, f0, pw, in.position, ENH_REFLECT, true) * occ * eu.specParams.z;
+                           enh_reflection(in.eyeVec + eu.eye.xyz, nW, vW, f0, pw, in.position, ENH_REFLECT, true) * occ * eu.specParams.z +
+                           enh_map_light_spec(in.eyeVec + eu.eye.xyz, nW, vW, f0, pw, eu) * saturate(dot(lm, float3(0.333)) * 3.0) * eu.specParams.y;
             if (cls == 1) base.rgb *= 0.85; // water darkens under its own reflection
         }
 #endif
@@ -437,6 +439,7 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
     const float2 aoW = ENH_AO(in.position);
     lm *= aoW.x;
     vis *= aoW.y;
+    if (eu.bsParams.x > 0.5) lm -= enh_baked_shadow_loss(in.eyeVec + eu.eye.xyz, n, lm, ENH_BAKED_SHADOW);
 #else
     const float vis = lmSun.sample(sunSampler, in.lmUv).r; // * dynamicShadowSampler (no dynamic shadows: 1)
 #endif
@@ -453,6 +456,7 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
         spec = enh_ggx_sun(n, vE, u.sunDirection.xyz, ss.rgb, pw) * u.sunColor.rgb * vis * u.sunDirection.w * eu.specParams.y;
         const float occ = saturate(dot(lm + sunDiffuse, float3(0.333)) * 1.5);
         spec += enh_reflection(in.eyeVec + eu.eye.xyz, n, vE, ss.rgb, pw, in.position, ENH_REFLECT) * occ * eu.specParams.z;
+        spec += enh_map_light_spec(in.eyeVec + eu.eye.xyz, n, vE, ss.rgb, pw, eu) * saturate(dot(lm, float3(0.333)) * 3.0) * eu.specParams.y;
     } else {
         spec = mix(0.3, 1.0, vis) * (u.sunColor.rgb * ss.rgb * strength) * u.sunDirection.w;
     }
@@ -555,6 +559,7 @@ fragment float4 fs_probe(ProbeVertexOut in [[stage_in]],
             spec = enh_ggx_sun(n, vE, u.sunDirection.xyz, ss.rgb, pw) * u.sunColor.rgb * vis * u.sunColor.w * eu.specParams.y;
             const float occ = saturate(dot(probe + sunDiffuse, float3(0.333)) * 1.5);
             if (du.origin.w < 0.5) spec += enh_reflection(wpE, n, vE, ss.rgb, pw, in.position, ENH_REFLECT) * occ * eu.specParams.z;
+            spec += enh_map_light_spec(wpE, n, vE, ss.rgb, pw, eu) * saturate(dot(probe, float3(0.333)) * 3.0) * eu.specParams.y;
         }
 #endif
     }
@@ -652,6 +657,7 @@ fragment float4 fs_smodel(SModelOut in [[stage_in]],
     const float2 aoS = ENH_AO(in.position);
     probe *= aoS.x;
     vis *= aoS.y;
+    if (eu.bsParams.x > 0.5) probe -= enh_baked_shadow_loss(wpE, n, probe, ENH_BAKED_SHADOW);
 #endif
     const float3 sunDiffuse = vis * max(dot(u.sunDirection.xyz, n), 0.0) * u.sunColor.rgb;
     float3 spec = float3(0.0);
@@ -667,6 +673,7 @@ fragment float4 fs_smodel(SModelOut in [[stage_in]],
             spec = enh_ggx_sun(n, vE, u.sunDirection.xyz, ss.rgb, pw) * u.sunColor.rgb * vis * u.sunColor.w * eu.specParams.y;
             const float occ = saturate(dot(probe + sunDiffuse, float3(0.333)) * 1.5);
             spec += enh_reflection(wpE, n, vE, ss.rgb, pw, in.position, ENH_REFLECT) * occ * eu.specParams.z;
+            spec += enh_map_light_spec(wpE, n, vE, ss.rgb, pw, eu) * saturate(dot(probe, float3(0.333)) * 3.0) * eu.specParams.y;
         }
 #endif
     }

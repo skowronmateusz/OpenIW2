@@ -454,6 +454,29 @@ fragment float4 fs_enh_motion_blur(GlowVOut in [[stage_in]], constant float4& u 
     return float4(c / 8.0, 1.0);
 }
 
+// ---- depth of field while aiming (game::aimDofRadius), after TAA ----
+fragment float4 fs_enh_dof(GlowVOut in [[stage_in]], constant float4& u [[buffer(0)]], texture2d<float> scene [[texture(0)]],
+                           texture2d<float> fz [[texture(1)]], sampler s [[sampler(0)]], sampler ps [[sampler(1)]]) {
+    // u.x, u.y: clip z line; u.z: ads * strength; u.w: $floatz sky threshold; texel size from the texture
+    const float2 tex = 1.0 / float2(scene.get_width(), scene.get_height());
+    const float cz = fz.sample(ps, in.uv).r;
+    const float w = cz >= u.w ? 1e6 : (cz - u.y) / u.x;
+    const float r = 2.5 * u.z * saturate((w - 40.0) / 400.0);
+    const float3 c0 = scene.sample(s, in.uv).rgb;
+    if (r < 0.25) return float4(c0, 1.0);
+    float3 sum = c0;
+    float wsum = 1.0;
+    for (int i = 0; i < 12; ++i) {
+        const float2 o = kEnhPoisson[i] * r * tex;
+        const float cz2 = fz.sample(ps, in.uv + o).r;
+        const float w2 = cz2 >= u.w ? 1e6 : (cz2 - u.y) / u.x;
+        if (w2 < 40.0) continue; // never bleed the sharp weapon into the background
+        sum += scene.sample(s, in.uv + o).rgb;
+        wsum += 1.0;
+    }
+    return float4(sum / wsum, 1.0);
+}
+
 // ---- final pass to the window: the r_gamma ramp on the SDR part, then extended linear sRGB for the EDR swapchain ----
 fragment float4 fs_enh_present(GlowVOut in [[stage_in]], constant float4& u [[buffer(0)]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
     float3 c = max(src.sample(s, in.uv).rgb, 0.0);

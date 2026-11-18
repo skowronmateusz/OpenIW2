@@ -85,8 +85,10 @@ struct EnhancedSettings {
     float envScale = 0.35f;  // r_enhEnvScale: strength of the sky / screen-space reflections (0..2)
     bool ssr = true;         // r_enhSSR: screen-space reflections (needs TAA's history)
     bool lightShadows = true; // r_enhLightShadows: shadows of the dynamic (effect) lights, up to 4 lights
+    bool mapLightSpec = true; // r_enhMapLightSpec: GGX specular from the map's baked light entities near the camera (diffuse stays baked)
     float volumetric = 0.0f; // r_enhVolumetric: strength of the sun shafts (light scattered in the air, 0 = off, up to 2)
     int grade = 0;           // r_enhGrade: colour grade, 0 neutral, 1 period film (contrast, desaturation, warm shadows, grain)
+    float dof = 0.0f;        // r_enhDOF: depth of field while aiming down the sights (0 = off, 1 = default strength, up to 2)
     float motionBlur = 0.0f; // r_enhMotionBlur: motion blur amount (0 = off, 1 = one frame of motion)
     bool gridPerPixel = true; // r_enhGridPerPixel: light-grid lattice per model instead of one sample
     int motionDebug = 0;     // r_enhMotionDebug: 1 shows the motion vectors, 2 the AO (red) / contact shadow (green) image
@@ -108,7 +110,7 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     s.enabled = num("r_enhanced", f) && f != 0.0f;
     if (num("r_enhPreset", f)) s.preset = std::clamp(int(f), 0, 2);
     switch (s.preset) {
-        case 0: s.sunShadows = 1, s.worldShadows = 0, s.bloom = true, s.autoExposure = false, s.gridPerPixel = true, s.ao = false, s.contactShadows = false, s.taa = false, s.ssr = false, s.lightShadows = false, s.volumetric = 0.0f; break;
+        case 0: s.sunShadows = 1, s.worldShadows = 0, s.bloom = true, s.autoExposure = false, s.gridPerPixel = true, s.ao = false, s.contactShadows = false, s.taa = false, s.ssr = false, s.lightShadows = false, s.volumetric = 0.0f, s.mapLightSpec = false; break;
         case 2: s.volumetric = 0.35f, s.sunShadows = 3, s.worldShadows = 2, s.bloom = true, s.autoExposure = true, s.gridPerPixel = true; break;
         default: break;
     }
@@ -128,9 +130,11 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhEnvScale", f)) s.envScale = std::clamp(f, 0.0f, 2.0f);
     if (num("r_enhSSR", f)) s.ssr = f != 0.0f;
     if (num("r_enhLightShadows", f)) s.lightShadows = f != 0.0f;
+    if (num("r_enhMapLightSpec", f)) s.mapLightSpec = f != 0.0f;
     if (num("r_enhVolumetric", f)) s.volumetric = std::clamp(f, 0.0f, 2.0f);
     if (num("r_enhGrade", f)) s.grade = std::clamp(int(f), 0, 1);
     if (num("r_enhMotionBlur", f)) s.motionBlur = std::clamp(f, 0.0f, 2.0f);
+    if (num("r_enhDOF", f)) s.dof = std::clamp(f, 0.0f, 2.0f);
     if (num("r_enhMotionDebug", f)) s.motionDebug = std::clamp(int(f), 0, 2);
     if (num("r_enhBloomIntensity", f)) s.bloomIntensity = std::clamp(f, 0.0f, 1.0f);
     if (num("r_enhExposureBias", f)) s.exposureBias = std::clamp(f, -2.0f, 2.0f);
@@ -327,6 +331,31 @@ inline float phongPowerOfSpecAlpha(float a) {
 }
 inline float ggxAlphaOfPower(float p) { return std::clamp(std::sqrt(2.0f / (p + 2.0f)), 0.03f, 1.0f); }
 
+// ---- map lights -------------------------------------------------------------------------------------------------------------------
+
+// A light entity of the map as the enhanced specular uses it (our own model of keys the engine never reads: origin, radius,
+// intensity, _color, and for spot lights the target's position with fov_inner / fov_outer in degrees).
+struct MapLight {
+    float pos[3] = {0, 0, 0};
+    float radius = 300.0f;
+    float color[3] = {1, 1, 1}; // _color times intensity
+    float dir[3] = {0, 0, -1};  // spot axis
+    float cosOuter = -2.0f, cosInner = -1.0f; // spot cone (cosOuter < -1: a point light)
+};
+// Our falloff of a map light: (1 - d / r)^2 inside the radius, times the spot cone (smooth between the outer and inner angles).
+inline float mapLightFalloff(const MapLight& l, const float p[3]) {
+    const float v[3] = {l.pos[0] - p[0], l.pos[1] - p[1], l.pos[2] - p[2]};
+    const float d = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (d >= l.radius) return 0.0f;
+    float f = (1.0f - d / l.radius) * (1.0f - d / l.radius);
+    if (l.cosOuter >= -1.0f && d > 0.0f) {
+        const float c = -(v[0] * l.dir[0] + v[1] * l.dir[1] + v[2] * l.dir[2]) / d;
+        const float t = std::clamp((c - l.cosOuter) / std::max(l.cosInner - l.cosOuter, 1e-4f), 0.0f, 1.0f);
+        f *= t * t * (3.0f - 2.0f * t);
+    }
+    return f;
+}
+
 // ---- atmosphere and grading ------------------------------------------------------------------------------------------------------
 
 // Henyey-Greenstein phase function for scattering angle cos theta (between the view ray and the direction towards the light) and
@@ -351,6 +380,12 @@ inline std::array<float, 3> periodFilmGrade(const std::array<float, 3>& c, float
     const float warm = 0.03f * (1.0f - std::clamp(l * 2.0f, 0.0f, 1.0f)); // shadows a little warmer
     o[0] += warm, o[2] -= warm;
     return o;
+}
+
+// Depth of field while aiming (our own simple model): the blur radius in pixels of a point at view depth w, for ADS fraction a and
+// strength s: nothing up to 40 units (the weapon and the sights stay sharp), growing to 2.5 px at 440 units and beyond.
+inline float aimDofRadius(float w, float ads, float strength) {
+    return 2.5f * strength * std::clamp(ads, 0.0f, 1.0f) * std::clamp((w - 40.0f) / 400.0f, 0.0f, 1.0f);
 }
 
 // ---- point light shadows ---------------------------------------------------------------------------------------------------------
