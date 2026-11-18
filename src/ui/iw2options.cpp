@@ -72,6 +72,14 @@ std::string openIw2MenuSource(bool multiplayer) {
     return s;
 }
 
+namespace {
+bool g_enhMetalFx = false, g_enhRayTracing = false;
+}
+void setEnhancedAvailability(bool metalFx, bool rayTracing) { g_enhMetalFx = metalFx, g_enhRayTracing = rayTracing; }
+bool enhancedRowAvailable(const EnhancedRow& r) {
+    return r.needs == EnhancedRow::Always || (r.needs == EnhancedRow::MetalFx && g_enhMetalFx) || (r.needs == EnhancedRow::RayTracing && g_enhRayTracing);
+}
+
 std::string enhancedMenuSource() {
     std::string s =
         "{\nmenuDef\n{\n\tname " + std::string(kEnhancedPage) + "\n\tfullScreen 0\n\trect 0 0 370 480\n\tfocusColor .98 .827 .58 1\n"
@@ -81,6 +89,7 @@ std::string enhancedMenuSource() {
     const std::string presetOnOff = "\t\tdvarFloatList { \"@IW2_ENH_PRESET\" -1 \"@MENU_ON\" 1 \"@MENU_OFF\" 0 }\n";
     int y = 0;
     for (const EnhancedRow& r : enhancedRows()) {
+        if (!enhancedRowAvailable(r)) continue;
         std::string list;
         if (r.kind == EnhancedRow::PresetOnOff) list = presetOnOff;
         else {
@@ -110,6 +119,7 @@ const std::vector<EnhancedRow>& enhancedRows() {
         {"iw2_enh_ao", "@IW2_ENH_AO", "r_enhAO", EnhancedRow::PresetOnOff, {}, false},
         {"iw2_enh_contact", "@IW2_ENH_CONTACT", "r_enhContactShadows", EnhancedRow::PresetOnOff, {}, false},
         {"iw2_enh_taa", "@IW2_ENH_TAA", "r_enhTAA", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_metalfx", "@IW2_ENH_METALFX", "r_enhMetalFX", EnhancedRow::Choices, C{{"@MENU_OFF", "0"}, {"@MENU_ON", "1"}}, false, EnhancedRow::MetalFx},
         {"iw2_enh_ggx", "@IW2_ENH_GGX", "r_enhGGX", EnhancedRow::PresetOnOff, {}, false},
         {"iw2_enh_ssr", "@IW2_ENH_SSR", "r_enhSSR", EnhancedRow::PresetOnOff, {}, false},
         {"iw2_enh_lights", "@IW2_ENH_LIGHTS", "r_enhLightShadows", EnhancedRow::PresetOnOff, {}, false},
@@ -151,6 +161,7 @@ std::vector<std::pair<std::string, std::string>> openIw2Strings(const std::strin
         {"IW2_ENH_AO", "Ambient occlusion", "Ambient occlusion"},
         {"IW2_ENH_CONTACT", "Contact shadows", "Contact shadows"},
         {"IW2_ENH_TAA", "Temporal anti-aliasing", "Temporal anti-aliasing"},
+        {"IW2_ENH_METALFX", "MetalFX anti-aliasing", "MetalFX anti-aliasing"},
         {"IW2_ENH_GGX", "Highlights and reflections", "Highlights and reflections"},
         {"IW2_ENH_SSR", "Screen reflections (water, metal)", "Screen reflections (water, metal)"},
         {"IW2_ENH_LIGHTS", "Shadows of flashes and lamps", "Shadows of flashes and lamps"},

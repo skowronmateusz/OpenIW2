@@ -90,6 +90,7 @@ struct EnhancedSettings {
     bool probes = true;      // r_enhProbes: local reflection cubes captured when the map loads (instead of the sky alone)
     float volumetric = 0.0f; // r_enhVolumetric: strength of the sun shafts (light scattered in the air, 0 = off, up to 2)
     int grade = 0;           // r_enhGrade: colour grade, 0 neutral, 1 period film (contrast, desaturation, warm shadows, grain)
+    bool metalFx = false;    // r_enhMetalFX: MetalFX temporal anti-aliasing instead of ours (needs TAA on and a MetalFX GPU / build)
     float dof = 0.0f;        // r_enhDOF: depth of field while aiming down the sights (0 = off, 1 = default strength, up to 2)
     float motionBlur = 0.0f; // r_enhMotionBlur: motion blur amount (0 = off, 1 = one frame of motion)
     bool gridPerPixel = true; // r_enhGridPerPixel: light-grid lattice per model instead of one sample
@@ -139,6 +140,7 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhGrade", f)) s.grade = std::clamp(int(f), 0, 1);
     if (num("r_enhMotionBlur", f)) s.motionBlur = std::clamp(f, 0.0f, 2.0f);
     if (num("r_enhDOF", f)) s.dof = std::clamp(f, 0.0f, 2.0f);
+    if (num("r_enhMetalFX", f)) s.metalFx = f != 0.0f;
     if (num("r_enhMotionDebug", f)) s.motionDebug = std::clamp(int(f), 0, 2);
     if (num("r_enhBloomIntensity", f)) s.bloomIntensity = std::clamp(f, 0.0f, 1.0f);
     if (const std::string v = get("r_enhExposureBias"); !v.empty()) s.exposureBias = std::clamp(float(std::atof(v.c_str())), -2.0f, 2.0f); // signed
@@ -657,6 +659,14 @@ inline std::vector<uint8_t> assignProbes(const ProbeGridInfo& g, const std::vect
 
 // Ray tracing is used only on GPUs with hardware intersection (Apple GPU family 9: M3 and later); earlier Apple GPUs run it in
 // software and keep the shadow maps. forcedOff: IW2_NO_METAL_RT.
+// MetalFX temporal scaling takes the projection jitter and the motion in input pixels with y down. Our jitter is an NDC offset of
+// the projection (x right, y up): pixels = (x * W / 2, -y * H / 2). Our motion is current minus previous unjittered NDC; MetalFX's
+// points from the current pixel to the previous one: scale (-W / 2, H / 2). Checked: a pan converges with these signs only.
+inline std::array<float, 2> metalFxJitterPixels(float ndcX, float ndcY, unsigned w, unsigned h) {
+    return {ndcX * float(w) * 0.5f, -ndcY * float(h) * 0.5f};
+}
+inline std::array<float, 2> metalFxMotionScale(unsigned w, unsigned h) { return {-float(w) * 0.5f, float(h) * 0.5f}; }
+
 inline bool metalRayTracingAllowed(bool supportsRaytracing, bool apple9, bool forcedOff) {
     return supportsRaytracing && apple9 && !forcedOff;
 }

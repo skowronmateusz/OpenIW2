@@ -2673,6 +2673,16 @@ struct Renderer {
         velocityW = w, velocityH = h;
     }
     void enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam);
+    // Stage 5 (docs/render-enhanced.md): MetalFX temporal scaling in place of our TAA resolve where the GPU and SDL allow it.
+    metal::Caps metalCaps;
+    metal::TemporalScaler metalFx;
+    SDL_GPUGraphicsPipeline* enhMfxMotionPipe = nullptr;
+    SDL_GPUGraphicsPipeline* enhMfxDepthPipe = nullptr;
+    SDL_GPUTexture* mfxMotion = nullptr;
+    SDL_GPUTexture* mfxDepth = nullptr;
+    uint32_t mfxW = 0, mfxH = 0;
+    bool metalFxLogged = false;
+    bool enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam, const void* taaUniforms, size_t taaUniformSize);
     void enhFloatzVelocity(SDL_GPUCommandBuffer* cmd, const SDL_GPUColorTargetInfo& fz, const SDL_GPUDepthStencilTargetInfo& fds, const Scene& scene,
                            const Camera& cam, const Camera& camIn, const std::vector<DrawItem>& items, uint32_t w, uint32_t h);
     void enhTaaEndFrame(SDL_GPUCommandBuffer* cmd, const Scene& scene, const Camera& camIn, uint32_t w, uint32_t h, const std::vector<DrawItem>& items);
@@ -2749,6 +2759,8 @@ struct Renderer {
         enhAoBlurPipe = mk("fs_enh_ao_blur", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhAoViewPipe = mk("fs_enh_ao_view", 1, 0, false, true);
         enhTaaPipe = mk("fs_enh_taa", 4, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhMfxMotionPipe = mk("fs_enh_mfx_motion", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT);
+        enhMfxDepthPipe = mk("fs_enh_mfx_depth", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R32_FLOAT);
         enhVolumePipe = mk("fs_enh_volume", 3, 2, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhVolumeApplyPipe = mk("fs_enh_volume_apply", 1, 0, true, false, true, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhMotionBlurPipe = mk("fs_enh_motion_blur", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
@@ -5337,6 +5349,7 @@ void Renderer::enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, 
             ti.type = SDL_GPU_TEXTURETYPE_2D;
             ti.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
             ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            if (metalCaps.metalFx) ti.usage |= SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE; // the MetalFX output
             ti.width = w, ti.height = h, ti.layer_count_or_depth = 1, ti.num_levels = 1;
             t = SDL_CreateGPUTexture(dev, &ti);
             if (!t) sdlFail("TAA history");
@@ -5357,6 +5370,7 @@ void Renderer::enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, 
     std::memcpy(u.prev, (taaPrevVPValid ? taaPrevVP : vp).data(), sizeof u.prev);
     u.z[0] = zl[0], u.z[1] = zl[1], u.z[2] = 262144.0f * 2.0f * 1.7f, u.z[3] = taaHistValid && taaPrevVPValid ? 1.0f : 0.0f;
     u.size[0] = 1.0f / float(w), u.size[1] = 1.0f / float(h), u.size[2] = cam.jitterX, u.size[3] = cam.jitterY;
+    if (enh.metalFx && metalCaps.metalFx && enhMetalFxResolve(cmd, w, h, cam, &u, sizeof u)) return;
     SDL_GPUColorTargetInfo ct{};
     ct.texture = taaHist[1 - taaCur];
     ct.load_op = SDL_GPU_LOADOP_DONT_CARE;
@@ -5377,6 +5391,55 @@ void Renderer::enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, 
     SDL_EndGPUCopyPass(cp);
     taaCur = 1 - taaCur;
     taaHistValid = true;
+}
+
+// MetalFX temporal scaling (docs/render-enhanced.md "Stage 5"): the motion of every pixel and a device depth from $floatz, then
+// the scaler on SDL's command buffer (no SDL pass open) into the history texture, which replaces the scene image as the TAA's does.
+bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam, const void* u, size_t usize) {
+    if (!mfxMotion || mfxW != w || mfxH != h) {
+        for (SDL_GPUTexture** t : {&mfxMotion, &mfxDepth}) if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
+        SDL_GPUTextureCreateInfo ti{};
+        ti.type = SDL_GPU_TEXTURETYPE_2D;
+        ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        ti.width = w, ti.height = h, ti.layer_count_or_depth = 1, ti.num_levels = 1;
+        ti.format = SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
+        mfxMotion = SDL_CreateGPUTexture(dev, &ti);
+        ti.format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+        mfxDepth = SDL_CreateGPUTexture(dev, &ti);
+        if (!mfxMotion || !mfxDepth) return false;
+        mfxW = w, mfxH = h;
+    }
+    auto pass = [&](SDL_GPUGraphicsPipeline* pipe, SDL_GPUTexture* dst, const SDL_GPUTextureSamplerBinding* tb, uint32_t n) {
+        SDL_GPUColorTargetInfo ct{};
+        ct.texture = dst;
+        ct.load_op = SDL_GPU_LOADOP_DONT_CARE;
+        ct.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+        SDL_BindGPUGraphicsPipeline(p, pipe);
+        SDL_BindGPUFragmentSamplers(p, 0, tb, n);
+        SDL_PushGPUFragmentUniformData(cmd, 0, u, uint32_t(usize));
+        SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+        SDL_EndGPURenderPass(p);
+    };
+    const SDL_GPUTextureSamplerBinding mb[2] = {{velocityTex, pointClampSampler}, {floatzTex, pointClampSampler}};
+    pass(enhMfxMotionPipe, mfxMotion, mb, 2);
+    const SDL_GPUTextureSamplerBinding db[1] = {{floatzTex, pointClampSampler}};
+    pass(enhMfxDepthPipe, mfxDepth, db, 1);
+    const bool reset = !(taaHistValid && taaPrevVPValid);
+    if (!metalFx.encode(dev, cmd, sceneTex, mfxDepth, mfxMotion, taaHist[1 - taaCur], w, h, w, h, cam.jitterX, cam.jitterY, reset)) {
+        if (!metalFxLogged) metalFxLogged = true, std::cout << metalFx.describe() << " (our TAA instead)\n";
+        return false;
+    }
+    if (!metalFxLogged) metalFxLogged = true, std::cout << metalFx.describe() << "\n";
+    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureLocation src{}, dst{};
+    src.texture = taaHist[1 - taaCur];
+    dst.texture = sceneTex;
+    SDL_CopyGPUTextureToTexture(cp, &src, &dst, w, h, 1, false);
+    SDL_EndGPUCopyPass(cp);
+    taaCur = 1 - taaCur;
+    taaHistValid = true;
+    return true;
 }
 
 // End of a TAA frame: keep this frame's skinned vertices, item transforms and camera for the next frame's motion vectors.
@@ -6544,6 +6607,8 @@ int main(int argc, char** argv) {
         SDL_GPUDevice* dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_MSL, false, nullptr);
         if (!dev) sdlFail("SDL_CreateGPUDevice");
         const metal::Caps metalCaps = metal::query(dev); // stage 5 (docs/render-enhanced.md): MetalFX and ray tracing
+        renderer.metalCaps = metalCaps;
+        ui::setEnhancedAvailability(metalCaps.metalFx, metalCaps.rayTracing); // the Enhanced graphics page shows only what this Mac has
         std::cout << "metal: " << (metalCaps.handles ? metalCaps.gpu : std::string("no native handles (SDL without the openiw2 patch)"))
                   << (metalCaps.handles ? std::string(", MetalFX ") + (metalCaps.metalFx ? "yes" : "no") + ", ray tracing " + (metalCaps.rayTracing ? "yes" : "no") : "")
                   << "\n";

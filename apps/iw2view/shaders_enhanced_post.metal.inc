@@ -358,6 +358,29 @@ static float3 enh_history(texture2d<float> t, sampler ls, float2 uv, float2 texS
     const float wsum = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
     return max(r / wsum, 0.0);
 }
+// MetalFX inputs (docs/render-enhanced.md "Stage 5"): the motion of every pixel as the TAA takes it (the sky's from the camera),
+// and the device depth (clip z / w) from $floatz, 1 for the sky.
+static float2 enh_pixel_motion(constant TaaU& u, float2 uv, texture2d<float> vel, sampler vs, float fzv) {
+    if (fzv >= u.z.z) {
+        const float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+        const float w = 65536.0, cz = u.z.x * w + u.z.y;
+        const float4 wp = u.invViewProj * float4(ndc * w, cz, w);
+        const float4 pc = u.prevViewProj * float4(wp.xyz / wp.w, 1.0);
+        return (ndc - u.size.zw) - pc.xy / pc.w;
+    }
+    return vel.sample(vs, uv).rg;
+}
+fragment float4 fs_enh_mfx_motion(GlowVOut in [[stage_in]], constant TaaU& u [[buffer(0)]], texture2d<float> vel [[texture(0)]],
+                                  texture2d<float> fz [[texture(1)]], sampler vs [[sampler(0)]], sampler zs [[sampler(1)]]) {
+    return float4(enh_pixel_motion(u, in.uv, vel, vs, fz.sample(zs, in.uv).r), 0.0, 1.0);
+}
+fragment float4 fs_enh_mfx_depth(GlowVOut in [[stage_in]], constant TaaU& u [[buffer(0)]], texture2d<float> fz [[texture(0)]],
+                                 sampler zs [[sampler(0)]]) {
+    const float cz = fz.sample(zs, in.uv).r;
+    if (cz >= u.z.z) return float4(1.0);
+    const float w = max((cz - u.z.y) / u.z.x, 1e-3);
+    return float4(saturate(cz / w));
+}
 static float3 enh_tonemap_weight(float3 c) { return c / (1.0 + max(max(c.r, c.g), c.b)); }
 static float3 enh_ycocg(float3 c) { return float3(dot(c, float3(0.25, 0.5, 0.25)), dot(c, float3(0.5, 0.0, -0.5)), dot(c, float3(-0.25, 0.5, -0.25))); }
 static float3 enh_rgb(float3 y) { return float3(y.x + y.y - y.z, y.x + y.z, y.x - y.y - y.z); }

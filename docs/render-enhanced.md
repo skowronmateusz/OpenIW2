@@ -38,6 +38,7 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhVolumetric` | preset | Sun shafts: light scattered in the air through the sun's shadow (0 off .. 2; 0.35 in the high preset, else 0). |
 | `r_enhGrade` | 0 | Colour grade: 0 neutral, 1 "period film" (contrast, desaturation, warm shadows, grain). |
 | `r_enhMapLightSpec` | preset | GGX specular from the map's light entities near the camera (their diffuse stays baked). |
+| `r_enhMetalFX` | 0 | MetalFX temporal anti-aliasing instead of ours (needs TAA, a MetalFX GPU and the patched SDL; see "Stage 5"). |
 | `r_enhProbes` | preset | Reflection probes captured when the map loads: rooms reflect themselves instead of the sky (off in the low preset). |
 | `r_enhDOF` | 0 | Depth of field while aiming down the sights (0 off .. 2). |
 | `r_enhMotionBlur` | 0 | Motion blur amount (0 off, 1 = one frame of motion; needs TAA). |
@@ -296,6 +297,18 @@ device at start what it can do and prints it (`metal: <GPU>, MetalFX yes / no, r
 scaling where `MTLFXTemporalScalerDescriptor` supports the device, ray tracing only on Apple GPU family 9 and later (M3 and
 later, hardware intersection; `game::metalRayTracingAllowed`). `IW2_NO_METALFX` and `IW2_NO_METAL_RT` force them off, to check
 the fallback (the stage 1-4 paths) on any machine.
+
+MetalFX anti-aliasing (`r_enhMetalFX 1`, the page's "MetalFX anti-aliasing" row, shown only where it is available): in place
+of our TAA resolve, a small pass writes the motion of every pixel (the TAA's own: the motion vectors of the `$floatz` pass, the
+camera's motion for the sky) and a device depth (clip z / w from `$floatz`, 1 for the sky); then MetalFX's temporal scaler is
+encoded on SDL's command buffer between SDL passes, at the same input and output size, into the TAA history texture, which
+replaces the scene image as before (so screen-space reflections still read the previous frame). It takes the jitter and motion
+in input pixels with y down (`game::metalFxJitterPixels`, `game::metalFxMotionScale`); the signs were chosen by measurement:
+with a static camera only the jitter's size matters, but after a 15 degree pan only these signs leave the image close to an
+un-anti-aliased frame at the end angle (mean difference 3.0 against 3.2 for our TAA, 3.9 to 5.0 for the other signs). Its
+history is reset where ours is invalid. Cost at 1920 x 1080 (high preset, duhoc beach): 8.25 ms against 6.63 ms with our TAA,
+and from a cut it needs about a second to become as sharp as ours does in 12 frames, so it is off by default; it is the base
+for rendering below the output size.
 
 ## Cost
 

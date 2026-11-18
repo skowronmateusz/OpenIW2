@@ -246,6 +246,10 @@ void checkSet(bool multiplayer) {
         for (const EnhancedRow& r : enhancedRows()) {
             const Item* it = byName(*enh, r.name);
             const Item* lb = byName(*enh, std::string(r.name) + "_label");
+            if (!enhancedRowAvailable(r)) { // a stage 5 row on a machine (here: no Metal query) without the feature: left out
+                CHECK(!it && !lb && r.needs != EnhancedRow::Always);
+                continue;
+            }
             CHECK(it && lb && it->type == 12 && it->dvar == r.cvar && lb->text == r.label && lb->decoration);
             if (!it || !lb) continue;
             CHECK(it->rect.y > lastY); // rows top to bottom in table order
@@ -262,6 +266,13 @@ void checkSet(bool multiplayer) {
         const Item* note = byName(*enh, "iw2_enh_note"); // the experimental warning, always visible
         CHECK(note && note->decoration && note->dvarTest.empty() && note->text == "@IW2_ENH_NOTE" && note->rect.x + note->rect.w <= enh->rect.w);
         CHECK(registeredDefault("r_enhanced") == "0" && registeredDefault("r_enhSunShadows") == "-1" && registeredDefault("r_enhPreset") == "1");
+        // With MetalFX available its row is on the page; ray tracing rows stay out until that is available too.
+        CHECK(enhancedMenuSource().find("iw2_enh_metalfx") == std::string::npos);
+        setEnhancedAvailability(true, false);
+        CHECK(enhancedMenuSource().find("iw2_enh_metalfx") != std::string::npos);
+        for (const EnhancedRow& r : enhancedRows()) CHECK(enhancedRowAvailable(r) == (r.needs != EnhancedRow::RayTracing));
+        setEnhancedAvailability(false, false);
+        CHECK(!registeredDefault("r_enhMetalFX").empty() && isArchivedCvar("r_enhMetalFX"));
     }
     // Game Options is left alone: no hit marker row there any more.
     const Menu* g = lib.find("options_game");
@@ -292,7 +303,7 @@ int main() {
     CHECK(missionSvCheats(true, false) == "1" && missionSvCheats(false, false).empty() && missionSvCheats(true, true).empty());
     // Texts: English and Polish (Windows-1250) for every key the page uses.
     const auto en = openIw2Strings("english"), pl = openIw2Strings("polish");
-    CHECK(en.size() == pl.size() && en.size() == 35);
+    CHECK(en.size() == pl.size() && en.size() == 36);
     {   // every OpenIW2 string key the two pages use has a text (shipped MENU_* keys come from the game's own files)
         auto has = [&](const std::string& key) { for (const auto& [k, t] : en) if ("@" + k == key) return true; return false; };
         for (const EnhancedRow& r : enhancedRows()) {

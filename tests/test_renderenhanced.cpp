@@ -397,6 +397,15 @@ int main() {
         chk(assignProbes(g, {}, {}, cellOf, adj)[0] == 0, __LINE__); // no probes: the sky
     }
 
+    // MetalFX conventions: a projection jitter of one pixel right and one pixel up (NDC 2 / W, 2 / H) is (+1, -1) pixels; a point
+    // that moved right on screen since the last frame has a motion pointing left (to where it was).
+    {
+        const auto j = metalFxJitterPixels(2.0f / 1280.0f, 2.0f / 720.0f, 1280, 720);
+        chk(near(j[0], 1.0f) && near(j[1], -1.0f), __LINE__);
+        const auto ms = metalFxMotionScale(1280, 720);
+        const float ndcMotionX = 20.0f / 1280.0f; // current - previous: 10 pixels right
+        chk(near(ndcMotionX * ms[0], -10.0f) && near(0.1f * ms[1], 36.0f), __LINE__);
+    }
     // Ray tracing only with hardware intersection (Apple family 9), never when forced off.
     chk(metalRayTracingAllowed(true, true, false) && !metalRayTracingAllowed(true, false, false) &&
             !metalRayTracingAllowed(false, true, false) && !metalRayTracingAllowed(true, true, true), __LINE__);

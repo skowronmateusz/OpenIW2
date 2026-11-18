@@ -27,9 +27,13 @@ struct EnhancedRow {
     enum Kind { PresetOnOff, Choices } kind;
     std::vector<std::pair<std::string, std::string>> choices; // (label key, value) for Choices
     bool master;       // the r_enhanced row: always shown; the others only while it is 1
+    enum Needs { Always, MetalFx, RayTracing } needs = Always; // rows of stage 5 features: only where the build and GPU have them
 };
-// The page's rows in order, and its menu text.
+// The page's rows in order, and its menu text. The page leaves out the rows of features this machine lacks
+// (setEnhancedAvailability, from the renderer's Metal query at start; both false until then).
 const std::vector<EnhancedRow>& enhancedRows();
+void setEnhancedAvailability(bool metalFx, bool rayTracing);
+bool enhancedRowAvailable(const EnhancedRow& r);
 std::string enhancedMenuSource();
 
 // Adds the page "iw2_options" and an "OpenIW2" entry in the options menu ("options_menu", below Game Options; the entries under it move
