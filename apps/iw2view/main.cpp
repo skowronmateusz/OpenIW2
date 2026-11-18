@@ -2754,18 +2754,20 @@ struct Renderer {
             sceneRTFor = scene.serial;
             sceneRT.clearStatic();
             std::vector<std::pair<uint32_t, uint32_t>> ranges;
-            for (const Batch& b : scene.batches) // the static world and static models that hide what lies behind them
-                if ((b.pass == Pass::Opaque || b.pass == Pass::AlphaTest) && b.indexCount >= 3) ranges.push_back({b.firstIndex, b.indexCount});
+            // the static world and static models; not the alpha-tested surfaces (foliage, fences): without an any-hit alpha test
+            // they would be solid quads (TODO: an alpha mask lookup in an intersection function)
+            for (const Batch& b : scene.batches)
+                if (b.pass == Pass::Opaque && b.indexCount >= 3) ranges.push_back({b.firstIndex, b.indexCount});
             sceneRT.buildStatic(dev, cmd, scene.vertices, uint32_t(sizeof(GpuVertex)), scene.indices, ranges);
         }
-        // the moving objects: models in the world (not the view model or effect sprites), opaque and alpha-tested surfaces
+        // the moving objects: models in the world (not the view model or effect sprites), their opaque surfaces
         sceneRT.beginItems();
         if (active)
             for (const DrawItem& it : items) {
                 if (!it.model || it.effects || it.depthMax < 1.0f || !it.model->vertices || !it.model->indices) continue;
                 std::vector<std::pair<uint32_t, uint32_t>> ranges;
                 for (const Batch& b : it.model->batches)
-                    if ((b.pass == Pass::Opaque || b.pass == Pass::AlphaTest) && b.indexCount >= 3) ranges.push_back({b.firstIndex, b.indexCount});
+                    if (b.pass == Pass::Opaque && b.indexCount >= 3) ranges.push_back({b.firstIndex, b.indexCount});
                 sceneRT.addItem(it.model->vertices, it.model->vertexOffset, uint32_t(sizeof(GpuVertex)), it.model->indices, ranges,
                                 it.transform.data(), it.model, it.model->arenaVertices);
             }

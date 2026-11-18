@@ -334,10 +334,11 @@ native size and for our TAA. Cost at 1920 x 1080, high preset, duhoc beach: nati
 ### Ray-traced reflections
 
 On GPUs with hardware ray tracing (`r_enhRTReflections`, the page's "Ray-traced reflections" row, shown only there):
-- The scene: a two-level acceleration structure (`metal::SceneRT`): the static world and static models (opaque and
-  alpha-tested surfaces of `Scene::batches`, built once per map) plus the frame's moving objects (models in the world: characters,
-  their weapons, vehicles, script models; not the view model or effect sprites), one instance each with its model-to-world
-  transform. Rigid models keep their bottom level; skinned ones are built once for refitting and refit every frame, all in one
+- The scene: a two-level acceleration structure (`metal::SceneRT`): the static world and static models (the opaque surfaces of
+  `Scene::batches`, built once per map) plus the frame's moving objects (models in the world: characters, their weapons,
+  vehicles, script models; not the view model or effect sprites; opaque surfaces), one instance each with its model-to-world
+  transform. Alpha-tested surfaces (foliage, fences) are left out: without an any-hit alpha test they would be solid quads, so
+  they neither reflect off screen nor cast ray-traced shadows (open). Rigid models keep their bottom level; skinned ones are built once for refitting and refit every frame, all in one
   encoder with one scratch buffer. It is bound at fragment buffer 6 of the scene passes, above SDL's buffers (the patch's render
   pass encoder getter); a placeholder that nothing hits is bound when it is off.
 - The ray queries live in a second build of the enhanced library (`IW2_ENH_RT`), used only by the pipelines of the draws that
