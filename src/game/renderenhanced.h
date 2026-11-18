@@ -91,6 +91,8 @@ struct EnhancedSettings {
     float volumetric = 0.0f; // r_enhVolumetric: strength of the sun shafts (light scattered in the air, 0 = off, up to 2)
     int grade = 0;           // r_enhGrade: colour grade, 0 neutral, 1 period film (contrast, desaturation, warm shadows, grain)
     bool metalFx = false;    // r_enhMetalFX: MetalFX temporal anti-aliasing instead of ours (needs TAA on and a MetalFX GPU / build)
+    bool rtShadows = true;   // r_enhRTShadows: ray-traced sun and lamp shadows of the moving objects (GPU family 9+)
+    bool rtContactAO = true; // r_enhRTContactAO: ray-traced contact occlusion of the moving objects (GPU family 9+)
     bool rtReflections = true; // r_enhRTReflections: ray-traced reflections on water and the reflective surfaces (GPU family 9+)
     float renderScale = 1.0f; // r_enhRenderScale: scene resolution as a fraction of the window, upscaled by MetalFX (0.5..1)
     float dof = 0.0f;        // r_enhDOF: depth of field while aiming down the sights (0 = off, 1 = default strength, up to 2)
@@ -145,6 +147,8 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhMetalFX", f)) s.metalFx = f != 0.0f;
     if (num("r_enhRenderScale", f)) s.renderScale = std::clamp(f, 0.5f, 1.0f);
     if (num("r_enhRTReflections", f)) s.rtReflections = f != 0.0f;
+    if (num("r_enhRTShadows", f)) s.rtShadows = f != 0.0f;
+    if (num("r_enhRTContactAO", f)) s.rtContactAO = f != 0.0f;
     if (num("r_enhMotionDebug", f)) s.motionDebug = std::clamp(int(f), 0, 2);
     if (num("r_enhBloomIntensity", f)) s.bloomIntensity = std::clamp(f, 0.0f, 1.0f);
     if (const std::string v = get("r_enhExposureBias"); !v.empty()) s.exposureBias = std::clamp(float(std::atof(v.c_str())), -2.0f, 2.0f); // signed
@@ -682,6 +686,9 @@ inline std::array<uint32_t, 2> renderSize(uint32_t w, uint32_t h, float scale) {
 
 // Ray-traced reflections: surfaces up to this GGX alpha (as the screen-space rays), rays up to this many units.
 constexpr float kRtReflectionMaxAlpha = 0.45f, kRtReflectionRange = 6000.0f;
+// Ray-traced shadows of the moving objects: the sun's cone (tan of the half angle; wider than the real sun's 0.27 degrees, as the
+// soft edge of the baked shadows), the lamps' size for their soft edge (units) and the contact occlusion's ray length (units).
+constexpr float kRtSunConeTan = 0.012f, kRtLampSize = 6.0f, kRtContactRange = 40.0f;
 
 inline bool metalRayTracingAllowed(bool supportsRaytracing, bool apple9, bool forcedOff) {
     return supportsRaytracing && apple9 && !forcedOff;

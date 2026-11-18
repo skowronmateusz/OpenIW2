@@ -74,6 +74,12 @@ public:
                  const std::vector<std::pair<uint32_t, uint32_t>>& ranges, const float transform[16], const void* key, bool deforming);
     // active false: no top level this frame (the placeholder is bound).
     bool buildFrame(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, bool active);
+    // Shadows and contact occlusion of the moving objects (only those: kMaskDynamic) for the pixels of a depth image ($floatz,
+    // clip z), into mask (RGBA16F with compute write usage, w x h): r the sun's visibility (a cone of rays over the frames: soft),
+    // g the lamps' visibility (weighted by each lamp's light at the pixel), b the contact occlusion. u: 48 floats, see
+    // metalnative.mm (RtShadowU).
+    bool shadowPass(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* depth, SDL_GPUTexture* mask, uint32_t w, uint32_t h,
+                    const float* u);
     // Binds the frame's top level (or the placeholder) to an open render pass.
     void bind(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass);
     std::string describe() const;

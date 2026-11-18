@@ -61,7 +61,8 @@ in your profile.
 originally. It is experimental: it may cause visual glitches and bugs (the page says so too). "Enhanced graphics" turns it on at the next start of the game. With it on, the page shows a quality choice (Low,
 Medium, High) and one row per effect: shadows of moving objects, sharp world shadows, ambient occlusion, contact shadows,
 temporal anti-aliasing, highlights and reflections, screen reflections on water and metal, shadows of flashes and lamps, lamp
-highlights, room reflections, sun shafts, bloom, auto exposure, a "Period film" colour grade, motion blur, depth of field when aiming, MetalFX anti-aliasing, ray-traced reflections (both only on Macs and builds that have them) and HDR
+highlights, room reflections, sun shafts, bloom, auto exposure, a "Period film" colour grade, motion blur, depth of field when aiming, MetalFX anti-aliasing, ray-traced reflections, shadows and contact occlusion of moving objects (only on Macs and builds that
+have them) and HDR
 output on displays that support it. "Preset" leaves a row to the quality choice. Changes apply at once, except Enhanced graphics
 itself and HDR output, which apply at the next start. More in `docs/render-enhanced.md`.
 

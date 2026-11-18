@@ -128,7 +128,100 @@ id<MTLAccelerationStructure> buildPrimitive(id<MTLDevice> d, id<MTLCommandBuffer
 }
 } // namespace
 
+// Our own kernel (docs/render-enhanced.md "Ray-traced shadows of moving objects").
+const char* kShadowSource = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+using namespace raytracing;
+struct RtShadowU {
+    float4x4 inv;   // inverse (jittered) view-projection
+    float4 z;       // x, y: clip z = x * w + y; z: $floatz sky threshold; w: frame index
+    float4 eye;     // xyz
+    float4 sun;     // xyz towards the sun; w: tan of the cone's half angle (soft edge)
+    float4 lamp[2]; // xyz, w radius (0: none)
+    float4 lampW;   // x, y: the lamps' luminance (weights)
+    float4 size;    // 1 / w, 1 / h, w, h
+    float4 flags;   // x 1 = sun, y contact occlusion ray length (0 = off), z lamp radius (soft)
+};
+static float rnd(uint2 p, uint k) {
+    uint h = p.x * 1973u + p.y * 9277u + k * 26699u;
+    h = (h ^ (h >> 13)) * 0x5bd1e995u;
+    return float((h ^ (h >> 15)) & 0xffffu) / 65535.0;
+}
+static float3 posAt(texture2d<float> fz, sampler ps, constant RtShadowU& u, float2 uv, thread float& w) {
+    const float cz = fz.sample(ps, uv).r;
+    w = (cz - u.z.y) / u.z.x;
+    const float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    const float4 wp = u.inv * float4(ndc * w, cz, w);
+    return wp.xyz / wp.w;
+}
+static bool blocked(instance_acceleration_structure as, float3 o, float3 d, float len) {
+    ray r;
+    r.origin = o;
+    r.direction = d;
+    r.min_distance = 0.05;
+    r.max_distance = len;
+    intersector<instancing> isect;
+    isect.accept_any_intersection(true);
+    isect.assume_geometry_type(geometry_type::triangle);
+    return isect.intersect(r, as, 2u).type != intersection_type::none; // the moving objects only
+}
+kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]], texture2d<float, access::write> outMask [[texture(1)]],
+                              constant RtShadowU& u [[buffer(0)]], instance_acceleration_structure as [[buffer(1)]],
+                              uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= uint(u.size.z) || gid.y >= uint(u.size.w)) return;
+    constexpr sampler ps(filter::nearest, address::clamp_to_edge);
+    const float2 uv = (float2(gid) + 0.5) * u.size.xy;
+    if (fz.sample(ps, uv).r >= u.z.z) { outMask.write(float4(1.0), gid); return; }
+    float w, wx, wy;
+    const float3 P = posAt(fz, ps, u, uv, w);
+    const float3 Px = posAt(fz, ps, u, uv + float2(u.size.x, 0.0), wx), Py = posAt(fz, ps, u, uv + float2(0.0, u.size.y), wy);
+    float3 n = normalize(cross(Px - P, Py - P));
+    if (dot(n, u.eye.xyz - P) < 0.0) n = -n;
+    const float3 o = P + n * (1.0 + w * 0.002);
+    const uint frame = uint(u.z.w);
+    float sun = 1.0;
+    if (u.flags.x > 0.5 && dot(n, u.sun.xyz) > 0.0) {
+        const float3 t1 = normalize(cross(u.sun.xyz, abs(u.sun.z) < 0.9 ? float3(0, 0, 1) : float3(1, 0, 0))), t2 = cross(u.sun.xyz, t1);
+        const float a = rnd(gid, frame * 2u) * 6.2831853, rr = sqrt(rnd(gid, frame * 2u + 1u)) * u.sun.w;
+        const float3 d = normalize(u.sun.xyz + (t1 * cos(a) + t2 * sin(a)) * rr);
+        sun = blocked(as, o, d, 3000.0) ? 0.0 : 1.0;
+    }
+    float lampSum = 0.0, lampVis = 0.0;
+    for (int i = 0; i < 2; ++i) {
+        if (u.lamp[i].w <= 0.0) continue;
+        const float3 L = u.lamp[i].xyz - P;
+        const float dist = length(L);
+        if (dist >= u.lamp[i].w || dist < 1.0) continue;
+        const float ndl = dot(n, L / dist);
+        if (ndl <= 0.0) continue;
+        const float f = 1.0 - dist / u.lamp[i].w;
+        const float wgt = f * f * ndl * (i == 0 ? u.lampW.x : u.lampW.y);
+        const float3 j = float3(rnd(gid, frame * 3u + 7u), rnd(gid, frame * 3u + 8u), rnd(gid, frame * 3u + 9u)) * 2.0 - 1.0;
+        const float3 tgt = u.lamp[i].xyz + j * u.flags.z;
+        const float3 dl = tgt - o;
+        const float ll = length(dl);
+        lampSum += wgt;
+        lampVis += wgt * (blocked(as, o, dl / ll, ll - 1.0) ? 0.0 : 1.0);
+    }
+    const float lamp = lampSum > 1e-6 ? lampVis / lampSum : 1.0;
+    float ao = 1.0;
+    if (u.flags.y > 0.0) { // two cosine-weighted rays a frame against the moving objects
+        const float3 t1 = normalize(cross(n, abs(n.z) < 0.9 ? float3(0, 0, 1) : float3(1, 0, 0))), t2 = cross(n, t1);
+        float occ = 0.0;
+        for (uint k = 0; k < 2u; ++k) {
+            const float a = rnd(gid, frame * 4u + 20u + k * 2u) * 6.2831853, r2 = rnd(gid, frame * 4u + 21u + k * 2u);
+            const float3 d = normalize(t1 * (cos(a) * sqrt(r2)) + t2 * (sin(a) * sqrt(r2)) + n * sqrt(1.0 - r2));
+            occ += blocked(as, o, d, u.flags.y) ? 0.5 : 0.0;
+        }
+        ao = 1.0 - occ * 0.8;
+    }
+    outMask.write(float4(sun, lamp, ao, 1.0), gid);
+}
+)MSL";
+
 struct SceneRT::Impl {
+    id<MTLComputePipelineState> shadowPipe = nil;
     id<MTLAccelerationStructure> world = nil;
     size_t worldTriangles = 0;
     id<MTLAccelerationStructure> placeholderBlas = nil, placeholderTlas = nil;
@@ -391,6 +484,44 @@ void SceneRT::bind(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPURenderP
         [enc useResource:I.placeholderBlas usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
 #else
     (void)dev, (void)cmd, (void)pass;
+#endif
+}
+
+bool SceneRT::shadowPass(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* depth, SDL_GPUTexture* mask, uint32_t w, uint32_t h,
+                         const float* u) {
+#ifdef SDL_GPU_OPENIW2_METAL_HANDLES
+    Impl& I = *impl_;
+    if (!I.frameTlas) return false;
+    id<MTLDevice> d = (__bridge id<MTLDevice>)SDL_GetGPUDeviceMetalDevice(dev);
+    id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)SDL_GetGPUCommandBufferMetalCommandBuffer(cmd);
+    id<MTLTexture> z = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, depth);
+    id<MTLTexture> m = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, mask);
+    if (!d || !cb || !z || !m) return false;
+    if (!I.shadowPipe) {
+        NSError* err = nil;
+        id<MTLLibrary> lib = [d newLibraryWithSource:[NSString stringWithUTF8String:kShadowSource] options:nil error:&err];
+        id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"rt_dynamic_shadow"] : nil;
+        I.shadowPipe = fn ? [d newComputePipelineStateWithFunction:fn error:&err] : nil;
+        if (!I.shadowPipe) {
+            I.error = err ? err.localizedDescription.UTF8String : "no shadow pipeline";
+            return false;
+        }
+    }
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:I.shadowPipe];
+    [enc setTexture:z atIndex:0];
+    [enc setTexture:m atIndex:1];
+    [enc setBytes:u length:sizeof(float) * 48 atIndex:0];
+    [enc setAccelerationStructure:I.frameTlas atBufferIndex:1];
+    [enc useResource:I.frameTlas usage:MTLResourceUsageRead];
+    for (id<MTLAccelerationStructure> b in I.frameBlases) [enc useResource:b usage:MTLResourceUsageRead];
+    const NSUInteger tw = I.shadowPipe.threadExecutionWidth, th = std::max<NSUInteger>(1, I.shadowPipe.maxTotalThreadsPerThreadgroup / tw);
+    [enc dispatchThreads:MTLSizeMake(w, h, 1) threadsPerThreadgroup:MTLSizeMake(tw, th, 1)];
+    [enc endEncoding];
+    return true;
+#else
+    (void)dev, (void)cmd, (void)depth, (void)mask, (void)w, (void)h, (void)u;
+    return false;
 #endif
 }
 

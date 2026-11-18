@@ -66,7 +66,7 @@ struct EnhDrawU {
     texture2d<float> depthTex [[texture(t + 5)]], sampler depthSampler [[sampler(t + 5)]], \
     depth2d<float> lightAtlas [[texture(t + 6)]], sampler lightAtlasSampler [[sampler(t + 6)]], \
     const device uchar* probeIdx [[buffer(5)]] ENH_RT_ARG
-#define ENH_BAKED_SHADOW eu, lightAtlas, lightAtlasSampler
+#define ENH_BAKED_SHADOW eu, du, lightAtlas, lightAtlasSampler, aoTex, aoSampler, in.position
 #define ENH_WORLD_SHADOWS eu, worldShadow, worldSampler
 #define ENH_REFLECT eu, envCube, envSampler, probeIdx, histTex, histSampler, depthTex, depthSampler ENH_RT_PASS
 
@@ -347,16 +347,20 @@ static float enh_light_shadow(float3 v, float3 n, float4 ls, depth2d<float> atla
 // the camera the light shadow atlas holds the moving casters; where a point is in such a shadow, our estimate of that light's
 // contribution (game::mapLightFalloff times N.L times its colour), at most the baked light itself, is taken away.
 static float enh_light_shadow(float3 v, float3 n, float4 ls, depth2d<float> atlas, sampler ss);
-static float3 enh_baked_shadow_loss(float3 wp, float3 n, float3 baked, constant EnhFragU& eu, depth2d<float> atlas, sampler ss) {
+static float3 enh_baked_shadow_loss(float3 wp, float3 n, float3 baked, constant EnhFragU& eu, constant EnhDrawU& du, depth2d<float> atlas,
+                                    sampler ss, texture2d<float> aoTex, sampler as, float4 fragPos) {
     float3 loss = 0.0;
     const int count = int(eu.bsParams.x + 0.5);
+    // stage 5: the lamps' visibility traced against the moving objects (the AO image's alpha, weighted by each lamp's light)
+    const bool traced = eu.bsParams.z > 0.5;
+    const float tracedVis = traced && du.origin.w < 0.5 ? aoTex.sample(as, fragPos.xy * eu.aoParams.xy).a : 1.0;
     for (int i = 0; i < count; ++i) {
         const float3 d = eu.bsPos[i].xyz - wp;
         const float dist = length(d);
         if (dist >= eu.bsPos[i].w || dist < 1e-3) continue;
         const float ndl = dot(n, d / dist);
         if (ndl <= 0.0) continue;
-        const float sh = enh_light_shadow(wp - eu.bsPos[i].xyz, n, float4(1.0, eu.bsParams.y, eu.bsPos[i].w, eu.bsColor[i].w), atlas, ss);
+        const float sh = traced ? tracedVis : enh_light_shadow(wp - eu.bsPos[i].xyz, n, float4(1.0, eu.bsParams.y, eu.bsPos[i].w, eu.bsColor[i].w), atlas, ss);
         if (sh >= 1.0) continue;
         float f = 1.0 - dist / eu.bsPos[i].w;
         loss += (1.0 - sh) * eu.bsColor[i].rgb * (f * f * ndl);

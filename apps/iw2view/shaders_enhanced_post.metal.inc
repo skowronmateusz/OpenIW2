@@ -179,6 +179,7 @@ struct AOU {
     float4 sun;    // xyz towards the sun; w: 1 = contact shadows
     float4 params; // x: AO radius (world), y: 1 = AO, z: contact ray length (world), w: contact thickness (world)
     float4 size;   // xy: 1 / full size, zw: full size
+    float4 rt;     // x: 1 = the ray-traced shadows of the moving objects (texture 1: sun, lamps, contact occlusion) join in (stage 5)
 };
 static float3 enh_world_at(float2 uv, constant AOU& u, texture2d<float> fz, sampler s, thread float& w) {
     float cz = fz.sample(s, uv).r;
@@ -191,7 +192,8 @@ static float enh_ign(float2 px, float frame) { // interleaved gradient noise
     px += 5.588238 * frame;
     return fract(52.9829189 * fract(dot(px, float2(0.06711056, 0.00583715))));
 }
-fragment float4 fs_enh_ao(GlowVOut in [[stage_in]], constant AOU& u [[buffer(0)]], texture2d<float> fz [[texture(0)]], sampler s [[sampler(0)]]) {
+fragment float4 fs_enh_ao(GlowVOut in [[stage_in]], constant AOU& u [[buffer(0)]], texture2d<float> fz [[texture(0)]], sampler s [[sampler(0)]],
+                          texture2d<float> rtTex [[texture(1)]], sampler rs [[sampler(1)]]) {
     float w;
     const float3 P = enh_world_at(in.uv, u, fz, s, w);
     if (w > 1e8) return float4(1.0, 1.0, 0.0, 1.0);
@@ -269,21 +271,29 @@ fragment float4 fs_enh_ao(GlowVOut in [[stage_in]], constant AOU& u [[buffer(0)]
         }
         contact = mix(contact, 1.0, saturate((w - 1200.0) / 600.0)); // near the camera only
     }
-    return float4(ao, contact, w, 1.0);
+    float lamps = 1.0;
+    if (u.rt.x > 0.5) { // ray-traced, moving objects only: the sun's shadow joins the contact channel, the occlusion the AO
+        const float4 r = rtTex.sample(rs, in.uv);
+        contact = min(contact, r.x);
+        ao *= r.z;
+        lamps = r.y;
+    }
+    return float4(ao, contact, w, lamps);
 }
 // Depth-aware 5 x 5 blur of the half-size AO / contact image (z holds the view depth).
 fragment float4 fs_enh_ao_blur(GlowVOut in [[stage_in]], constant float4& u [[buffer(0)]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
     const float4 c = src.sample(s, in.uv);
-    float2 sum = 0.0;
+    float3 sum = 0.0;
     float wsum = 0.0;
     for (int y = -2; y <= 2; ++y)
         for (int x = -2; x <= 2; ++x) {
             const float4 t = src.sample(s, in.uv + float2(x, y) * u.xy);
             const float wgt = 1.0 / (1.0 + abs(t.z - c.z) / max(c.z * 0.02, 1.0) * 4.0);
-            sum += t.xy * wgt;
+            sum += t.xyw * wgt; // AO, contact (and the ray-traced sun), the ray-traced lamps
             wsum += wgt;
         }
-    return float4(sum / wsum, c.z, 1.0);
+    sum /= wsum;
+    return float4(sum.xy, c.z, sum.z);
 }
 
 // Debug view (r_enhMotionDebug 2): AO in red, contact shadow in green.

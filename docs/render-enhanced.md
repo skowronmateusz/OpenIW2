@@ -39,6 +39,8 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhGrade` | 0 | Colour grade: 0 neutral, 1 "period film" (contrast, desaturation, warm shadows, grain). |
 | `r_enhMapLightSpec` | preset | GGX specular from the map's light entities near the camera (their diffuse stays baked). |
 | `r_enhMetalFX` | 0 | MetalFX temporal anti-aliasing instead of ours (needs TAA, a MetalFX GPU and the patched SDL; see "Stage 5"). |
+| `r_enhRTShadows` | 1 | Ray-traced sun and lamp shadows of the moving objects, soft (GPU family 9 and later; see "Stage 5"). |
+| `r_enhRTContactAO` | 1 | Ray-traced contact occlusion of the moving objects (GPU family 9 and later). |
 | `r_enhRTReflections` | 1 | Ray-traced reflections on water and the reflective surface classes (GPU family 9 and later: M3 and later; see "Stage 5"). |
 | `r_enhRenderScale` | 1 | With MetalFX: the scene's resolution as a fraction of the window (0.5..1; the page offers 1, 0.77, 0.67, 0.5), upscaled by MetalFX. |
 | `r_enhProbes` | preset | Reflection probes captured when the map loads: rooms reflect themselves instead of the sky (off in the low preset). |
@@ -352,6 +354,23 @@ On GPUs with hardware ray tracing (`r_enhRTReflections`, the page's "Ray-traced 
   blue a miss.
 - Cost at 1920 x 1080, high preset: duhoc beach 6.81 ms without, 7.70 ms with (129 moving objects, 74000 triangles); rhine
   3.62 / 4.63 ms.
+
+### Ray-traced shadows and contact occlusion of the moving objects
+
+The baked light already carries the static world's shadows; what it lacks is the moving objects (characters, their weapons,
+vehicles, script models). On GPUs with hardware ray tracing (`r_enhRTShadows`, `r_enhRTContactAO`, the page's rows shown only
+there) a compute pass (`metal::SceneRT::shadowPass`, our kernel `rt_dynamic_shadow`) runs at the AO's half size over `$floatz`:
+the position and a normal from the depth, offset off the surface, then rays against the moving objects only (instance mask):
+- the sun: one ray a frame in a cone around the sun direction (`game::kRtSunConeTan`, a soft edge like the baked shadows');
+- the two lamps the baked-light shadows choose (above): one ray each to a point jittered over the lamp's size
+  (`game::kRtLampSize`); their visibility is weighted by each lamp's light at the pixel (falloff x N.L x the colour's
+  luminance), so the shader's lamp loss stays the sum over the lamps when their colours are alike;
+- contact occlusion: two cosine-weighted rays a frame of `game::kRtContactRange` units.
+The results join the AO image (sun with the contact shadow, occlusion with the AO, the lamps in its alpha), whose depth-aware
+blur and then TAA or MetalFX smooth the noise of the varying rays. With them the moving-caster sun shadow map and the lamps' rows
+of the light shadow atlas are not drawn. Receivers are every pixel of `$floatz` (the world, static models and the models in it);
+blended surfaces and the view model keep no screen-space terms, as before. Limits: the moving objects are the frame's culled
+item list (above); without TAA or MetalFX the soft edges show their noise.
 
 ## Cost
 

@@ -2691,6 +2691,8 @@ struct Renderer {
     SDL_GPUTexture* floatzHi = nullptr;
     uint32_t loW = 0, loH = 0;
     uint32_t outW = 0, outH = 0; // this frame's output size (the TAA history's)
+    uint64_t frameCounter = 0;   // drawFrame calls (probe captures included)
+    const std::vector<DrawItem>* frameItems = nullptr; // this frame's items (the AO pass prepares the ray tracing scene with them)
     float renderScaleNow = 1.0f;
     // The frame's projection aspect: the output size's, also for passes at the render size (whose own ratio differs by rounding;
     // a different aspect from the previous frame's matrix would read as motion).
@@ -2739,9 +2741,15 @@ struct Renderer {
     metal::SceneRT sceneRT;
     uint64_t sceneRTFor = 0;
     bool rtReflNow = false;
+    bool rtShadowNow = false;   // this frame: ray-traced shadows / contact occlusion of the moving objects (the AO image)
+    uint64_t sceneRTFrame = ~0ull; // the frame (taaFrame + aoFrame) the scene was last prepared for
+    SDL_GPUTexture* rtShadowTex = nullptr;
+    uint32_t rtShadowW = 0, rtShadowH = 0;
     void prepareSceneRT(SDL_GPUCommandBuffer* cmd, const Scene& scene, const std::vector<DrawItem>& items) {
         if (!metalCaps.rayTracing || !enh.enabled) return;
-        const bool active = rtReflNow;
+        if (sceneRTFrame == frameCounter) return; // once a frame (the AO pass and the scene pass both ask)
+        sceneRTFrame = frameCounter;
+        const bool active = rtReflNow || rtShadowNow;
         if (active && sceneRTFor != scene.serial) {
             sceneRTFor = scene.serial;
             sceneRT.clearStatic();
@@ -2778,7 +2786,7 @@ struct Renderer {
     SDL_GPUTexture* aoWhite = nullptr;              // 1 x 1 (1, 1) while AO is off or not built
     bool aoReady = false;
     uint32_t aoFrame = 0;
-    void enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam);
+    void enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam, const Scene& scene);
     // Cached world sun cascades (docs/render-enhanced.md "World sun shadows"): one depth texture each, re-rendered when the snapped
     // centre or the scene changes.
     struct WorldCascade {
@@ -2842,7 +2850,7 @@ struct Renderer {
         enhPresentSdrPipe = mk("fs_enh_present", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
         enhVelocityPipe = mk("fs_enh_velocity", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT);
         enhMotionViewPipe = mk("fs_enh_motion_view", 1, 0, false, true);
-        enhAoPipe = mk("fs_enh_ao", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhAoPipe = mk("fs_enh_ao", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhAoBlurPipe = mk("fs_enh_ao_blur", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhAoViewPipe = mk("fs_enh_ao_view", 1, 0, false, true);
         enhTaaPipe = mk("fs_enh_taa", 4, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
@@ -3932,6 +3940,9 @@ struct Renderer {
         const bool scaled = rw != w || rh != h;
         outW = w, outH = h, renderScaleNow = float(rw) / float(w);
         rtReflNow = enh.enabled && enh.rtReflections && metalCaps.rayTracing && !capturingProbes;
+        rtShadowNow = enh.enabled && (enh.rtShadows || enh.rtContactAO) && metalCaps.rayTracing && !capturingProbes;
+        ++frameCounter;
+        frameItems = &items;
         if (taaOn) {
             const auto j = game::taaJitter(taaFrame, int(rw), int(rh), game::taaJitterPhases(rscale));
             cam.jitterX = j[0], cam.jitterY = j[1];
@@ -4053,7 +4064,7 @@ struct Renderer {
             for (const DrawItem& it : items)
                 if (it.model)
                     for (const Batch& b : it.model->batches) postSunWanted = postSunWanted || b.fxKind != 0;
-        if (post && !noPostSun && enh.enabled && (enh.motionDebug || enh.ao || enh.contactShadows || enh.taa)) postSunWanted = true; // read $floatz
+        if (post && !noPostSun && enh.enabled && (enh.motionDebug || enh.ao || enh.contactShadows || enh.taa || rtShadowNow)) postSunWanted = true; // read $floatz
         bool postSunReady = false;
         if (postSunWanted && scene.outdoor.valid() && outdoorFor != &scene.outdoor) {
             if (outdoorTex) SDL_ReleaseGPUTexture(dev, outdoorTex);
@@ -4150,7 +4161,7 @@ struct Renderer {
             stats.phase = 0;
             }
             if (enh.enabled) frameDepth = floatzTex; // screen-space reflections read it
-            if (enh.enabled && (enh.ao || enh.contactShadows)) enhAO(cmd, rw, rh, cam);
+            if (enh.enabled && (enh.ao || enh.contactShadows || rtShadowNow)) enhAO(cmd, rw, rh, cam, scene);
         }
         prepareSceneRT(cmd, scene, items); // stage 5: the frame's ray query scene, before the scene passes
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &ds);
@@ -5057,7 +5068,7 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
         f.worldParams[2] = 1.5f;
         f.worldParams[3] = float(wq.pcfTaps);
     }
-    if (shadowTex && q.resolution > 0 && sunLit) {
+    if (shadowTex && q.resolution > 0 && sunLit && !(rtShadowNow && enh.rtShadows)) { // (ray-traced: the AO pass's sun channel)
         // Sun shadow map of the moving casters (docs/render-enhanced.md "Sun shadows"): actors, vehicles, script models and brush
         // movers. Static models and the world are in the baked sun mask already; the receivers multiply both.
         SDL_GPUDepthStencilTargetInfo dt{};
@@ -5250,9 +5261,10 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
             f.bsPos[k][3] = l.radius, f.bsColor[k][3] = float(kLightShadowMax + int(k));
         }
         f.bsParams[0] = float(bakedShadowLights.size()), f.bsParams[1] = lightShadowNear;
+        if (rtShadowNow && enh.rtShadows) f.bsParams[2] = 1.0f; // stage 5: the lamps' visibility comes from the AO image's alpha
     }
     if (enh.lightShadows && (!dlights.empty() || !bakedShadowLights.empty())) renderLightShadows(cmd, scene, items);
-    if (!lightShadowAtlas) f.bsParams[0] = 0.0f;
+    if (!lightShadowAtlas && f.bsParams[2] < 0.5f) f.bsParams[0] = 0.0f;
     // Materials: GGX, reflections (the sky cube with mips; screen-space from the previous frame while TAA has a history).
     ensureEnvCube(cmd, scene);
     {
@@ -5296,9 +5308,9 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
         f.mlParams[0] = float(n);
     }
     aoReady = false;
-    if (enh.ao || enh.contactShadows) {
+    if (enh.ao || enh.contactShadows || rtShadowNow) {
         f.aoParams[2] = enh.ao ? enh.aoStrength : 0.0f;
-        f.aoParams[3] = enh.contactShadows ? 1.0f : 0.0f;
+        f.aoParams[3] = enh.contactShadows || rtShadowNow ? 1.0f : 0.0f; // the contact channel also carries the ray-traced sun shadow
     }
     enhFragPending = f;
     SDL_PushGPUFragmentUniformData(cmd, 1, &f, sizeof f);
@@ -5634,7 +5646,7 @@ void Renderer::enhTaaEndFrame(SDL_GPUCommandBuffer* cmd, const Scene& scene, con
 }
 
 // GTAO and contact shadows from $floatz at half size, then a depth-aware blur (docs/render-enhanced.md "Ambient occlusion").
-void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam) {
+void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam, const Scene& scene) {
     const uint32_t hw = std::max(w / 2, 1u), hh = std::max(h / 2, 1u);
     if (!aoTex[0] || aoW != hw || aoH != hh) {
         for (SDL_GPUTexture*& t : aoTex) {
@@ -5662,7 +5674,7 @@ void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Ca
     const float p2[3] = {p1[0] + upv.x, p1[1] + upv.y, p1[2] + upv.z};
     const auto c1 = game::mulPoint(cur, p1), c2 = game::mulPoint(cur, p2);
     const float focal = std::fabs(c2[1] / c2[3] - c1[1] / c1[3]) * 0.5f * float(h) * 100.0f;
-    struct { float inv[16], vp[16], z[4], eye[4], sun[4], params[4], size[4]; } u{};
+    struct { float inv[16], vp[16], z[4], eye[4], sun[4], params[4], size[4], rt[4]; } u{};
     std::memcpy(u.inv, inv.data(), sizeof u.inv);
     std::memcpy(u.vp, vp.data(), sizeof u.vp);
     u.z[0] = zl[0], u.z[1] = zl[1], u.z[2] = 262144.0f * 2.0f * 1.7f, u.z[3] = float(aoFrame++ % 64);
@@ -5670,6 +5682,37 @@ void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Ca
     u.sun[0] = sunDirForAO[0], u.sun[1] = sunDirForAO[1], u.sun[2] = sunDirForAO[2], u.sun[3] = enh.contactShadows ? 1.0f : 0.0f;
     u.params[0] = 40.0f, u.params[1] = enh.ao ? 1.0f : 0.0f, u.params[2] = 18.0f, u.params[3] = 10.0f;
     u.size[0] = 1.0f / float(w), u.size[1] = 1.0f / float(h), u.size[2] = float(w), u.size[3] = float(h);
+    // Stage 5: the moving objects' ray-traced sun / lamp shadows and contact occlusion at the AO's half size (docs/render-enhanced.md).
+    if (rtShadowNow && frameItems) {
+        prepareSceneRT(cmd, scene, *frameItems);
+        if (!rtShadowTex || rtShadowW != hw || rtShadowH != hh) {
+            if (rtShadowTex) SDL_ReleaseGPUTexture(dev, rtShadowTex);
+            SDL_GPUTextureCreateInfo ti{};
+            ti.type = SDL_GPU_TEXTURETYPE_2D, ti.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+            ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE;
+            ti.width = hw, ti.height = hh, ti.layer_count_or_depth = 1, ti.num_levels = 1;
+            rtShadowTex = SDL_CreateGPUTexture(dev, &ti);
+            rtShadowW = hw, rtShadowH = hh;
+        }
+        float ru[44] = {};
+        std::memcpy(ru, inv.data(), sizeof(float) * 16);
+        ru[16] = zl[0], ru[17] = zl[1], ru[18] = 262144.0f * 2.0f * 1.7f, ru[19] = float(aoFrame % 4096u);
+        ru[20] = eye[0], ru[21] = eye[1], ru[22] = eye[2];
+        ru[24] = sunDirForAO[0], ru[25] = sunDirForAO[1], ru[26] = sunDirForAO[2], ru[27] = game::kRtSunConeTan;
+        for (size_t k = 0; k < 2 && enh.rtShadows && k < bakedShadowLights.size(); ++k) {
+            const game::MapLight& l = *bakedShadowLights[k];
+            for (int a = 0; a < 3; ++a) ru[28 + k * 4 + size_t(a)] = l.pos[a];
+            ru[28 + k * 4 + 3] = l.radius;
+            ru[36 + k] = (l.color[0] + l.color[1] + l.color[2]) / 3.0f;
+        }
+        ru[40] = 1.0f / float(hw), ru[41] = 1.0f / float(hh), ru[42] = float(hw), ru[43] = float(hh);
+        float rflags[4] = {enh.rtShadows && scene.sunColor.x + scene.sunColor.y + scene.sunColor.z > 0.0f ? 1.0f : 0.0f,
+                           enh.rtContactAO ? game::kRtContactRange : 0.0f, game::kRtLampSize, 0.0f};
+        float full[48];
+        std::memcpy(full, ru, sizeof ru);
+        std::memcpy(full + 44, rflags, sizeof rflags);
+        if (rtShadowTex && sceneRT.shadowPass(dev, cmd, floatzTex, rtShadowTex, hw, hh, full)) u.rt[0] = 1.0f;
+    }
     auto pass = [&](SDL_GPUGraphicsPipeline* pipe, SDL_GPUTexture* dst, SDL_GPUTexture* src, SDL_GPUSampler* smp, const void* uu, uint32_t usize) {
         SDL_GPUColorTargetInfo ct{};
         ct.texture = dst;
@@ -5677,8 +5720,8 @@ void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Ca
         ct.store_op = SDL_GPU_STOREOP_STORE;
         SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
         SDL_BindGPUGraphicsPipeline(p, pipe);
-        const SDL_GPUTextureSamplerBinding b{src, smp};
-        SDL_BindGPUFragmentSamplers(p, 0, &b, 1);
+        const SDL_GPUTextureSamplerBinding b[2] = {{src, smp}, {u.rt[0] > 0.5f ? rtShadowTex : aoWhite, clampSampler}};
+        SDL_BindGPUFragmentSamplers(p, 0, b, pipe == enhAoPipe ? 2 : 1);
         SDL_PushGPUFragmentUniformData(cmd, 0, uu, usize);
         SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
         SDL_EndGPURenderPass(p);
@@ -5712,7 +5755,7 @@ void Renderer::renderLightShadows(SDL_GPUCommandBuffer* cmd, const Scene& scene,
         const DLight& dl = dlights[size_t(li)];
         lights.push_back({{dl.pos[0], dl.pos[1], dl.pos[2]}, dl.radius, li, true, li});
     }
-    for (size_t k = 0; k < bakedShadowLights.size(); ++k) {
+    for (size_t k = 0; k < bakedShadowLights.size() && !(rtShadowNow && enh.rtShadows); ++k) { // (ray-traced instead: the AO pass)
         const game::MapLight& ml = *bakedShadowLights[k];
         lights.push_back({{ml.pos[0], ml.pos[1], ml.pos[2]}, ml.radius, kLightShadowMax + int(k), false, -1});
     }
