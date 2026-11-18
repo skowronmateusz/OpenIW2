@@ -28,6 +28,33 @@ int main() {
         const auto l = LightGrid::evaluate(c, n);
         if (std::abs(l[0] - 0.5f) > 1e-4f) ++failures;
     }
+    // Static-model weights (trilinear in the cube coordinates): sum to 1, every corner reachable, linear not smoothed.
+    for (const auto& n : normals) {
+        const auto w = LightGrid::smodelWeights(n);
+        float sum = 0;
+        for (float x : w) sum += x;
+        if (std::abs(sum - 1.0f) > 1e-4f) ++failures;
+    }
+    {
+        // the basis direction of corner 7 (all three tilted axes positive) is straight up: all weight on corner 7
+        const auto up = LightGrid::smodelWeights({0.0f, 0.0f, 1.0f});
+        if (std::abs(up[7] - 1.0f) > 1e-4f) ++failures;
+        // a normal between two cube faces: linear weights halfway (0.5) where the smoothed weights() give smoothstep(0.5) = 0.5 too,
+        // but at a quarter they differ: linear 0.25 vs smoothstep 0.15625
+        const float t = 0.25f;
+        const float lin = t, smo = (3 - 2 * t) * t * t;
+        if (std::abs(lin - smo) < 0.05f) ++failures;
+    }
+    {
+        iw2::assets::LightGridCoeffs q{};
+        for (auto& ch : q) ch.fill(0.6f);
+        float sun = 0.8f;
+        LightGrid::smodelLighting(q, sun, 2.0f, 0.5f); // sun x 2 clamps to 1, coefficients x 0.5 round to bytes
+        if (sun != 1.0f || std::abs(q[0][0] - 76.0f / 255.0f) > 1e-6f) ++failures;
+        sun = 0.5f;
+        LightGrid::smodelLighting(q, sun, 1.0f, 1.0f);
+        if (std::abs(sun - 127.0f / 255.0f) > 1e-6f) ++failures;
+    }
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
     std::cout << "test_lightgrid: all checks passed\n";
     return 0;

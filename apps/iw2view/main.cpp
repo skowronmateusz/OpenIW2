@@ -397,7 +397,7 @@ static_assert(sizeof(GpuVertex) == 88);
 
 enum class Pass { Opaque, AlphaTest, Blend, Additive, Multiply, Sky, Skip, Water, Objective };
 // Grouping of world surfaces into batches; the last six fields are the draw-list fields of Batch.
-using BatchKey = std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int>;
+using BatchKey = std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int>; // last: static model probeLit
 
 struct Batch {
     Pass pass = Pass::Opaque;
@@ -562,6 +562,8 @@ struct Scene {
     game::MarkSystem marks;
     game::OutdoorMap outdoor; // "$outdoor" (game/outdoor.h), built on first use by a Cloud with particle_cloud_outdoor
     std::unique_ptr<assets::LightGrid> grid;
+    std::vector<float> smodelLight;          // static-model lighting blocks, 28 floats per instance (fs_smodel)
+    SDL_GPUBuffer* smodelLightBuf = nullptr; // the same on the GPU (storage buffer)
     std::vector<uint8_t> texReflect; // enhanced: reflective surface class per Scene::textures index (0 none, 1 water, 2 glass / ice, 3 metal)
     uint32_t skySize = 0; // edge of the sky cube (enhanced reflections build a mip chain of it)
     uint64_t serial = 0; // distinct per loaded scene (caches keyed on a scene, e.g. the enhanced light-grid lattice)
@@ -1625,6 +1627,7 @@ void releaseScene(SDL_GPUDevice* dev, Scene& scene) {
         buf(m.indices);
     }
     buf(scene.skinArena);
+    buf(scene.smodelLightBuf);
     scene = Scene{};
 }
 
@@ -1810,7 +1813,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         static const bool noSpec = std::getenv("IW2_NO_SPEC") != nullptr;
         const bool spec = !noSpec && lm >= 0 && mi.normalTex > 0 && mi.specTex > 0 &&
                           (mi.pass == Pass::Opaque || mi.pass == Pass::AlphaTest || mi.pass == Pass::Blend);
-        const BatchKey key{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend), mi.pointNormalTex, int(mi.pointNormalState)};
+        const BatchKey key{int(mi.pass), mi.texture, lm, mi.polygonOffset, mi.cull, spec ? mi.normalTex : -1, spec ? mi.specTex : -1, spec ? int(mi.normalState) : 0, spec ? int(mi.specState) : 0, mi.detail, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend), mi.pointNormalTex, int(mi.pointNormalState), 0};
         auto& dst = (soupOwner[si] > 0 ? brushGroups[soupOwner[si]] : groups)[key];
         const uint32_t pieceStart = uint32_t(dst.size());
         for (uint32_t k = 0; k < s.indexCount; ++k) dst.push_back(s.firstVertex + bsp.indices()[s.firstIndex + k]);
@@ -1916,7 +1919,8 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 // only. TODO(spec): the fogged variants are rigid in the original; iw2view bends static flags with fog too.
                 if (mi.flag) g.wave[0] = float(v.color[3]) / 255.0f, g.wave[1] = pl.scale;
                 g.uv[0] = v.uv[0]; g.uv[1] = v.uv[1];
-                g.lmUv[0] = pl.sunVis; // unused by the default shaders (no lightmap); the enhanced sun shadow reads it (shaders.metal.inc)
+                g.lmUv[0] = pl.sunVis; // no lightmap: x is the sun visibility (enhanced shadows), y the instance (vs_smodel)
+                g.lmUv[1] = float(pl.instance);
                 const float ndl = std::max(0.0f, dot(n, scene.sunDirection));
                 std::array<float, 3> probe = {0.45f, 0.45f, 0.45f};
                 if (pl.haveGrid) probe = assets::LightGrid::evaluate(pl.coeffs, {n.x, n.y, n.z});
@@ -1925,7 +1929,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
                 g.light[2] = probe[2] + pl.sunVis * ndl * scene.sunColor.z;
                 verts.push_back(g);
             }
-            const BatchKey key{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, -1, 0, 0, -1, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend), mi.pointNormalTex, int(mi.pointNormalState)};
+            const BatchKey key{int(mi.pass), mi.texture, -2, mi.polygonOffset, mi.cull, -1, mi.probeLit ? mi.specTex : -1, 0, mi.probeLit ? int(mi.specState) : 0, mi.probeLit ? mi.detail : -1, int(mi.alphaOne), int(mi.colorState), int(mi.alphaFunc), mi.sort, mi.materialOrder, int(mi.emissive), int(mi.multiplyFog), int(mi.pointLit), int(mi.pointBlend), mi.pointNormalTex, int(mi.pointNormalState), int(mi.probeLit)};
             auto& dst = groups[key];
             groupPieces[key].push_back({uint32_t(dst.size()), uint32_t(surf.indices.size()), int32_t(pl.instance), lod});
             for (uint16_t i : surf.indices) dst.push_back(base + i);
@@ -2000,6 +2004,27 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         for (int k = 0; k < inst.lodCount; ++k) inst.lodDist[k] = pl.model->lodDist[k];
         scene.staticModels.push_back(inst);
         bakeLod(pl, 0);
+        {   // the static-model lighting block (docs/spec/material.md "Model lighting techniques"): the grid at the centre of the model's
+            // box, coefficients times indirectLightScale, sun times directLightScale (misc_model keys, default 1, negative rejected),
+            // as the texture's bytes. TODO(spec): the gndLt path (constant colour) for the models the DLL sends there.
+            const StaticModelInstance& si = scene.staticModels[pl.instance];
+            auto keyScale = [&](const char* k) {
+                const std::string* v = e.get(k);
+                return v ? std::max(0.0f, float(std::atof(v->c_str()))) : 1.0f;
+            };
+            assets::LightGridCoeffs c = pl.coeffs;
+            float sun = pl.sunVis;
+            if (!pl.haveGrid)
+                for (auto& ch : c) ch.fill(0.45f);
+            assets::LightGridCoeffs cc;
+            float sc = 1.0f;
+            if (grid.sample({0.5f * (si.mins[0] + si.maxs[0]), 0.5f * (si.mins[1] + si.maxs[1]), 0.5f * (si.mins[2] + si.maxs[2])}, cc, sc)) c = cc, sun = sc;
+            assets::LightGrid::smodelLighting(c, sun, keyScale("directLightScale"), keyScale("indirectLightScale"));
+            for (int ch = 0; ch < 3; ++ch)
+                for (int h = 0; h < 2; ++h)
+                    for (int k = 0; k < 4; ++k) scene.smodelLight.push_back(c[size_t(ch)][size_t(h * 4 + k)]);
+            scene.smodelLight.insert(scene.smodelLight.end(), {sun, 0.0f, 0.0f, 0.0f});
+        }
         placed.push_back(pl);
         ++modelCount;
     }
@@ -2029,6 +2054,15 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         }
     }
     std::cout << "placed " << modelCount << " static models (" << modelCache.size() << " unique, " << lowerLods << " lower LODs baked)\n";
+    if (!scene.smodelLight.empty()) {
+        SDL_GPUBufferCreateInfo bi{};
+        bi.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
+        bi.size = uint32_t(scene.smodelLight.size() * sizeof(float));
+        scene.smodelLightBuf = SDL_CreateGPUBuffer(dev, &bi);
+        if (!scene.smodelLightBuf) sdlFail("static model lighting buffer");
+        Uploader sup(dev);
+        sup.buffer(scene.smodelLightBuf, scene.smodelLight.data(), bi.size);
+    }
     // Cells and portals for the portal flood (docs/spec/render-hints.md "World and static model culling").
     scene.vis = game::parseVisWorld(bsp.lump(4), bsp.lump(10), bsp.lump(11), bsp.lump(17), bsp.lump(22), bsp.lump(23), bsp.lump(24), bsp.lump(25),
                                     bsp.lump(26));
@@ -2070,6 +2104,7 @@ Scene loadScene(SDL_GPUDevice* dev, const fs::Vfs& vfs, const std::string& mapNa
         b.pointBlend = std::get<18>(key) != 0;
         b.pointNormalTex = std::get<19>(key);
         b.pointNormalState = uint8_t(std::get<20>(key));
+        b.probeLit = std::get<21>(key) != 0;
         b.firstIndex = uint32_t(indices.size());
         b.indexCount = uint32_t(idx.size());
         indices.insert(indices.end(), idx.begin(), idx.end());
@@ -2280,6 +2315,8 @@ struct DrawItem {
     // emissive list (docs/spec/effects.md "Draw order of effect sprites"), so the blended / additive / multiplied parts of these
     // items are drawn after the same passes of the world and the other models.
     bool effects = false;
+    // setshadowhint "receiver" on the entity (refEntity render flag 0x100): the build floatz walk takes the model (docs/spec/material.md).
+    bool shadowReceiver = false;
 };
 
 // Packs the light-grid coefficients as the lightprobe.hlsl lightGridColors{R,G,B}{0,1} constants (corner order 0..3, 4..7).
@@ -2344,6 +2381,7 @@ struct Renderer {
     SDL_GPUGraphicsPipeline* statePipelines[5][3][3] = {}; // [pass][polygon offset 0..2][cull none / back / front]
     SDL_GPUGraphicsPipeline* specPipelines[3][3][3] = {}; // lmap_s: [Opaque, AlphaTest, Blend][polygon offset][cull]
     SDL_GPUGraphicsPipeline* probePipelines[5][3][3] = {}; // lprobe* (entity models of phong_* sets): [pass][polygon offset][cull]
+    SDL_GPUGraphicsPipeline* smodelPipelines[5][3][3] = {}; // lprobe_sm* (static models of phong_* sets)
     SDL_GPUGraphicsPipeline* skyPipeline = nullptr;
     SDL_GPUGraphicsPipeline* objectivePipelines[3] = {}; // objective.sm: [polygon offset level]; cull back
     float gameTimeSeconds = 0.0f; // provisional gameTime.z of the objective technique (see the objective pass in draw)
@@ -2916,6 +2954,14 @@ struct Renderer {
         SDL_GPUShader* probeVsh = SDL_CreateGPUShader(dev, &pvsi);
         SDL_GPUShader* probeFsh = SDL_CreateGPUShader(dev, &pfsi);
         if (!probeVsh || !probeFsh) sdlFail("probe shaders");
+        SDL_GPUShaderCreateInfo smvsi = pvsi;
+        smvsi.entrypoint = "vs_smodel";
+        SDL_GPUShaderCreateInfo smfsi = pfsi;
+        smfsi.entrypoint = "fs_smodel";
+        smfsi.num_storage_buffers = enh.enabled ? 2 : 1; // enhanced: the lattice, then the static-model lighting
+        SDL_GPUShader* smodelVsh = SDL_CreateGPUShader(dev, &smvsi);
+        SDL_GPUShader* smodelFsh = SDL_CreateGPUShader(dev, &smfsi);
+        if (!smodelVsh || !smodelFsh) sdlFail("static model shaders");
         for (int p = 0; p < 5; ++p) {
             SDL_GPUColorTargetDescription ct{};
             ct.format = sceneFormat;
@@ -2978,6 +3024,10 @@ struct Renderer {
                     ppi.fragment_shader = probeFsh;
                     probePipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &ppi);
                     if (!probePipelines[p][lvl][c]) sdlFail("probe pipeline");
+                    ppi.vertex_shader = smodelVsh;
+                    ppi.fragment_shader = smodelFsh;
+                    smodelPipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &ppi);
+                    if (!smodelPipelines[p][lvl][c]) sdlFail("static model pipeline");
                 }
             if (p == 3) { // l_point (stateMap additive_nofog): ONE / ONE, depth test only
                 pi.vertex_shader = dlightVsh;
@@ -3034,6 +3084,8 @@ struct Renderer {
         SDL_ReleaseGPUShader(dev, specFsh);
         SDL_ReleaseGPUShader(dev, probeVsh);
         SDL_ReleaseGPUShader(dev, probeFsh);
+        SDL_ReleaseGPUShader(dev, smodelVsh);
+        SDL_ReleaseGPUShader(dev, smodelFsh);
         {
             SDL_GPUShaderCreateInfo svs = vs;
             svs.entrypoint = "vs_sky";
@@ -3829,7 +3881,11 @@ struct Renderer {
             }
             for (const DrawItem& it : items) {
                 if (!it.model) continue;
-                // TODO(spec): [inference, command 0x17 dispatch to walker 0x1002f830 not traced] the view model goes in with its depth class.
+                // r_depthPrepassModels 0: a model record (type <= 2) without render flag 0x100 gets no build floatz technique (0x1002f730), so
+                // only setshadowhint "receiver" models are in $floatz; the view model is not (enhanced keeps every model: its AO and motion
+                // vectors read $floatz).
+                if (!enh.enabled && assets::litTechniqueSlot(assets::kTechBuildFloatz, 31, int(&it - items.data()), 0, it.shadowReceiver ? 0x100 : 0) < 0)
+                    continue;
                 const SDL_GPUViewport fzRange{0, 0, float(w), float(h), 0.0f, it.depthMax};
                 SDL_SetGPUViewport(fp, &fzRange);
                 SDL_GPUBufferBinding mvb{it.model->vertices, it.model->vertexOffset};
@@ -4098,6 +4154,42 @@ struct Renderer {
                 if (p == Pass::Water) { drawWater(b, *r.model, r.indices); continue; }
                 const bool writesDepth = p == Pass::Opaque || p == Pass::AlphaTest;
                 const float tieBias = assets::layerTieBias(writesDepth);
+                static const bool noLprobeS = std::getenv("IW2_NO_LPROBE") != nullptr;
+                if (b.lightmap == -2 && b.probeLit && scene.smodelLightBuf && scene.specularity && !noLprobeS) {
+                    // lprobe_sm* (docs/spec/material.md "Model lighting techniques"): a static model surface of a phong_* set
+                    bindStream(0, r.indices);
+                    SDL_BindGPUGraphicsPipeline(pass, smodelPipelines[int(p)][b.polygonOffset][b.cull]);
+                    struct PVU { VU base; float sun[4]; } pvu{vu, {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0}};
+                    pvu.base.model = *r.model;
+                    pvu.base.eye[3] = float(b.polygonOffset) * kPolygonOffsetBias / 65536.0f + tieBias;
+                    SDL_PushGPUVertexUniformData(cmd, 0, &pvu, sizeof(pvu));
+                    const bool hasNormal = b.pointNormalTex >= 0, hasSpec = b.specTex >= 0;
+                    const SDL_GPUTextureSamplerBinding tex[5] = {
+                        {scene.textures[size_t(b.texture)], matSampler(b.colorState)},
+                        {scene.textures[size_t(hasNormal ? b.pointNormalTex : b.texture)], matSampler(b.pointNormalState)},
+                        {scene.textures[size_t(hasSpec ? b.specTex : b.texture)], matSampler(b.specState)},
+                        {scene.specularity, clampSampler},
+                        detailBinding(b.detail)};
+                    SDL_BindGPUFragmentSamplers(pass, 0, tex, 5);
+                    if (enh.enabled) {
+                        enhBind(pass, cmd, 5, nullptr, items, p == Pass::Blend || p == Pass::Additive || p == Pass::Multiply);
+                        SDL_BindGPUFragmentStorageBuffers(pass, 1, &scene.smodelLightBuf, 1);
+                    } else {
+                        SDL_GPUBuffer* const sb = scene.smodelLightBuf;
+                        SDL_BindGPUFragmentStorageBuffers(pass, 0, &sb, 1);
+                    }
+                    FragmentUniforms fu = {
+                        {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0.0f},
+                        {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, specColorScaleDvar()},
+                        {b.detail >= 0 ? scene.details[size_t(b.detail)].scale[0] : 0.0f, b.detail >= 0 ? scene.details[size_t(b.detail)].scale[1] : 0.0f,
+                         b.detail >= 0 && !std::getenv("IW2_NO_DETAIL") ? 1.0f : 0.0f, 0.0f},
+                        {alphaParam(b, p), hasSpec ? 1.0f : 0.0f, hasNormal ? 1.0f : 0.0f, fullbright ? 1.0f : 0.0f},
+                        {0, 0, 0, 0}};
+                    if (p != Pass::Multiply) applyFog(fu, p);
+                    SDL_PushGPUFragmentUniformData(cmd, 0, &fu, sizeof(fu));
+                    drawIndexed(pass, b.indexCount, 1, b.firstIndex, 0, 0);
+                    continue;
+                }
                 if (b.specTex >= 0) {
                     if (!scene.tbn || !scene.specularity || !scene.lmWeightTex) continue;
                     bindStream(1, r.indices);
@@ -6544,6 +6636,14 @@ int main(int argc, char** argv) {
             };
             ++renderStamp;
             for (const auto& e : world->entities()) {
+                // Every item this entity adds carries its setshadowhint "receiver" state (refEntity flag 0x100, docs/spec/render-hints.md
+                // "setshadowhint"): with r_depthPrepassModels 0 only such models enter $floatz (docs/spec/material.md).
+                struct ReceiverMark {
+                    std::vector<DrawItem>& v;
+                    size_t first;
+                    bool on;
+                    ~ReceiverMark() { for (size_t i = first; i < v.size(); ++i) v[i].shadowReceiver = on; }
+                } receiverMark{items, items.size(), e->shadowHint == 0xa000};
                 // Multiplayer clients other than the local one are drawn in third person (docs/spec/mp-players.md).
                 if (e->obj->removed || e->isSpawner || (e->isPlayer && !world->mpPlayerDrawn(*e)) || e->obj->get("$hidden").truthy()) continue;
                 const script::Value m = e->obj->get("model");

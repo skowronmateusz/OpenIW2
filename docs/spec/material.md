@@ -212,9 +212,11 @@ Every other walk type and every surface with a lightmap keeps its type, with one
 (dvar behind 0x101ce750, registered at 0x1000b37b..0x1000b392: boolean, default 0, flags 0x2000) is off, the depth prepass
 and build floatz walks (types 0 and 2) get no technique (the surface is skipped) for a static model (list entity 0x7ff) and for
 a scene entity whose record type is at most 2 and whose record flags (+4) lack bit 0x100. Static models reach the list as type-2
-records whose flags 0x10023fe0 leaves 0, so by default `$floatz` holds no static model. iw2view leaves static model batches out
-of the build floatz pass. TODO(spec): which client-game submissions set record flag 0x100; iw2view keeps every xmodel entity in
-`$floatz`. Then the fog variant is
+records whose flags 0x10023fe0 leaves 0, so by default `$floatz` holds no static model. The scene entity record is the client
+game's refEntity copied whole (0x10024110, called by the AddRefEntityToScene export 0x10024200, refexport slot +0x50), so its +4
+is the refEntity render flags; 0x4aacb0 sets 0x100 for the entity-state shadow hint 0xa000, setshadowhint "receiver"
+(docs/spec/render-hints.md "setshadowhint"). So by default only receiver models are in `$floatz`: not the other entities, not the
+view model, not static models. iw2view follows that in the build floatz pass (`DrawItem::shadowReceiver`). Then the fog variant is
 added: when the dvar behind 0x101ce830 is set, the value at 0x106b1794 + 0x16bfac (0 none, 1 linear, 2 exp) is added for types
 3..26.
 A surface whose technique set has no technique for the result is not drawn by that walk.
@@ -236,11 +238,30 @@ lib/shade.hlsl) all compute, per pixel:
 All maps are read at the scrolled texture coordinate of the scroll variants.
 
 The static-model techniques (lprobe_sm*, lprobe_smc*; lib/lightprobe_sm.hlsl) light the same way per pixel but read the probe
-and the sun visibility from a 3D lighting texture (smodelLightingSampler): the normal, turned into the grid's basis, offsets a
-lookup position that is a per-draw constant (lprobe_sm) or a second vertex texture coordinate (lprobe_smc). TODO(spec): how the
-DLL fills that texture and the lookup constants is not decoded; iw2view keeps one probe sample per static model baked into its
-vertices with the vertex normal (docs/spec/lightgrid.md "Implementation"), so static models do not get the per-pixel normal and
-specular yet.
+and the sun visibility from the static-model lighting texture (code image `*smodel_lighting`, sampler smodelLightingSampler):
+- Texture (world load, 0x1002ac30): a 3D A8R8G8B8 image of (2W) x (2H) x 2 texels for a W x H grid of static-model slots
+  (0x10675294 / 0x10675298), filled with bytes 0x80 first (0x1002ac1a).
+- Each static model gets slot i: block (2x, 2y, 0) .. (2x + 1, 2y + 1, 1) with x = i mod W, y = i / W (0x1002a940). The block's
+  eight texels are the model's eight light-grid coefficients, corner k = z * 4 + y * 2 + x (x fastest), red / green / blue
+  from the three channels, alpha the sun visibility; each value is multiplied by 255, rounded, clamped to 0..255 (0x10029b50).
+  The model's lookup position (baseLightingCoords, record +0x54..+0x5c) is the block centre: ((2x + 1) / 2W, (2y + 1) / 2H, 0.5).
+- What goes in (0x10003290..0x10003450): the light grid sampled at the centre of the model's box (0x1002aaa0); then the sun
+  visibility times the misc_model key directLightScale and the coefficients times indirectLightScale (0x1002a8f0; both default 1,
+  a negative value is an error). A model for which an xmodel property bit (exe import behind 0x101d4b74, bit 0) is set and which
+  has a `gndLt` key takes that colour instead, the same value for all eight coefficients, alpha as the sun visibility
+  (0x1002ab00; default "FF000000"). TODO(spec): which models have that bit, and the byte order of gndLt.
+- Shader (lib/lightprobe_sm.hlsl ProbeLighting): the normal turned into the grid's basis (the lightgridLookupMatrix rows are the
+  probe's three tilted axes), divided by its largest absolute component (a point on the unit cube), times lightingLookupScale
+  (half a texel per axis) plus the block centre: the trilinear filter of the texture then blends the eight corners with weights
+  linear in the cube coordinates. The entity probe uses smoothed weights instead (the $lightgridweights cubes). The sample's
+  alpha is the sun visibility of the sun diffuse and of the specular visibility.
+- The cached variant (lprobe_smc*) takes the lookup position from a per-vertex coordinate (scaled by 1 / 32768, z + 0.5)
+  instead of the per-draw constant. TODO(spec): which submission uses it (list entity 0x7ff).
+
+iw2view: `vs_smodel` / `fs_smodel` (apps/iw2view/shaders.metal.inc) draw the static model surfaces of phong_* technique sets per
+pixel with the per-instance block in a storage buffer (`assets::LightGrid::smodelWeights`, `smodelLighting`; the geometry is
+baked into world space, so the instance travels in a vertex coordinate). Deviation: the box is the box of the model's LOD 0
+vertices, not the record's bounds (not read).
 
 World surfaces without a lightmap take the lightprobe technique too (entity 0x7fe above). TODO(spec): which probe constants the
 DLL sets for them; iw2view draws them with a fixed ambient plus sun term.

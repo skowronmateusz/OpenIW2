@@ -38,5 +38,7 @@ shader-constant upload.
 
 ## Implementation
 
-`src/assets/lightgrid.cpp`. `iw2view` samples the grid once at each static model's origin and bakes
-`probe(n) + sunVisibility · max(0, n·L) · sunColor` into the model's vertices.
+`src/assets/lightgrid.cpp`. Static models: `iw2view` samples the grid at the centre of each static model's box and draws its
+phong_* surfaces per pixel from that sample (docs/spec/material.md "Model lighting techniques", static-model lighting texture);
+other static model surfaces bake `probe(n) + sunVisibility · max(0, n·L) · sunColor` into the vertices from a sample at the
+model's origin.

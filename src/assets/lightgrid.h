@@ -31,6 +31,14 @@ public:
     // The 8 direction weights the original renderer bakes into $lightgridweights0/1 for a unit normal.
     static std::array<float, 8> weights(const std::array<float, 3>& normal);
 
+    // Static models (docs/spec/material.md "Model lighting techniques", static-model lighting texture): the eight coefficients sit in a
+    // 2 x 2 x 2 texel block that the shader reads with trilinear filtering at the normal turned into the grid's basis, so the weights
+    // are linear in the cube coordinates (no smoothing, unlike weights()).
+    static std::array<float, 8> smodelWeights(const std::array<float, 3>& normal);
+    // The block's texels: coefficients times indirectLightScale and the sun visibility times directLightScale, as bytes (x 255,
+    // rounded, clamped to 0..255) and back to 0..1.
+    static void smodelLighting(LightGridCoeffs& c, float& sunVisibility, float directLightScale, float indirectLightScale);
+
     // Lighting for a normal: sum over channels of weights · coefficients.
     static std::array<float, 3> evaluate(const LightGridCoeffs& c, const std::array<float, 3>& normal);
 

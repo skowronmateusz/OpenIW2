@@ -560,6 +560,118 @@ fragment float4 fs_probe(ProbeVertexOut in [[stage_in]],
     }
     return float4(apply_fog(base.rgb * (probe + sunDiffuse) + spec, length(in.eyeVec), u), outA);
 }
+// Static models (lprobe_sm*: docs/spec/material.md "Model lighting techniques", static-model lighting texture). Like the light-probe
+// techniques per pixel (normal map, sun, the _s specular), but the probe is the model's own eight coefficients blended with weights
+// linear in the cube coordinates (the 2 x 2 x 2 texel block read with trilinear filtering) and the sun visibility comes with them.
+// The geometry is baked into world space; lmUv.y carries the instance, whose coefficients are 7 float4 in a storage buffer
+// (R0, R1, G0, G1, B0, B1, (sun, 0, 0, 0)).
+#ifdef IW2_ENHANCED
+#define SMODEL_BUF 4
+#else
+#define SMODEL_BUF 1
+#endif
+struct SModelOut {
+    float4 position [[position]];
+    float3 normal;
+    float3 tangent;
+    float3 binormal;
+    float4 color;
+    float2 uv;
+    float3 halfAngle;
+    float3 eyeVec;
+    float inst [[flat]];
+    float bakedSun [[flat]];
+};
+vertex SModelOut vs_smodel(VertexIn in [[stage_in]], constant ProbeVertexUniforms& u [[buffer(0)]], constant GameTimeU& gt [[buffer(1)]]) {
+    SModelOut o;
+    float3 pos = in.position, nrm = in.normal;
+    flag_flap(in.wave, in.uv, gt.gameTime.w, in.tangent, in.binormal, pos, nrm); // lprobe_flag_sm*: the no-fog flag variant bends
+    o.position = world_clip(u.viewProj, u.model, pos, u.eye.w);
+    const float3 wp = (u.model * float4(pos, 1.0)).xyz;
+    o.normal = (u.model * float4(nrm, 0.0)).xyz;
+    o.tangent = (u.model * float4(in.tangent, 0.0)).xyz;
+    o.binormal = (u.model * float4(in.binormal, 0.0)).xyz;
+    o.color = in.color;
+    o.uv = in.uv;
+    o.halfAngle = normalize(normalize(u.eye.xyz - wp) + u.sun.xyz);
+    o.eyeVec = wp - u.eye.xyz;
+    o.inst = in.lmUv.y;
+    o.bakedSun = in.lmUv.x;
+    return o;
+}
+static float3 probe_lighting_linear(float3 n, thread const float4* c) {
+    const float t0 = n.x * 0.81649655 + n.z * 0.57735026;
+    const float t1 = n.x * -0.40824828 + n.y * 0.70710677 + n.z * 0.57735026;
+    const float t2 = n.x * -0.40824828 - n.y * 0.70710677 + n.z * 0.57735026;
+    const float m = max(max(abs(t0), abs(t1)), max(abs(t2), 1e-6));
+    const float a = (t0 / m + 1.0) * 0.5, b = (t1 / m + 1.0) * 0.5, z = (t2 / m + 1.0) * 0.5;
+    const float4 w0 = float4((1 - a) * (1 - b), (1 - b) * a, (1 - a) * b, b * a) * (1.0 - z);
+    const float4 w1 = float4((1 - a) * (1 - b), (1 - b) * a, (1 - a) * b, b * a) * z;
+    return float3(dot(w0, c[0]) + dot(w1, c[1]), dot(w0, c[2]) + dot(w1, c[3]), dot(w0, c[4]) + dot(w1, c[5]));
+}
+fragment float4 fs_smodel(SModelOut in [[stage_in]],
+                          constant FragmentUniforms& u [[buffer(0)]],
+                          texture2d<float> colorMap [[texture(0)]],
+                          texture2d<float> normalMap [[texture(1)]],
+                          texture2d<float> specularMap [[texture(2)]],
+                          texture2d<float> specularity [[texture(3)]],
+                          texture2d<float> detailMap [[texture(4)]],
+                          sampler colorSampler [[sampler(0)]],
+                          sampler normalSampler [[sampler(1)]],
+                          sampler specSampler [[sampler(2)]],
+                          sampler specularitySampler [[sampler(3)]],
+                          sampler detailSampler [[sampler(4)]],
+                          const device float4* smodel [[buffer(SMODEL_BUF)]]
+#ifdef IW2_ENHANCED
+                          , ENH_FS_ARGS(5)
+#endif
+                          ) {
+    float4 tex = colorMap.sample(colorSampler, in.uv);
+    if (u.lmWeights.z > 0.5) tex.rgb += detailMap.sample(detailSampler, in.uv * u.lmWeights.xy).rgb - 0.5;
+    const float4 base = tex * in.color;
+    if (!uses_coverage_ramp(u.params.x) && alpha_rejected(u.params.x, base.a)) discard_fragment();
+    const float outA = u.params.x > 3.5 ? coverage_alpha(u.params.x, base.a) : u.params.x < -0.5 ? 1.0 : base.a;
+    if (u.params.w > 0.5) return float4(apply_fog(base.rgb, length(in.eyeVec), u), outA);
+    float3 n = in.normal;
+    if (u.params.z > 0.5) {
+        const float4 ns = normalMap.sample(normalSampler, in.uv);
+        n += (2.0 * ns.a - 1.0) * in.tangent + (2.0 * ns.g - 1.0) * in.binormal;
+    }
+    n = normalize(n);
+    const int i0 = int(in.inst + 0.5) * 7;
+    float4 c[6];
+    for (int j = 0; j < 6; ++j) c[j] = smodel[i0 + j];
+    float vis = smodel[i0 + 6].x;
+    float3 probe = probe_lighting_linear(n, c);
+#ifdef IW2_ENHANCED
+    const float3 wpE = in.eyeVec + eu.eye.xyz;
+    if (vis > 0.0 && dot(u.sunDirection.xyz, n) > 0.0) {
+        const float2 wv = enh_world_sun(wpE, n, ENH_WORLD_SHADOWS);
+        vis = mix(vis, wv.x, wv.y) * enh_sun_shadow(wpE, n, eu, shadowMap, shadowSampler);
+    }
+    const float2 aoS = ENH_AO(in.position);
+    probe *= aoS.x;
+    vis *= aoS.y;
+#endif
+    const float3 sunDiffuse = vis * max(dot(u.sunDirection.xyz, n), 0.0) * u.sunColor.rgb;
+    float3 spec = float3(0.0);
+    if (u.params.y > 0.5) {
+        const float4 ss = specularMap.sample(specSampler, in.uv);
+        const float nh = dot(normalize(in.halfAngle), n);
+        const float3 strength = float3(specularity.sample(specularitySampler, float2(ss.a, nh)).r);
+        spec = mix(0.3, 1.0, vis) * (u.sunColor.rgb * ss.rgb * strength) * u.sunColor.w;
+#ifdef IW2_ENHANCED
+        if (eu.specParams.x > 0.5) {
+            const float3 vE = normalize(-in.eyeVec);
+            const float pw = enh_phong_power(ss.a);
+            spec = enh_ggx_sun(n, vE, u.sunDirection.xyz, ss.rgb, pw) * u.sunColor.rgb * vis * u.sunColor.w * eu.specParams.y;
+            const float occ = saturate(dot(probe + sunDiffuse, float3(0.333)) * 1.5);
+            spec += enh_reflection(wpE, n, vE, ss.rgb, pw, in.position, ENH_REFLECT) * occ * eu.specParams.z;
+        }
+#endif
+    }
+    return float4(apply_fog(base.rgb * (probe + sunDiffuse) + spec, length(in.eyeVec), u), outA);
+}
 // ---- glow / bloom post chain (materials/shaders/glow_setup.hlsl, filter_symmetric_N.hlsl, glow_apply_bloom/sky_bleed.hlsl) ----
 struct GlowU {
     float4 a; // setup: xy = dest texel size (inv width/height), blur: xy = step in uv, z = radius, apply: x = bloom intensity, y = sky bleed intensity

@@ -69,6 +69,25 @@ bool LightGrid::sample(const std::array<float, 3>& pos, LightGridCoeffs& out, fl
     return true;
 }
 
+std::array<float, 8> LightGrid::smodelWeights(const std::array<float, 3>& n) {
+    const float t0 = n[0] * 0.81649655f + n[2] * 0.57735026f;
+    const float t1 = n[0] * -0.40824828f + n[1] * 0.70710677f + n[2] * 0.57735026f;
+    const float t2 = n[0] * -0.40824828f - n[1] * 0.70710677f + n[2] * 0.57735026f;
+    const float m = std::max({std::abs(t0), std::abs(t1), std::abs(t2), 1e-6f});
+    const float wx = (t0 / m + 1) * 0.5f, wy = (t1 / m + 1) * 0.5f, wz = (t2 / m + 1) * 0.5f;
+    std::array<float, 8> w{};
+    for (int k = 0; k < 8; ++k)
+        w[size_t(k)] = ((k & 1) ? wx : 1 - wx) * ((k & 2) ? wy : 1 - wy) * ((k & 4) ? wz : 1 - wz);
+    return w;
+}
+
+void LightGrid::smodelLighting(LightGridCoeffs& c, float& sun, float direct, float indirect) {
+    auto byte = [](float v) { return float(std::clamp(int(v * 255.0f + 9.313225746154785e-10f), 0, 255)) / 255.0f; }; // 0x10029b50
+    for (auto& ch : c)
+        for (float& v : ch) v = byte(v * indirect);
+    sun = byte(sun * direct);
+}
+
 std::array<float, 8> LightGrid::weights(const std::array<float, 3>& n) {
     // Project onto three axes tilted 54.7 degrees from vertical, spaced 120 degrees apart.
     const float t0 = n[0] * 0.81649655f + n[2] * 0.57735026f;
