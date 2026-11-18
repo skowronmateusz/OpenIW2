@@ -279,6 +279,16 @@ void checkSet(bool multiplayer) {
             CHECK(m && maxY <= lastY + 1.0f);
         }
         for (const EnhancedRow& r : enhancedRows()) CHECK(enhancedRowAvailable(r) == (r.needs != EnhancedRow::RayTracing));
+        setEnhancedAvailability(true, true);
+        CHECK(enhancedMenuSource().find("iw2_enh_rtrefl") != std::string::npos);
+        {   // every row shown: the page still ends where the shorter one does (above the bottom line)
+            MenuLibrary all(vfs);
+            all.parseSource(enhancedMenuSource(), "enhanced.menu");
+            const Menu* m = all.find(kEnhancedPage);
+            float maxY = 0;
+            if (m) for (const auto& it : m->items) maxY = std::max(maxY, it->rect.y);
+            CHECK(m && maxY <= lastY + 1.0f);
+        }
         setEnhancedAvailability(false, false);
         CHECK(!registeredDefault("r_enhMetalFX").empty() && isArchivedCvar("r_enhMetalFX"));
     }
@@ -311,7 +321,7 @@ int main() {
     CHECK(missionSvCheats(true, false) == "1" && missionSvCheats(false, false).empty() && missionSvCheats(true, true).empty());
     // Texts: English and Polish (Windows-1250) for every key the page uses.
     const auto en = openIw2Strings("english"), pl = openIw2Strings("polish");
-    CHECK(en.size() == pl.size() && en.size() == 41);
+    CHECK(en.size() == pl.size() && en.size() == 42);
     {   // every OpenIW2 string key the two pages use has a text (shipped MENU_* keys come from the game's own files)
         auto has = [&](const std::string& key) { for (const auto& [k, t] : en) if ("@" + k == key) return true; return false; };
         for (const EnhancedRow& r : enhancedRows()) {

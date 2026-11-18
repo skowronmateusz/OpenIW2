@@ -39,6 +39,7 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhGrade` | 0 | Colour grade: 0 neutral, 1 "period film" (contrast, desaturation, warm shadows, grain). |
 | `r_enhMapLightSpec` | preset | GGX specular from the map's light entities near the camera (their diffuse stays baked). |
 | `r_enhMetalFX` | 0 | MetalFX temporal anti-aliasing instead of ours (needs TAA, a MetalFX GPU and the patched SDL; see "Stage 5"). |
+| `r_enhRTReflections` | 1 | Ray-traced reflections on water and the reflective surface classes (GPU family 9 and later: M3 and later; see "Stage 5"). |
 | `r_enhRenderScale` | 1 | With MetalFX: the scene's resolution as a fraction of the window (0.5..1; the page offers 1, 0.77, 0.67, 0.5), upscaled by MetalFX. |
 | `r_enhProbes` | preset | Reflection probes captured when the map loads: rooms reflect themselves instead of the sky (off in the low preset). |
 | `r_enhDOF` | 0 | Depth of field while aiming down the sights (0 off .. 2). |
@@ -163,7 +164,8 @@ neither (they are not in the opaque depth).
 - Reflective surface classes: world materials whose surface type (surfaceFlags bits 20-24) is water, glass, ice or metal get
   our own GGX parameters even without a specular map (water and glass f0 0.02, nearly smooth; metal f0 from the colour,
   rougher).
-- Screen-space reflections, for those classes and the water technique only: a 20-step ray in `$floatz` from the surface along
+- Screen-space reflections, for those classes and the water technique only (the water technique's enhanced uniforms were not
+  bound until stage 5, so before that the water kept its own cube): a 20-step ray in `$floatz` from the surface along
   the reflection; at a hit, the previous frame's resolved image (the TAA history) at the hit point's previous screen position
   replaces the sky, faded at the screen edges and with roughness. Needs TAA. On all specular surfaces this cost about 4.7 ms on
   the bench, hence the restriction.
@@ -326,6 +328,30 @@ The jitter signs were checked again against a supersampled reference (2560 x 144
 at 67 % and 4.3 at 50 % with these signs, 6.3 and 7.7 with both flipped (which look sharper, but alias), 3.1 for MetalFX at
 native size and for our TAA. Cost at 1920 x 1080, high preset, duhoc beach: native with our TAA 6.64 ms; MetalFX at 77 % 6.10,
 67 % 5.35, 50 % 4.26 ms; medium preset 5.73 ms, with MetalFX at 67 % 4.86 ms. The reflection probes capture at native size.
+
+### Ray-traced reflections
+
+On GPUs with hardware ray tracing (`r_enhRTReflections`, the page's "Ray-traced reflections" row, shown only there):
+- The scene: a two-level acceleration structure (`metal::SceneRT`): the static world and static models (opaque and
+  alpha-tested surfaces of `Scene::batches`, built once per map) plus the frame's moving objects (models in the world: characters,
+  their weapons, vehicles, script models; not the view model or effect sprites), one instance each with its model-to-world
+  transform. Rigid models keep their bottom level; skinned ones are built once for refitting and refit every frame, all in one
+  encoder with one scratch buffer. It is bound at fragment buffer 6 of the scene passes, above SDL's buffers (the patch's render
+  pass encoder getter); a placeholder that nothing hits is bound when it is off.
+- The ray queries live in a second build of the enhanced library (`IW2_ENH_RT`), used only by the pipelines of the draws that
+  reflect: reflective-class world surfaces and water. In every scene shader, even unused, the ray query code cost 11 ms per frame.
+- The reflection (`enh_rt_reflection`), for surfaces up to GGX alpha 0.45 (`game::kRtReflectionMaxAlpha`), rays up to 6000 units:
+  one mirror ray. A hit that is on screen and is the visible surface there (its clip w matches the opaque depth) takes the
+  previous frame's image at its previous screen position (textured, lit, moving objects included); another hit takes the
+  reflection probe of its own cell, a miss the environment as without ray tracing (sky or probe). The temporal resolve (TAA or
+  MetalFX) is the only filtering; a mirror ray needs no other. Blended reflective surfaces (the sea at duhoc) get it too, since
+  the ray needs no depth of the surface itself.
+- Limits: the moving objects are those of the frame's item list, which is culled to a wide frustum (32:9) for the CPU skinning,
+  so objects behind the camera do not reflect; muzzle flashes and other effects appear only through the previous frame's image
+  (one frame late, and not off screen). `IW2_RT_DEBUG=1` colours the reflections: red an on-screen hit, green another hit,
+  blue a miss.
+- Cost at 1920 x 1080, high preset: duhoc beach 6.81 ms without, 7.70 ms with (129 moving objects, 74000 triangles); rhine
+  3.62 / 4.63 ms.
 
 ## Cost
 

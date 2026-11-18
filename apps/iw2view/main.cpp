@@ -2549,6 +2549,12 @@ struct Renderer {
     // ---- enhanced mode (docs/render-enhanced.md, src/game/renderenhanced.h): an openiw2 addition, off by default ----
     game::EnhancedSettings enh;   // set before init; latched for the renderer's life (like r_aaSamples)
     std::string enhancedLibrary;  // kEnhancedPrefix + kShaderSource + kEnhancedPost
+    // Stage 5: the same with ray queries (IW2_ENH_RT), only for the pipelines of the draws that reflect (reflective-class world
+    // surfaces, water): compiled into every scene shader the ray query code cost 11 ms per frame even unused.
+    std::string enhancedLibraryRT;
+    SDL_GPUShader* fmainRT = nullptr;
+    SDL_GPUGraphicsPipeline* statePipelinesRT[5][3][3] = {};
+    SDL_GPUGraphicsPipeline* waterPipelinesRT[2][3] = {};
     bool edrOut = false;          // the window swapchain is extended linear (RGBA16F); the frame is presented by fs_enh_present
     float edrWhite = 1.0f;        // tone curve white (display encoding) for the current EDR headroom; 1 for SDR
     bool captureMode = false;     // captureRgba: an 8-bit SDR image even when the window is EDR
@@ -2561,6 +2567,7 @@ struct Renderer {
         float bsPos[2][4]; float bsColor[2][4]; float bsParams[4];
         float probeGrid[2][4]; // reflection probes: xyz grid origin, w 1 / cell size; xyz cells per axis, w 1 = probes present
         float mipBias[4];      // x: log2 of the render scale (stage 5)
+        float rtParams[4];     // stage 5 ray queries: x 1 = ray-traced reflections, y roughness cutoff (GGX alpha), z range
     };
     std::vector<const game::MapLight*> bakedShadowLights; // this frame's baked lights with moving-caster shadows (atlas rows 4, 5)
     // Materials (stage 3): the sky cube with a mip chain for rough reflections, and this frame's history / depth for reflections.
@@ -2728,6 +2735,39 @@ struct Renderer {
     SDL_GPUTexture* mfxDepth = nullptr;
     uint32_t mfxW = 0, mfxH = 0;
     bool metalFxLogged = false;
+    // Stage 5 ray queries: the scene (static world, then the moving objects), and whether this frame uses it.
+    metal::SceneRT sceneRT;
+    uint64_t sceneRTFor = 0;
+    bool rtReflNow = false;
+    void prepareSceneRT(SDL_GPUCommandBuffer* cmd, const Scene& scene, const std::vector<DrawItem>& items) {
+        if (!metalCaps.rayTracing || !enh.enabled) return;
+        const bool active = rtReflNow;
+        if (active && sceneRTFor != scene.serial) {
+            sceneRTFor = scene.serial;
+            sceneRT.clearStatic();
+            std::vector<std::pair<uint32_t, uint32_t>> ranges;
+            for (const Batch& b : scene.batches) // the static world and static models that hide what lies behind them
+                if ((b.pass == Pass::Opaque || b.pass == Pass::AlphaTest) && b.indexCount >= 3) ranges.push_back({b.firstIndex, b.indexCount});
+            sceneRT.buildStatic(dev, cmd, scene.vertices, uint32_t(sizeof(GpuVertex)), scene.indices, ranges);
+        }
+        // the moving objects: models in the world (not the view model or effect sprites), opaque and alpha-tested surfaces
+        sceneRT.beginItems();
+        if (active)
+            for (const DrawItem& it : items) {
+                if (!it.model || it.effects || it.depthMax < 1.0f || !it.model->vertices || !it.model->indices) continue;
+                std::vector<std::pair<uint32_t, uint32_t>> ranges;
+                for (const Batch& b : it.model->batches)
+                    if ((b.pass == Pass::Opaque || b.pass == Pass::AlphaTest) && b.indexCount >= 3) ranges.push_back({b.firstIndex, b.indexCount});
+                sceneRT.addItem(it.model->vertices, it.model->vertexOffset, uint32_t(sizeof(GpuVertex)), it.model->indices, ranges,
+                                it.transform.data(), it.model, it.model->arenaVertices);
+            }
+        sceneRT.buildFrame(dev, cmd, active);
+        static bool logged = false;
+        if (active && !logged) logged = true, std::cout << sceneRT.describe() << "\n";
+    }
+    void bindSceneRT(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass) {
+        if (metalCaps.rayTracing && enh.enabled) sceneRT.bind(dev, cmd, pass);
+    }
     bool enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_t rh, uint32_t w, uint32_t h, const Camera& cam, const void* taaUniforms,
                            size_t taaUniformSize);
     void enhFloatzVelocity(SDL_GPUCommandBuffer* cmd, const SDL_GPUColorTargetInfo& fz, const SDL_GPUDepthStencilTargetInfo& fds, const Scene& scene,
@@ -3037,7 +3077,9 @@ struct Renderer {
         vs.code = reinterpret_cast<const Uint8*>(kShaderSource);
         vs.code_size = sizeof(kShaderSource) - 1;
         if (enh.enabled) {
+            // stage 5: the ray query variant only where the GPU has hardware ray tracing (docs/render-enhanced.md)
             enhancedLibrary = std::string(kEnhancedPrefix) + kShaderSource + kEnhancedPost;
+            if (metalCaps.rayTracing) enhancedLibraryRT = "#define IW2_ENH_RT 1\n" + enhancedLibrary;
             vs.code = reinterpret_cast<const Uint8*>(enhancedLibrary.data());
             vs.code_size = enhancedLibrary.size();
         }
@@ -3066,6 +3108,13 @@ struct Renderer {
         }
         SDL_GPUShader* fsh = SDL_CreateGPUShader(dev, &fmain);
         if (!vsh || !fsh) sdlFail("SDL_CreateGPUShader");
+        if (enh.enabled && !enhancedLibraryRT.empty()) {
+            SDL_GPUShaderCreateInfo frt = fmain;
+            frt.code = reinterpret_cast<const Uint8*>(enhancedLibraryRT.data());
+            frt.code_size = enhancedLibraryRT.size();
+            fmainRT = SDL_CreateGPUShader(dev, &frt);
+            if (!fmainRT) sdlFail("ray query shader");
+        }
 
         SDL_GPUVertexBufferDescription vbd{};
         vbd.slot = 0;
@@ -3181,6 +3230,12 @@ struct Renderer {
                     multisampleScene(pi, p == int(Pass::AlphaTest));
                     statePipelines[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
                     if (!statePipelines[p][lvl][c]) sdlFail("SDL_CreateGPUGraphicsPipeline");
+                    if (fmainRT) {
+                        SDL_GPUGraphicsPipelineCreateInfo rpi = pi;
+                        rpi.fragment_shader = fmainRT;
+                        statePipelinesRT[p][lvl][c] = SDL_CreateGPUGraphicsPipeline(dev, &rpi);
+                        if (!statePipelinesRT[p][lvl][c]) sdlFail("ray query pipeline");
+                    }
                     SDL_GPUGraphicsPipelineCreateInfo ppi = pi; // lprobe*: same states, the probe shaders
                     ppi.vertex_shader = probeVsh;
                     ppi.fragment_shader = probeFsh;
@@ -3478,10 +3533,18 @@ struct Renderer {
             SDL_GPUShaderCreateInfo wfs = fs;
             wfs.entrypoint = "fs_water";
             wfs.num_samplers = 2;
-            if (enh.enabled) wfs.num_samplers = 9, wfs.num_uniform_buffers = 3, wfs.num_storage_buffers = 3;
             wfs.num_uniform_buffers = 1;
+            if (enh.enabled) wfs.num_samplers = 9, wfs.num_uniform_buffers = 3, wfs.num_storage_buffers = 3; // after the default count
             SDL_GPUShader* wv = SDL_CreateGPUShader(dev, &wvs);
             SDL_GPUShader* wf = SDL_CreateGPUShader(dev, &wfs);
+            SDL_GPUShader* wfRT = nullptr; // stage 5: the water with ray-traced reflections
+            if (enh.enabled && !enhancedLibraryRT.empty()) {
+                SDL_GPUShaderCreateInfo wrt = wfs;
+                wrt.code = reinterpret_cast<const Uint8*>(enhancedLibraryRT.data());
+                wrt.code_size = enhancedLibraryRT.size();
+                wfRT = SDL_CreateGPUShader(dev, &wrt);
+                if (!wfRT) sdlFail("ray query water shader");
+            }
             if (!wv || !wf) sdlFail("water shaders");
             for (int blend = 0; blend < 2; ++blend) {
                 SDL_GPUColorTargetDescription ct{};
@@ -3516,10 +3579,17 @@ struct Renderer {
                     multisampleScene(pi, false);
                     waterPipelines[blend][c] = SDL_CreateGPUGraphicsPipeline(dev, &pi);
                     if (!waterPipelines[blend][c]) sdlFail("water pipeline");
+                    if (wfRT) {
+                        SDL_GPUGraphicsPipelineCreateInfo rpi = pi;
+                        rpi.fragment_shader = wfRT;
+                        waterPipelinesRT[blend][c] = SDL_CreateGPUGraphicsPipeline(dev, &rpi);
+                        if (!waterPipelinesRT[blend][c]) sdlFail("ray query water pipeline");
+                    }
                 }
             }
             SDL_ReleaseGPUShader(dev, wv);
             SDL_ReleaseGPUShader(dev, wf);
+            if (wfRT) SDL_ReleaseGPUShader(dev, wfRT);
         }
         SDL_ReleaseGPUShader(dev, vsh);
         SDL_ReleaseGPUShader(dev, fsh);
@@ -3861,6 +3931,7 @@ struct Renderer {
         const uint32_t rw = rsz[0], rh = rsz[1];
         const bool scaled = rw != w || rh != h;
         outW = w, outH = h, renderScaleNow = float(rw) / float(w);
+        rtReflNow = enh.enabled && enh.rtReflections && metalCaps.rayTracing && !capturingProbes;
         if (taaOn) {
             const auto j = game::taaJitter(taaFrame, int(rw), int(rh), game::taaJitterPhases(rscale));
             cam.jitterX = j[0], cam.jitterY = j[1];
@@ -4081,7 +4152,9 @@ struct Renderer {
             if (enh.enabled) frameDepth = floatzTex; // screen-space reflections read it
             if (enh.enabled && (enh.ao || enh.contactShadows)) enhAO(cmd, rw, rh, cam);
         }
+        prepareSceneRT(cmd, scene, items); // stage 5: the frame's ray query scene, before the scene passes
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &ds);
+        bindSceneRT(cmd, pass);
 
         // World surface groups: the static world, then each visible brush model at its entity transform (same shaders,
         // lightmaps and buffers).
@@ -4103,8 +4176,9 @@ struct Renderer {
             fu.scroll[2] = scene.details[size_t(d)].scale[0];
             fu.scroll[3] = scene.details[size_t(d)].scale[1];
         };
-        auto bindOffset = [&](Pass p, int level, int cull, VU u, float tieBias = 0.0f) {
-            SDL_BindGPUGraphicsPipeline(pass, statePipelines[int(p)][level][cull]);
+        auto bindOffset = [&](Pass p, int level, int cull, VU u, float tieBias = 0.0f, bool rayQueries = false) {
+            SDL_BindGPUGraphicsPipeline(pass, rayQueries && statePipelinesRT[int(p)][level][cull] ? statePipelinesRT[int(p)][level][cull]
+                                                                                                    : statePipelines[int(p)][level][cull]);
             u.eye[3] = float(level) * kPolygonOffsetBias / 65536.0f + tieBias;
             SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof(u));
         };
@@ -4302,7 +4376,8 @@ struct Renderer {
             const WaterMat& wm = scene.waters[size_t(b.texture)];
             if (!wm.cube || !wm.normalMap) return;
             bindStream(0, indexBuf);
-            SDL_BindGPUGraphicsPipeline(pass, waterPipelines[wm.blend ? 1 : 0][b.cull]);
+            SDL_BindGPUGraphicsPipeline(pass, rtReflNow && waterPipelinesRT[wm.blend ? 1 : 0][b.cull] ? waterPipelinesRT[wm.blend ? 1 : 0][b.cull]
+                                                                                                    : waterPipelines[wm.blend ? 1 : 0][b.cull]);
             VU wu = vu;
             wu.model = model;
             SDL_PushGPUVertexUniformData(cmd, 0, &wu, sizeof(wu));
@@ -4399,7 +4474,8 @@ struct Renderer {
                     bindStream(0, r.indices);
                     VU gu = vu;
                     gu.model = *r.model;
-                    bindOffset(p, b.polygonOffset, b.cull, gu, tieBias);
+                    const int reflCls = size_t(b.texture) < scene.texReflect.size() ? scene.texReflect[size_t(b.texture)] : 0;
+                    bindOffset(p, b.polygonOffset, b.cull, gu, tieBias, rtReflNow && reflCls > 0); // stage 5: the ray query pipeline
                     const Lightmap& lm = b.lightmap >= 0 ? scene.lightmaps[size_t(b.lightmap)] : scene.dummyLightmap;
                     SDL_GPUTextureSamplerBinding tex[4] = {
                         {scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {lm.coeffs, clampSampler}, {lm.sun, clampSampler}, detailBinding(b.detail)};
@@ -4455,6 +4531,7 @@ struct Renderer {
             dsAgain.load_op = SDL_GPU_LOADOP_LOAD;
             dsAgain.store_op = SDL_GPU_STOREOP_DONT_CARE;
             pass = SDL_BeginGPURenderPass(cmd, &again, 1, &dsAgain);
+            bindSceneRT(cmd, pass);
             SDL_BindGPUVertexBuffers(pass, 0, &vb, 1);
             SDL_BindGPUIndexBuffer(pass, &ib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
             SDL_PushGPUVertexUniformData(cmd, 0, &vu, sizeof(vu));
@@ -5193,6 +5270,9 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
         frameDepth = nullptr;
         f.specParams[0] = enh.ggx ? 1.0f : 0.0f, f.specParams[1] = enh.specScale, f.specParams[2] = enh.envScale, f.specParams[3] = float(std::max(envLevels - 1, 0));
         f.mipBias[0] = std::log2(renderScaleNow); // textures at the output size's detail while the scene renders smaller
+        if (rtReflNow) f.rtParams[0] = 1.0f, f.rtParams[1] = game::kRtReflectionMaxAlpha, f.rtParams[2] = game::kRtReflectionRange;
+        static const bool rtDebug = std::getenv("IW2_RT_DEBUG") != nullptr; // debug: reflections red (on-screen hit), green (other hit), blue (miss)
+        if (rtReflNow && rtDebug) f.rtParams[3] = 1.0f;
         if (enh.probes && probeCount > 0 && probeIdxBuf && !capturingProbes) {
             for (int a = 0; a < 3; ++a) f.probeGrid[0][a] = probeGrid.origin[a], f.probeGrid[1][a] = float(probeGrid.dims[a]);
             f.probeGrid[0][3] = 1.0f / probeGrid.cell, f.probeGrid[1][3] = 1.0f;

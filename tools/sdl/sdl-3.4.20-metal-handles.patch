@@ -1,7 +1,7 @@
 diff -ruN a/include/SDL3/SDL_gpu.h b/include/SDL3/SDL_gpu.h
 --- a/include/SDL3/SDL_gpu.h
 +++ b/include/SDL3/SDL_gpu.h
-@@ -4629,6 +4629,45 @@
+@@ -4629,6 +4629,54 @@
  
  #endif /* SDL_PLATFORM_GDK */
  
@@ -44,13 +44,22 @@ diff -ruN a/include/SDL3/SDL_gpu.h b/include/SDL3/SDL_gpu.h
 + */
 +extern SDL_DECLSPEC void * SDLCALL SDL_GetGPUBufferMetalBuffer(SDL_GPUDevice *device, SDL_GPUBuffer *buffer);
 +
++/**
++ * Get the id<MTLRenderCommandEncoder> of an open render pass of the Metal backend, to bind native resources (e.g. an
++ * acceleration structure) at buffer indices SDL does not use (above the pipeline's uniform and storage buffers).
++ *
++ * \param render_pass a render pass.
++ * \returns the encoder as a void pointer (not retained), or NULL on other backends.
++ */
++extern SDL_DECLSPEC void * SDLCALL SDL_GetGPURenderPassMetalEncoder(SDL_GPURenderPass *render_pass);
++
  #ifdef __cplusplus
  }
  #endif /* __cplusplus */
 diff -ruN a/src/dynapi/SDL_dynapi.sym b/src/dynapi/SDL_dynapi.sym
 --- a/src/dynapi/SDL_dynapi.sym
 +++ b/src/dynapi/SDL_dynapi.sym
-@@ -1271,6 +1271,10 @@
+@@ -1271,6 +1271,11 @@
      SDL_LoadSurface_IO;
      SDL_LoadSurface;
      SDL_SetWindowFillDocument;
@@ -58,13 +67,14 @@ diff -ruN a/src/dynapi/SDL_dynapi.sym b/src/dynapi/SDL_dynapi.sym
 +    SDL_GetGPUCommandBufferMetalCommandBuffer;
 +    SDL_GetGPUTextureMetalTexture;
 +    SDL_GetGPUBufferMetalBuffer;
++    SDL_GetGPURenderPassMetalEncoder;
      # extra symbols go here (don't modify this line)
    local: *;
  };
 diff -ruN a/src/dynapi/SDL_dynapi_overrides.h b/src/dynapi/SDL_dynapi_overrides.h
 --- a/src/dynapi/SDL_dynapi_overrides.h
 +++ b/src/dynapi/SDL_dynapi_overrides.h
-@@ -1297,3 +1297,7 @@
+@@ -1297,3 +1297,8 @@
  #define SDL_LoadSurface_IO SDL_LoadSurface_IO_REAL
  #define SDL_LoadSurface SDL_LoadSurface_REAL
  #define SDL_SetWindowFillDocument SDL_SetWindowFillDocument_REAL
@@ -72,10 +82,11 @@ diff -ruN a/src/dynapi/SDL_dynapi_overrides.h b/src/dynapi/SDL_dynapi_overrides.
 +#define SDL_GetGPUCommandBufferMetalCommandBuffer SDL_GetGPUCommandBufferMetalCommandBuffer_REAL
 +#define SDL_GetGPUTextureMetalTexture SDL_GetGPUTextureMetalTexture_REAL
 +#define SDL_GetGPUBufferMetalBuffer SDL_GetGPUBufferMetalBuffer_REAL
++#define SDL_GetGPURenderPassMetalEncoder SDL_GetGPURenderPassMetalEncoder_REAL
 diff -ruN a/src/dynapi/SDL_dynapi_procs.h b/src/dynapi/SDL_dynapi_procs.h
 --- a/src/dynapi/SDL_dynapi_procs.h
 +++ b/src/dynapi/SDL_dynapi_procs.h
-@@ -1305,3 +1305,7 @@
+@@ -1305,3 +1305,8 @@
  SDL_DYNAPI_PROC(SDL_Surface*,SDL_LoadSurface_IO,(SDL_IOStream *a,bool b),(a,b),return)
  SDL_DYNAPI_PROC(SDL_Surface*,SDL_LoadSurface,(const char *a),(a),return)
  SDL_DYNAPI_PROC(bool,SDL_SetWindowFillDocument,(SDL_Window *a,bool b),(a,b),return)
@@ -83,10 +94,11 @@ diff -ruN a/src/dynapi/SDL_dynapi_procs.h b/src/dynapi/SDL_dynapi_procs.h
 +SDL_DYNAPI_PROC(void*,SDL_GetGPUCommandBufferMetalCommandBuffer,(SDL_GPUCommandBuffer *a),(a),return)
 +SDL_DYNAPI_PROC(void*,SDL_GetGPUTextureMetalTexture,(SDL_GPUDevice *a,SDL_GPUTexture *b),(a,b),return)
 +SDL_DYNAPI_PROC(void*,SDL_GetGPUBufferMetalBuffer,(SDL_GPUDevice *a,SDL_GPUBuffer *b),(a,b),return)
++SDL_DYNAPI_PROC(void*,SDL_GetGPURenderPassMetalEncoder,(SDL_GPURenderPass *a),(a),return)
 diff -ruN a/src/gpu/SDL_gpu.c b/src/gpu/SDL_gpu.c
 --- a/src/gpu/SDL_gpu.c
 +++ b/src/gpu/SDL_gpu.c
-@@ -784,6 +784,73 @@
+@@ -784,6 +784,91 @@
      return device->backend;
  }
  
@@ -95,6 +107,7 @@ diff -ruN a/src/gpu/SDL_gpu.c b/src/gpu/SDL_gpu.c
 +extern void *METAL_GetNativeCommandBuffer(SDL_GPUCommandBuffer *commandBuffer);
 +extern void *METAL_GetNativeTexture(SDL_GPUTexture *texture);
 +extern void *METAL_GetNativeBuffer(SDL_GPUBuffer *buffer);
++extern void *METAL_GetNativeRenderEncoder(SDL_GPUCommandBuffer *commandBuffer);
 +#endif
 +
 +void *SDL_GetGPUDeviceMetalDevice(SDL_GPUDevice *device)
@@ -157,13 +170,30 @@ diff -ruN a/src/gpu/SDL_gpu.c b/src/gpu/SDL_gpu.c
 +    return NULL;
 +}
 +
++void *SDL_GetGPURenderPassMetalEncoder(SDL_GPURenderPass *render_pass)
++{
++    if (render_pass == NULL) {
++        SDL_InvalidParamError("render_pass");
++        return NULL;
++    }
++#ifdef SDL_GPU_METAL
++    SDL_GPUCommandBuffer *command_buffer = ((RenderPass *)render_pass)->command_buffer;
++    SDL_GPUDevice *device = command_buffer ? ((CommandBufferCommonHeader *)command_buffer)->device : NULL;
++    if (device && SDL_strcmp(device->backend, "metal") == 0) {
++        return METAL_GetNativeRenderEncoder(command_buffer);
++    }
++#endif
++    SDL_Unsupported();
++    return NULL;
++}
++
  SDL_GPUShaderFormat SDL_GetGPUShaderFormats(SDL_GPUDevice *device)
  {
      CHECK_DEVICE_MAGIC(device, SDL_GPU_SHADERFORMAT_INVALID);
 diff -ruN a/src/gpu/metal/SDL_gpu_metal.m b/src/gpu/metal/SDL_gpu_metal.m
 --- a/src/gpu/metal/SDL_gpu_metal.m
 +++ b/src/gpu/metal/SDL_gpu_metal.m
-@@ -700,6 +700,29 @@
+@@ -700,6 +700,34 @@
  
  // Quit
  
@@ -188,6 +218,11 @@ diff -ruN a/src/gpu/metal/SDL_gpu_metal.m b/src/gpu/metal/SDL_gpu_metal.m
 +{
 +    MetalBufferContainer *container = (MetalBufferContainer *)buffer;
 +    return container->activeBuffer ? (__bridge void *)container->activeBuffer->handle : NULL;
++}
++
++void *METAL_GetNativeRenderEncoder(SDL_GPUCommandBuffer *commandBuffer)
++{
++    return (__bridge void *)((MetalCommandBuffer *)commandBuffer)->renderEncoder;
 +}
 +
  static void METAL_DestroyDevice(SDL_GPUDevice *device)

@@ -3,11 +3,17 @@
 // reports them unavailable, so the enhanced renderer keeps its own paths.
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 struct SDL_GPUDevice;
 struct SDL_GPUCommandBuffer;
 struct SDL_GPUTexture;
+struct SDL_GPUBuffer;
+struct SDL_GPURenderPass;
 
 namespace iw2::metal {
 
@@ -36,6 +42,41 @@ public:
                 SDL_GPUTexture* output, unsigned inW, unsigned inH, unsigned outW, unsigned outH, float jitterNdcX, float jitterNdcY,
                 bool reset);
     std::string describe() const; // the scaler's size and the texture usages it needs (log)
+
+private:
+    struct Impl;
+    Impl* impl_;
+};
+
+// The scene for ray queries in the enhanced fragment shaders (docs/render-enhanced.md "Stage 5"): a two-level structure, the static
+// world (built once per map) plus moving objects (instances, rebuilt per frame), bound at fragment buffer kSceneBufferIndex of
+// every scene render pass (above SDL's uniform and storage buffers). Without a scene a placeholder that nothing hits is bound.
+class SceneRT {
+public:
+    static constexpr unsigned kSceneBufferIndex = 6;
+    // instance masks: what a ray may hit
+    static constexpr uint32_t kMaskStatic = 1, kMaskDynamic = 2;
+    SceneRT();
+    ~SceneRT();
+    SceneRT(const SceneRT&) = delete;
+    SceneRT& operator=(const SceneRT&) = delete;
+    // The static world: index ranges (first, count) of one vertex / index buffer (32-bit indices, the position first in a vertex).
+    bool buildStatic(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUBuffer* vertices, uint32_t vertexStride, SDL_GPUBuffer* indices,
+                     const std::vector<std::pair<uint32_t, uint32_t>>& ranges);
+    void clearStatic();
+    bool hasStatic() const;
+    // The frame's top level (static world plus this frame's moving objects); on the command buffer between SDL passes.
+    // The frame's moving objects: one instance each, model-to-world transform (column-major 4 x 4), index ranges of its own
+    // vertex (at a byte offset) / index buffers. key: the model (its bottom level is kept); deforming: its vertices are rewritten
+    // every frame (skinned), so the kept bottom level is refit each frame.
+    void beginItems();
+    void addItem(SDL_GPUBuffer* vertices, uint32_t vertexOffset, uint32_t vertexStride, SDL_GPUBuffer* indices,
+                 const std::vector<std::pair<uint32_t, uint32_t>>& ranges, const float transform[16], const void* key, bool deforming);
+    // active false: no top level this frame (the placeholder is bound).
+    bool buildFrame(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, bool active);
+    // Binds the frame's top level (or the placeholder) to an open render pass.
+    void bind(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass);
+    std::string describe() const;
 
 private:
     struct Impl;

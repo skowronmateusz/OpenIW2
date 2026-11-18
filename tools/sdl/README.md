@@ -1,12 +1,14 @@
 # SDL patch: native Metal handles
 
-`sdl-3.4.20-metal-handles.patch` adds four functions to SDL 3.4.20 (SDL's GPU API has no access to the Metal objects behind
+`sdl-3.4.20-metal-handles.patch` adds five functions to SDL 3.4.20 (SDL's GPU API has no access to the Metal objects behind
 its handles):
 
 - `SDL_GetGPUDeviceMetalDevice`: the `id<MTLDevice>` of a GPU device,
 - `SDL_GetGPUCommandBufferMetalCommandBuffer`: the `id<MTLCommandBuffer>` of a command buffer,
 - `SDL_GetGPUTextureMetalTexture` and `SDL_GetGPUBufferMetalBuffer`: the `id<MTLTexture>` / `id<MTLBuffer>` a texture or buffer
   currently refers to,
+- `SDL_GetGPURenderPassMetalEncoder`: the `id<MTLRenderCommandEncoder>` of an open render pass (to bind an acceleration
+  structure above SDL's buffer indices),
 
 and the macro `SDL_GPU_OPENIW2_METAL_HANDLES`. Other backends return NULL. With them the enhanced renderer encodes MetalFX and
 ray tracing work into SDL's command buffers between SDL passes (docs/render-enhanced.md "Stage 5"). The patch contains only

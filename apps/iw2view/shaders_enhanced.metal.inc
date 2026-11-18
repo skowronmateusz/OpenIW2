@@ -10,6 +10,18 @@ R"MSL(
 #include <metal_stdlib>
 using namespace metal;
 #define IW2_ENHANCED 1
+// Stage 5 ray queries (IW2_ENH_RT, defined in front of this prefix only on GPUs with hardware ray tracing): the scene at fragment
+// buffer 6 (metal::SceneRT::kSceneBufferIndex), above SDL's uniform and storage buffers.
+#ifdef IW2_ENH_RT
+#include <metal_raytracing>
+#define ENH_RT_ARG , metal::raytracing::instance_acceleration_structure rtScene [[buffer(6)]]
+#define ENH_RT_PARAM , metal::raytracing::instance_acceleration_structure rtScene
+#define ENH_RT_PASS , rtScene
+#else
+#define ENH_RT_ARG
+#define ENH_RT_PARAM
+#define ENH_RT_PASS
+#endif
 
 // Fragment uniform slot 1: per frame.
 struct EnhFragU {
@@ -36,6 +48,7 @@ struct EnhFragU {
     float4 bsParams;       // x: count, y: near plane
     float4 probeGrid[2];   // reflection probes: xyz grid origin, w 1 / cell size; xyz cells per axis, w > 0.5: probes present
     float4 mipBias;        // x: log2 of the render scale (stage 5), the material textures' mip bias
+    float4 rtParams;       // stage 5 ray queries: x 1 = ray-traced reflections, y their roughness (GGX alpha) cutoff, z their range, w debug colours
 };
 #define IW2_MIP , bias(eu.mipBias.x)
 // Fragment uniform slot 2: per draw (model items).
@@ -52,10 +65,10 @@ struct EnhDrawU {
     texture2d<float> histTex [[texture(t + 4)]], sampler histSampler [[sampler(t + 4)]], \
     texture2d<float> depthTex [[texture(t + 5)]], sampler depthSampler [[sampler(t + 5)]], \
     depth2d<float> lightAtlas [[texture(t + 6)]], sampler lightAtlasSampler [[sampler(t + 6)]], \
-    const device uchar* probeIdx [[buffer(5)]]
+    const device uchar* probeIdx [[buffer(5)]] ENH_RT_ARG
 #define ENH_BAKED_SHADOW eu, lightAtlas, lightAtlasSampler
 #define ENH_WORLD_SHADOWS eu, worldShadow, worldSampler
-#define ENH_REFLECT eu, envCube, envSampler, probeIdx, histTex, histSampler, depthTex, depthSampler
+#define ENH_REFLECT eu, envCube, envSampler, probeIdx, histTex, histSampler, depthTex, depthSampler ENH_RT_PASS
 
 constant float2 kEnhPoisson[12] = {
     float2(-0.326, -0.406), float2(-0.840, -0.074), float2(-0.696, 0.457), float2(-0.203, 0.621),
@@ -213,11 +226,57 @@ static float3 enh_env(texture2d_array<float> env, sampler es, const device uchar
     const float2 uv = st / max(ma, 1e-6) * 0.5 + 0.5;
     return env.sample(es, uv, cube * 6 + face, level(lod)).rgb;
 }
+#ifdef IW2_ENH_RT
+// Ray-traced reflection (docs/render-enhanced.md "Stage 5"): one mirror ray against the scene. A hit that is on screen and in front
+// of the opaque depth takes the previous frame's image there (textured, lit, with the moving objects); another hit takes the
+// reflection probe of its own cell; a miss takes the environment as before (sky or probe). Returns false where the ray tracing is off or the surface too rough.
+template <typename E>
+static bool enh_rt_reflection(float3 wp, float3 r, float a, constant EnhFragU& eu, E env, sampler es,
+                              const device uchar* pidx, texture2d<float> hist, sampler hs, texture2d<float> dep, sampler ds,
+                              metal::raytracing::instance_acceleration_structure rtScene, thread float3& outRefl) {
+    if (eu.rtParams.x < 0.5 || a > eu.rtParams.y) return false;
+    metal::raytracing::ray ray;
+    ray.origin = wp + r * 1.0;
+    ray.direction = r;
+    ray.min_distance = 0.5;
+    ray.max_distance = eu.rtParams.z;
+    metal::raytracing::intersector<metal::raytracing::instancing, metal::raytracing::triangle_data> isect;
+    isect.assume_geometry_type(metal::raytracing::geometry_type::triangle);
+    const auto hit = isect.intersect(ray, rtScene, 0xff);
+    const float lod = a * eu.specParams.w;
+    if (hit.type == metal::raytracing::intersection_type::none) {
+        outRefl = eu.rtParams.w > 0.5 ? float3(0, 0, 4) : enh_env(env, es, pidx, eu, wp, r, lod); // nothing in the way: as without ray tracing
+        return true;
+    }
+    const float3 hp = ray.origin + r * hit.distance;
+    const float4 c = eu.viewProj * float4(hp, 1.0);
+    if (c.w > 1.0 && eu.ssrParams.z > 0.5) {
+        const float2 uv = float2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5);
+        if (all(uv >= 0.0) && all(uv <= 1.0)) {
+            const float cz = dep.sample(ds, uv).r;
+            const float ws = cz < eu.ssrParams.w ? (cz - eu.ssrParams.y) / eu.ssrParams.x : 1e9;
+            if (abs(c.w - ws) < max(c.w * 0.03, 8.0)) { // the hit is the visible surface there
+                const float4 pc = eu.prevViewProj * float4(hp, 1.0);
+                const float2 puv = float2(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5);
+                if (all(puv >= 0.0) && all(puv <= 1.0)) {
+                    outRefl = eu.rtParams.w > 0.5 ? float3(4, 0, 0) : max(hist.sample(hs, puv).rgb, 0.0);
+                    return true;
+                }
+            }
+        }
+    }
+    outRefl = eu.rtParams.w > 0.5 ? float3(0, 4, 0) : enh_env(env, es, pidx, eu, hp - r * 16.0, r, lod); // the probe of the hit's cell
+    return true;
+}
+#endif
 template <typename E>
 static float3 enh_reflection_color(float3 wp, float3 r, float a, float4 fragPos, constant EnhFragU& eu, E env, sampler es,
-                                   const device uchar* pidx, texture2d<float> hist, sampler hs, texture2d<float> dep, sampler ds,
-                                   bool allowSsr = true) {
+                                   const device uchar* pidx, texture2d<float> hist, sampler hs, texture2d<float> dep, sampler ds
+                                   ENH_RT_PARAM, bool allowSsr = true) {
     float3 refl = enh_env(env, es, pidx, eu, wp, r, a * eu.specParams.w);
+#ifdef IW2_ENH_RT
+    if (allowSsr && enh_rt_reflection(wp, r, a, eu, env, es, pidx, hist, hs, dep, ds, rtScene, refl)) return refl;
+#endif
     if (allowSsr && eu.ssrParams.z > 0.5 && a < 0.45) { // screen-space ray in $floatz, 20 steps up to ~1000 units
         const float noise = fract(52.9829189 * fract(dot(fragPos.xy, float2(0.06711056, 0.00583715))));
         float t = 4.0 + noise * 8.0;
@@ -249,11 +308,11 @@ static float3 enh_reflection_color(float3 wp, float3 r, float a, float4 fragPos,
 }
 // Screen-space rays only for the reflective surface classes and water (allowSsr); other specular surfaces reflect the sky alone.
 static float3 enh_reflection(float3 wp, float3 n, float3 v, float3 f0, float power, float4 fragPos, constant EnhFragU& eu, texture2d_array<float> env,
-                             sampler es, const device uchar* pidx, texture2d<float> hist, sampler hs, texture2d<float> dep, sampler ds,
-                             bool allowSsr = false) {
+                             sampler es, const device uchar* pidx, texture2d<float> hist, sampler hs, texture2d<float> dep, sampler ds
+                             ENH_RT_PARAM, bool allowSsr = false) {
     const float a = enh_ggx_alpha(power);
     const float nv = saturate(dot(n, v));
-    const float3 refl = enh_reflection_color(wp, reflect(-v, n), a, fragPos, eu, env, es, pidx, hist, hs, dep, ds, allowSsr);
+    const float3 refl = enh_reflection_color(wp, reflect(-v, n), a, fragPos, eu, env, es, pidx, hist, hs, dep, ds ENH_RT_PASS, allowSsr);
     const float3 f = f0 + (max(float3(1.0 - a), f0) - f0) * pow(1.0 - nv, 5.0);
     return refl * f;
 }

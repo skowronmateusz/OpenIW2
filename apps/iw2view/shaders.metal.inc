@@ -246,7 +246,8 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
         lm *= aoW.x;
         sunVis *= aoW.y;
         if (eu.bsParams.x > 0.5) lm -= enh_baked_shadow_loss(in.eyeVec + eu.eye.xyz, normalize(in.normal), lm, ENH_BAKED_SHADOW);
-        if (du.origin.x > 0.5 && eu.specParams.x > 0.5 && du.origin.w < 0.5) {
+        // (blended surfaces have no screen-space depth of their own: their reflection needs the ray tracing)
+        if (du.origin.x > 0.5 && eu.specParams.x > 0.5 && (du.origin.w < 0.5 || eu.rtParams.x > 0.5)) {
             // reflective surface class without a specular map (water, glass / ice, metal): our own GGX parameters
             const int cls = int(du.origin.x + 0.5);
             const float3 f0 = cls == 3 ? base.rgb * 0.6 : float3(0.02);
@@ -336,8 +337,8 @@ fragment float4 fs_water(WaterOut in [[stage_in]], constant FragmentUniforms& u 
     float4 env = cubicEnvMap.sample(s, r);
 #ifdef IW2_ENHANCED
     // screen-space reflection of the scene where the ray hits it, the water's own cube elsewhere (docs/render-enhanced.md)
-    if (eu.ssrParams.z > 0.5)
-        env.rgb = enh_reflection_color(in.eyeVector + eu.eye.xyz, normalize(r), 0.05, in.position, eu, cubicEnvMap, s, probeIdx, histTex, histSampler, depthTex, depthSampler);
+    if (eu.ssrParams.z > 0.5 || eu.rtParams.x > 0.5) // (ray-traced reflections need no history: off-screen hits take the probe)
+        env.rgb = enh_reflection_color(in.eyeVector + eu.eye.xyz, normalize(r), 0.05, in.position, eu, cubicEnvMap, s, probeIdx, histTex, histSampler, depthTex, depthSampler ENH_RT_PASS);
 #endif
     float3 diffuse = u.ambient.rgb * n.z; // waterColor.rgb
     float3 lit = mix(diffuse, env.rgb, env.a);
