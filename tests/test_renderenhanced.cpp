@@ -25,7 +25,10 @@ int main() {
         cv["r_enhanced"] = "1";
         cv["r_enhPreset"] = "0";
         s = enhancedSettings(get);
-        chk(s.enabled && s.preset == 0 && s.sunShadows == 1 && !s.autoExposure, __LINE__);
+        chk(s.enabled && s.preset == 0 && s.sunShadows == 1 && !s.autoExposure && !s.probes, __LINE__);
+        cv["r_enhProbes"] = "1";
+        chk(enhancedSettings(get).probes, __LINE__); // low preset, probes asked for
+        cv.erase("r_enhProbes");
         cv["r_enhPreset"] = "2";
         cv["r_enhSunShadows"] = "0";
         cv["r_enhBloom"] = "0";
@@ -342,6 +345,56 @@ int main() {
         chk(std::fabs(m1[0]) > 1e-3f, __LINE__);
         Mat4c sing{};
         chk(!invertMat(sing, inv), __LINE__);
+    }
+
+    // Reflection probes: one per cell first (cells with more points first), then farthest-point sampling.
+    {
+        std::vector<std::array<float, 3>> pts;
+        std::vector<int> cell;
+        for (int i = 0; i < 10; ++i) pts.push_back({float(i) * 10.0f, 0, 0}), cell.push_back(0);  // cell 0: x 0..90
+        for (int i = 0; i < 3; ++i) pts.push_back({1000.0f + float(i) * 10.0f, 0, 0}), cell.push_back(1); // cell 1: x 1000..1020
+        pts.push_back({5000, 0, 0}), cell.push_back(-1); // outside
+        const auto one = placeProbes(pts, cell, 1);
+        chk(one.size() == 1 && (one[0] == 4 || one[0] == 5), __LINE__); // the biggest cell, nearest its mean (x 45)
+        const auto three = placeProbes(pts, cell, 3);
+        chk(three.size() == 3 && three[1] == 11 && three[2] == 13, __LINE__); // cell 1's middle, then the farthest point
+        chk(placeProbes(pts, cell, 100).size() == pts.size(), __LINE__);         // never more probes than points
+        chk(placeProbes({}, {}, 4).empty(), __LINE__);
+    }
+    // Points near geometry: a small box keeps the points around it, a huge (sky) box is ignored.
+    {
+        const std::vector<std::array<float, 6>> boxes = {{0, 0, 0, 100, 100, 100}, {-50000, -50000, -50000, 50000, 50000, 50000}};
+        const std::vector<std::array<float, 3>> pts = {{50, 50, 50}, {50, 50, 2000}, {-3000, 0, 0}, {150, 50, 50}};
+        const auto near = pointsNearBoxes(pts, boxes, 64.0f, 4096.0f);
+        chk(near.size() == 2 && near[0][2] == 50.0f && near[1][0] == 150.0f, __LINE__); // the air above and far away is dropped
+        chk(pointsNearBoxes(pts, {{-50000, -50000, -50000, 50000, 50000, 50000}}, 64.0f, 4096.0f).empty(), __LINE__);
+    }
+    // Probe index grid: bounds, cell growth, assignment by portal cell.
+    {
+        const float mn[3] = {0, 0, 0}, mx[3] = {1000, 500, 100};
+        const ProbeGridInfo g = probeGridInfo(mn, mx, 100.0f, 1000);
+        chk(g.dims[0] == 10 && g.dims[1] == 5 && g.dims[2] == 1 && g.cell == 100.0f, __LINE__);
+        const ProbeGridInfo g2 = probeGridInfo(mn, mx, 100.0f, 20);
+        chk(g2.count() <= 20 && g2.cell > 100.0f, __LINE__);
+        // Two rooms split at x = 500 (cells 0, 1), outside beyond x = 900 (-1); one probe in each.
+        const std::vector<std::array<float, 3>> probes = {{450, 250, 50}, {880, 250, 50}, {960, 250, 50}};
+        const std::vector<int> pcell = {0, 1, -1};
+        auto cellOf = [](const float p[3]) { return p[0] >= 900.0f ? -1 : p[0] >= 500.0f ? 1 : 0; };
+        bool adjacentCalled = false;
+        auto adj = [&](int a, int b) { adjacentCalled = true; return (a == 0 && b == 1) || (a == 1 && b == 0); };
+        const auto idx = assignProbes(g, probes, pcell, cellOf, adj);
+        chk(idx.size() == g.count(), __LINE__);
+        chk(idx[g.index(5, 2, 0)] == 2, __LINE__); // x 550 (room 1): room 1's probe though room 0's is nearer
+        chk(idx[g.index(4, 2, 0)] == 1, __LINE__); // x 450 (room 0)
+        chk(idx[g.index(9, 2, 0)] == 3, __LINE__); // x 950 (outside): the outside probe
+        chk(adjacentCalled, __LINE__);
+        // A cell with no probe of its own takes one of a neighbouring cell before a nearer unconnected one.
+        const std::vector<std::array<float, 3>> p2 = {{100, 250, 50}, {560, 250, 50}};
+        const std::vector<int> c2 = {0, 2};
+        auto cellOf2 = [](const float p[3]) { return p[0] >= 500.0f ? 1 : 0; };
+        const auto idx2 = assignProbes(g, p2, c2, cellOf2, adj); // room 1 has no probe; room 0 is next to it, room 2 is not
+        chk(idx2[g.index(5, 2, 0)] == 1, __LINE__);
+        chk(assignProbes(g, {}, {}, cellOf, adj)[0] == 0, __LINE__); // no probes: the sky
     }
 
     if (bad) std::printf("%d failures\n", bad);

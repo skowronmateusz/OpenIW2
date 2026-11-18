@@ -3,6 +3,8 @@
 #include "assets/lightgrid.h"
 
 #include <cmath>
+#include <cstring>
+#include <vector>
 #include <iostream>
 
 int main() {
@@ -54,6 +56,24 @@ int main() {
         sun = 0.5f;
         LightGrid::smodelLighting(q, sun, 1.0f, 1.0f);
         if (std::abs(sun - 127.0f / 255.0f) > 1e-6f) ++failures;
+    }
+    {
+        // points(): the world position of each entry (cell corner), the inverse of the lookup's key and sub
+        const int x = 4099, y = 4089, z = 2052; // the cell of (100, -200, 300)
+        const uint32_t key = ((uint32_t(x & ~3) << 11 | uint32_t(y & ~3)) << 8) | uint32_t(z >> 2);
+        const uint8_t sub = uint8_t(((((x & 3) << 2 | (y & 3)) << 2 | (z & 3)) << 2) | 1);
+        std::vector<uint8_t> hash(8, 0), coeff(24, 128);
+        std::memcpy(hash.data(), &key, 4);
+        hash[4] = sub;
+        const LightGrid g(hash, coeff);
+        const auto pts = g.points();
+        if (pts.size() != 1 || pts[0][0] != 96.0f || pts[0][1] != -224.0f || pts[0][2] != 256.0f) {
+            std::cerr << "points() gave the wrong position\n";
+            ++failures;
+        }
+        iw2::assets::LightGridCoeffs out{};
+        float sv = 0;
+        if (!g.sample(pts[0], out, sv) || std::abs(sv - 1.0f) > 1e-4f) ++failures; // the point itself is found again
     }
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
     std::cout << "test_lightgrid: all checks passed\n";

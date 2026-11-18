@@ -39,6 +39,9 @@ public:
     // rounded, clamped to 0..255) and back to 0..1.
     static void smodelLighting(LightGridCoeffs& c, float& sunVisibility, float directLightScale, float indirectLightScale);
 
+    // World positions of all grid points (for the enhanced renderer's reflection probes: points known to be in playable space).
+    std::vector<std::array<float, 3>> points() const;
+
     // Lighting for a normal: sum over channels of weights · coefficients.
     static std::array<float, 3> evaluate(const LightGridCoeffs& c, const std::array<float, 3>& normal);
 

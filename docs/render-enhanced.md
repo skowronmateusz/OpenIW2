@@ -38,6 +38,7 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhVolumetric` | preset | Sun shafts: light scattered in the air through the sun's shadow (0 off .. 2; 0.35 in the high preset, else 0). |
 | `r_enhGrade` | 0 | Colour grade: 0 neutral, 1 "period film" (contrast, desaturation, warm shadows, grain). |
 | `r_enhMapLightSpec` | preset | GGX specular from the map's light entities near the camera (their diffuse stays baked). |
+| `r_enhProbes` | preset | Reflection probes captured when the map loads: rooms reflect themselves instead of the sky (off in the low preset). |
 | `r_enhDOF` | 0 | Depth of field while aiming down the sights (0 off .. 2). |
 | `r_enhMotionBlur` | 0 | Motion blur amount (0 off, 1 = one frame of motion; needs TAA). |
 | `r_enhMotionDebug` | 0 | Debug views instead of the frame: 1 the motion vectors, 2 AO (red) and contact shadow (green). |
@@ -164,7 +165,32 @@ neither (they are not in the opaque depth).
   the reflection; at a hit, the previous frame's resolved image (the TAA history) at the hit point's previous screen position
   replaces the sky, faded at the screen edges and with roughness. Needs TAA. On all specular surfaces this cost about 4.7 ms on
   the bench, hence the restriction.
-- Not done: reflection probes made at load (left for later).
+- Reflection probes: see below; where they are on, the sky cube above is cube 0 of the probe array.
+
+## Reflection probes
+
+The maps carry none, so this is our own design (`game::pointsNearBoxes`, `game::placeProbes`, `game::probeGridInfo`,
+`game::assignProbes`), made when the map's first frame is drawn:
+- Placement: the light grid's points near the world's geometry, that is within 128 units of a world surface box, ignoring boxes
+  over 4096 units such as the sky box (the grid also fills the empty air above a map); very dense grids are thinned to about
+  40000 points. Each point gets its portal cell. One probe per cell first (the point nearest the mean of the cell's points, cells
+  with more points first), then farthest-point sampling, at most 64 probes.
+- Capture: six 64 x 64 faces per probe, 90 degree views along the face axes, drawn with the normal frame path from the probe's
+  position into the frame's own command buffer, before the frame. No moving models, effects, view model or dynamic lights; TAA,
+  auto exposure, bloom, sun shafts, AO, contact shadows, screen-space reflections, the dynamic sun shadows and the light shadows
+  are off (the lightmaps carry the world's sun shadows). The linear scene image, before the tone pass, is copied into a 16-bit
+  float array of cube faces: six layers per cube in the order and orientation of the sky cube's faces, cube 0 the sky, cube k
+  probe k - 1. The shader picks the face itself, because SDL 3.4.20 hands Metal a cube array's layer count as its cube count.
+  The orientation of each face was checked against the sky: from a probe above the map its faces equal the sky's
+  (`IW2_PROBE_AT`, `IW2_PROBE_DUMP`). The mip chain (for rough surfaces) is made once before the captures, which reflect the
+  sky cube, and again after them. Then the frame targets go back to the window size; TAA, the shadow cascades and the history
+  start again.
+- Selection: a grid of 128-unit cells over those points' box grown by 256 units (bigger cells if the grid would pass 2^20
+  cells; outside it the sky), one byte per cell in a storage buffer: the nearest probe in the portal cell of the cell's centre,
+  else the nearest in a cell next to it through a portal, else the nearest. The shader takes the cell of the surface point
+  moved 8 units along the reflected ray. The choice is per cell, so a large surface can change probe at a cell edge.
+- The reflection's occlusion from the surface's own light (above) and the screen-space rays still apply; the original water
+  technique keeps its own cube.
 
 ## Map light specular
 
@@ -282,9 +308,12 @@ the duhoc_assault beach reference spot (docs/debug-flags.md `IW2_BENCH`), yaw 18
 | + GGX, TAA and screen-space reflections | 3.31 | +1.01 |
 | + sun shafts (with the world cascades) | 3.14 | +0.28 over the cascades |
 | + grade and motion blur (with TAA) | 3.05 | +0.17 over TAA |
-| preset medium / high | 5.37 / 6.33 | |
+| + map light specular (with GGX) | 2.81 | +0.12 over GGX |
+| preset medium / high | 5.66 / 6.59 | |
+| preset high without reflection probes | 6.87 | (the probes cost nothing measurable) |
 
-A shadowed effect light (toujane, one light of radius 350): +0.18 ms.
+A shadowed effect light (toujane, one light of radius 350): +0.18 ms. Depth of field while aiming (toujane, high preset): +0.29 ms. The reflection probes take about
+0.2 s when a map loads (64 probes) and 17 MB.
 
 The CPU cost is the shadow pass encode (about +0.2 ms for 483 casters), the lattice lookups (under 0.1 ms with the cache) and,
 in a frame where a world cascade moves, its caster list and draw (about 1 ms CPU and 0.5 ms GPU, `IW2_ENH_CASCADE_REDRAW`).
@@ -295,8 +324,9 @@ in a frame where a world cascade moves, its caster list and draw (about 1 ms CPU
 sRGB transfer, exposure target and frame-rate independent adaptation, bloom levels and threshold, the sun shadow fit (sphere
 inside the map, depth order towards the sun, texel-stable snapping, a vertical sun), the cascade fade, the world cascade centre
 snapping and caster reach, the GTAO slice integral, the TAA jitter sequence, the specular exponent to roughness conversion, the
-point light shadow faces, the phase function and the film grade, the probe lattice and the camera motion
-reconstruction.
+point light shadow faces, the phase function and the film grade, the probe lattice, the camera motion reconstruction, the
+baked-light shadow light choice and the reflection probes (points near geometry, placement, index grid and assignment). `tests/test_lightgrid.cpp`: the
+grid points' positions.
 
 ## References
 

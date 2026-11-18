@@ -43,6 +43,18 @@ const LightGridEntry* LightGrid::find(int x, int y, int z) const {
     return &*it;
 }
 
+std::vector<std::array<float, 3>> LightGrid::points() const {
+    std::vector<std::array<float, 3>> out;
+    out.reserve(entries_.size());
+    for (const LightGridEntry& e : entries_) { // key and sub as find() builds them
+        // (x & ~3) << 19 fills bits 21..31, (y & ~3) << 8 bits 10..20, z >> 2 bits 0..9 (indices below 8192 / 8192 / 4096)
+        const int x = int(e.key >> 21) << 2 | ((e.sub >> 6) & 3), y = int((e.key >> 10) & 0x7ff) << 2 | ((e.sub >> 4) & 3);
+        const int z = int(e.key & 0x3ff) << 2 | ((e.sub >> 2) & 3);
+        out.push_back({kOrigin + float(x) * kCellXY, kOrigin + float(y) * kCellXY, kOrigin + float(z) * kCellZ});
+    }
+    return out;
+}
+
 bool LightGrid::sample(const std::array<float, 3>& pos, LightGridCoeffs& out, float& sunVisibility) const {
     for (auto& ch : out) ch.fill(0);
     sunVisibility = 0;

@@ -334,7 +334,7 @@ fragment float4 fs_water(WaterOut in [[stage_in]], constant FragmentUniforms& u 
 #ifdef IW2_ENHANCED
     // screen-space reflection of the scene where the ray hits it, the water's own cube elsewhere (docs/render-enhanced.md)
     if (eu.ssrParams.z > 0.5)
-        env.rgb = enh_reflection_color(in.eyeVector + eu.eye.xyz, normalize(r), 0.05, in.position, eu, cubicEnvMap, s, histTex, histSampler, depthTex, depthSampler);
+        env.rgb = enh_reflection_color(in.eyeVector + eu.eye.xyz, normalize(r), 0.05, in.position, eu, cubicEnvMap, s, probeIdx, histTex, histSampler, depthTex, depthSampler);
 #endif
     float3 diffuse = u.ambient.rgb * n.z; // waterColor.rgb
     float3 lit = mix(diffuse, env.rgb, env.a);

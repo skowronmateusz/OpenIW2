@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace iw2::game {
 
@@ -86,6 +87,7 @@ struct EnhancedSettings {
     bool ssr = true;         // r_enhSSR: screen-space reflections (needs TAA's history)
     bool lightShadows = true; // r_enhLightShadows: shadows of the dynamic (effect) lights, up to 4 lights
     bool mapLightSpec = true; // r_enhMapLightSpec: GGX specular from the map's baked light entities near the camera (diffuse stays baked)
+    bool probes = true;      // r_enhProbes: local reflection cubes captured when the map loads (instead of the sky alone)
     float volumetric = 0.0f; // r_enhVolumetric: strength of the sun shafts (light scattered in the air, 0 = off, up to 2)
     int grade = 0;           // r_enhGrade: colour grade, 0 neutral, 1 period film (contrast, desaturation, warm shadows, grain)
     float dof = 0.0f;        // r_enhDOF: depth of field while aiming down the sights (0 = off, 1 = default strength, up to 2)
@@ -111,7 +113,7 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     s.enabled = num("r_enhanced", f) && f != 0.0f;
     if (num("r_enhPreset", f)) s.preset = std::clamp(int(f), 0, 2);
     switch (s.preset) {
-        case 0: s.sunShadows = 1, s.worldShadows = 0, s.bloom = true, s.autoExposure = false, s.gridPerPixel = true, s.ao = false, s.contactShadows = false, s.taa = false, s.ssr = false, s.lightShadows = false, s.volumetric = 0.0f, s.mapLightSpec = false; break;
+        case 0: s.sunShadows = 1, s.worldShadows = 0, s.bloom = true, s.autoExposure = false, s.gridPerPixel = true, s.ao = false, s.contactShadows = false, s.taa = false, s.ssr = false, s.lightShadows = false, s.volumetric = 0.0f, s.mapLightSpec = false, s.probes = false; break;
         case 2: s.volumetric = 0.35f, s.sunShadows = 3, s.worldShadows = 2, s.bloom = true, s.autoExposure = true, s.gridPerPixel = true; break;
         default: break;
     }
@@ -132,6 +134,7 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhSSR", f)) s.ssr = f != 0.0f;
     if (num("r_enhLightShadows", f)) s.lightShadows = f != 0.0f;
     if (num("r_enhMapLightSpec", f)) s.mapLightSpec = f != 0.0f;
+    if (num("r_enhProbes", f)) s.probes = f != 0.0f;
     if (num("r_enhVolumetric", f)) s.volumetric = std::clamp(f, 0.0f, 2.0f);
     if (num("r_enhGrade", f)) s.grade = std::clamp(int(f), 0, 1);
     if (num("r_enhMotionBlur", f)) s.motionBlur = std::clamp(f, 0.0f, 2.0f);
@@ -504,6 +507,149 @@ inline std::array<float, 2> clipDepthLine(const Mat4c& vp, const float eye[3], c
     const auto c1 = mulPoint(vp, p1), c2 = mulPoint(vp, p2);
     const float a = (c2[2] - c1[2]) / (c2[3] - c1[3]);
     return {a, c1[2] - a * c1[3]};
+}
+
+// ---- reflection probes (docs/render-enhanced.md "Reflection probes") -------------------------------------------------------------
+// Our own design: the maps carry no reflection probes. Probe positions come from points known to be in playable space (the light
+// grid's points), each with its portal cell (-1 outside every cell).
+
+// Picks at most cap of the points: first one per cell (the point nearest the mean of the cell's points), cells with more points
+// first, then farthest-point sampling (the point farthest from all picked ones) for the rest. Returns indices into pts.
+inline std::vector<int> placeProbes(const std::vector<std::array<float, 3>>& pts, const std::vector<int>& ptCell, size_t cap) {
+    std::vector<int> out;
+    if (pts.empty() || cap == 0) return out;
+    struct Acc { double s[3] = {0, 0, 0}; int n = 0; };
+    std::vector<Acc> acc;
+    for (size_t i = 0; i < pts.size(); ++i) {
+        const int c = ptCell[i];
+        if (c < 0) continue;
+        if (size_t(c) >= acc.size()) acc.resize(size_t(c) + 1);
+        for (int a = 0; a < 3; ++a) acc[size_t(c)].s[a] += pts[i][size_t(a)];
+        ++acc[size_t(c)].n;
+    }
+    std::vector<int> cells;
+    for (size_t c = 0; c < acc.size(); ++c) if (acc[c].n > 0) cells.push_back(int(c));
+    std::stable_sort(cells.begin(), cells.end(), [&](int a, int b) { return acc[size_t(a)].n > acc[size_t(b)].n; });
+    std::vector<int> best(acc.size(), -1);
+    std::vector<float> bestD(acc.size(), 0.0f);
+    for (size_t i = 0; i < pts.size(); ++i) {
+        const int c = ptCell[i];
+        if (c < 0) continue;
+        const Acc& m = acc[size_t(c)];
+        float d = 0;
+        for (int a = 0; a < 3; ++a) { const float e = pts[i][size_t(a)] - float(m.s[a] / m.n); d += e * e; }
+        if (best[size_t(c)] < 0 || d < bestD[size_t(c)]) best[size_t(c)] = int(i), bestD[size_t(c)] = d;
+    }
+    std::vector<float> minD(pts.size(), 3.4e38f);
+    auto take = [&](int i) {
+        out.push_back(i);
+        for (size_t k = 0; k < pts.size(); ++k) {
+            float d = 0;
+            for (int a = 0; a < 3; ++a) { const float e = pts[k][size_t(a)] - pts[size_t(i)][size_t(a)]; d += e * e; }
+            minD[k] = std::min(minD[k], d);
+        }
+    };
+    for (const int c : cells) {
+        if (out.size() >= cap) return out;
+        take(best[size_t(c)]);
+    }
+    if (out.empty()) take(0);
+    while (out.size() < cap) {
+        size_t far = 0;
+        for (size_t k = 1; k < pts.size(); ++k) if (minD[k] > minD[far]) far = k;
+        if (minD[far] <= 0.0f) break; // every point is a probe
+        take(int(far));
+    }
+    return out;
+}
+
+// Points near the world's geometry: inside a world surface box grown by margin, counting only boxes at most maxBoxSize along each
+// axis (the sky box and other huge pieces would take in the empty air above a map). A 256-unit occupancy grid over the boxes.
+inline std::vector<std::array<float, 3>> pointsNearBoxes(const std::vector<std::array<float, 3>>& pts,
+                                                         const std::vector<std::array<float, 6>>& boxes, float margin,
+                                                         float maxBoxSize) {
+    constexpr float kCell = 256.0f;
+    float mn[3] = {1e30f, 1e30f, 1e30f}, mx[3] = {-1e30f, -1e30f, -1e30f};
+    std::vector<const std::array<float, 6>*> use;
+    for (const auto& b : boxes) {
+        if (b[3] - b[0] > maxBoxSize || b[4] - b[1] > maxBoxSize || b[5] - b[2] > maxBoxSize || b[3] < b[0]) continue;
+        use.push_back(&b);
+        for (int a = 0; a < 3; ++a) mn[a] = std::min(mn[a], b[size_t(a)] - margin), mx[a] = std::max(mx[a], b[size_t(a + 3)] + margin);
+    }
+    std::vector<std::array<float, 3>> out;
+    if (use.empty()) return out;
+    int dim[3];
+    for (int a = 0; a < 3; ++a) dim[a] = std::max(1, int(std::ceil((mx[a] - mn[a]) / kCell)));
+    std::vector<uint8_t> occ(size_t(dim[0]) * size_t(dim[1]) * size_t(dim[2]), 0);
+    auto cellOf = [&](float v, int a) { return std::clamp(int(std::floor((v - mn[a]) / kCell)), 0, dim[a] - 1); };
+    for (const auto* b : use) {
+        int lo[3], hi[3];
+        for (int a = 0; a < 3; ++a) lo[a] = cellOf((*b)[size_t(a)] - margin, a), hi[a] = cellOf((*b)[size_t(a + 3)] + margin, a);
+        for (int z = lo[2]; z <= hi[2]; ++z)
+            for (int y = lo[1]; y <= hi[1]; ++y)
+                for (int x = lo[0]; x <= hi[0]; ++x) occ[(size_t(z) * size_t(dim[1]) + size_t(y)) * size_t(dim[0]) + size_t(x)] = 1;
+    }
+    for (const auto& p : pts) {
+        bool inside = true;
+        for (int a = 0; a < 3; ++a) inside = inside && p[size_t(a)] >= mn[a] && p[size_t(a)] < mx[a];
+        if (inside && occ[(size_t(cellOf(p[2], 2)) * size_t(dim[1]) + size_t(cellOf(p[1], 1))) * size_t(dim[0]) + size_t(cellOf(p[0], 0))])
+            out.push_back(p);
+    }
+    return out;
+}
+
+// The probe index grid: a box of cells over the world bounds (cell size at least minCell, grown until the grid has at most
+// maxCells cells), one byte per cell: 0 the sky cube, k > 0 probe k - 1.
+struct ProbeGridInfo {
+    float origin[3] = {0, 0, 0};
+    float cell = 128.0f;
+    int dims[3] = {0, 0, 0};
+    size_t count() const { return size_t(dims[0]) * size_t(dims[1]) * size_t(dims[2]); }
+    size_t index(int x, int y, int z) const { return (size_t(z) * size_t(dims[1]) + size_t(y)) * size_t(dims[0]) + size_t(x); }
+};
+inline ProbeGridInfo probeGridInfo(const float mins[3], const float maxs[3], float minCell, size_t maxCells) {
+    ProbeGridInfo g;
+    g.cell = minCell;
+    for (;;) {
+        size_t n = 1;
+        for (int a = 0; a < 3; ++a) {
+            g.origin[a] = mins[a];
+            g.dims[a] = std::max(1, int(std::ceil((maxs[a] - mins[a]) / g.cell)));
+            n *= size_t(g.dims[a]);
+        }
+        if (n <= maxCells) return g;
+        g.cell *= 1.25f;
+    }
+}
+
+// Each grid cell takes the nearest probe in the portal cell of its centre, else the nearest in a portal cell next to it (adjacent),
+// else the nearest probe; a centre outside every cell takes the nearest probe outside every cell, else the nearest.
+inline std::vector<uint8_t> assignProbes(const ProbeGridInfo& g, const std::vector<std::array<float, 3>>& probes,
+                                         const std::vector<int>& probeCell, const std::function<int(const float[3])>& cellOf,
+                                         const std::function<bool(int, int)>& adjacent) {
+    std::vector<uint8_t> out(g.count(), 0);
+    if (probes.empty()) return out;
+    const size_t n = std::min<size_t>(probes.size(), 255);
+    for (int z = 0; z < g.dims[2]; ++z)
+        for (int y = 0; y < g.dims[1]; ++y)
+            for (int x = 0; x < g.dims[0]; ++x) {
+                const float p[3] = {g.origin[0] + (float(x) + 0.5f) * g.cell, g.origin[1] + (float(y) + 0.5f) * g.cell,
+                                    g.origin[2] + (float(z) + 0.5f) * g.cell};
+                const int c = cellOf(p);
+                int best[3] = {-1, -1, -1}; // same cell, adjacent cell, any
+                float bestD[3] = {0, 0, 0};
+                for (size_t k = 0; k < n; ++k) {
+                    float d = 0;
+                    for (int a = 0; a < 3; ++a) { const float e = probes[k][size_t(a)] - p[a]; d += e * e; }
+                    const int pc = probeCell[k];
+                    const int tier = pc == c ? 0 : (c >= 0 && pc >= 0 && adjacent(c, pc)) ? 1 : 2;
+                    for (int t = tier; t < 3; ++t)
+                        if (best[t] < 0 || d < bestD[t]) best[t] = int(k), bestD[t] = d;
+                }
+                const int k = best[0] >= 0 ? best[0] : best[1] >= 0 ? best[1] : best[2];
+                out[g.index(x, y, z)] = uint8_t(k + 1);
+            }
+    return out;
 }
 
 } // namespace iw2::game

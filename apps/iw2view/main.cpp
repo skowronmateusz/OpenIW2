@@ -184,18 +184,21 @@ struct Camera {
     float roll = 0;           // degrees; positive tilts the right vector down (AngleVectors)
     float fovX43 = 80.0f;     // cg_fov: horizontal field of view of a 4:3 screen (default 80, 0x4a10f0)
     float jitterX = 0, jitterY = 0; // enhanced TAA: sub-pixel offset of the projection in NDC (0 = none; docs/render-enhanced.md)
+    bool hasBasis = false;          // enhanced reflection probe faces: an explicit forward / right instead of the angles
+    Vec3 basisF, basisR;
 
     Vec3 forward() const {
+        if (hasBasis) return basisF;
         const float cy = std::cos(yaw * float(M_PI) / 180), sy = std::sin(yaw * float(M_PI) / 180);
         const float cp = std::cos(pitch * float(M_PI) / 180), sp = std::sin(pitch * float(M_PI) / 180);
         return {cy * cp, sy * cp, -sp};
     }
-    Vec3 right() const { return normalize(cross(forward(), {0, 0, 1})); }
+    Vec3 right() const { return hasBasis ? basisR : normalize(cross(forward(), {0, 0, 1})); }
 
     Mat4 viewProj(float aspect, float zNear = 4.0f, bool depthHack = false) const {
         const Vec3 f = forward(), r0 = right(), u0 = cross(r0, f);
         const float cr = std::cos(roll * float(M_PI) / 180), sr = std::sin(roll * float(M_PI) / 180);
-        const Vec3 r = r0 * cr + u0 * -sr, u = cross(r, f);
+        const Vec3 r = hasBasis ? r0 : r0 * cr + u0 * -sr, u = cross(r, f);
         const Mat4 view = {r.x, u.x, -f.x, 0, r.y, u.y, -f.y, 0, r.z, u.z, -f.z, 0,
                            -dot(r, pos), -dot(u, pos), dot(f, pos), 1};
         const float fovY = 2.0f * std::atan(std::tan(fovX43 * float(M_PI) / 360.0f) * 0.75f);
@@ -2555,13 +2558,26 @@ struct Renderer {
         float viewProj[16]; float prevViewProj[16]; float ssrParams[4]; float specParams[4];
         float mlPos[8][4]; float mlColor[8][4]; float mlDir[8][4]; float mlParams[4];
         float bsPos[2][4]; float bsColor[2][4]; float bsParams[4];
+        float probeGrid[2][4]; // reflection probes: xyz grid origin, w 1 / cell size; xyz cells per axis, w 1 = probes present
     };
     std::vector<const game::MapLight*> bakedShadowLights; // this frame's baked lights with moving-caster shadows (atlas rows 4, 5)
     // Materials (stage 3): the sky cube with a mip chain for rough reflections, and this frame's history / depth for reflections.
     SDL_GPUTexture* envCube = nullptr;
     const SDL_GPUTexture* envFor = nullptr;
     int envLevels = 1;
-    SDL_GPUTexture* envDummy = nullptr;    // black 1 x 1 cube
+    SDL_GPUTexture* envDummy = nullptr;    // black 1 x 1, six layers (one cube)
+    // Reflection probes (docs/render-enhanced.md "Reflection probes"): envCube is a 2D array of cube faces (six layers per cube, the
+    // shader picks the face), cube 0 the sky, cube k the probe k - 1;
+    // the probe index grid is a byte per cell in a storage buffer (fragment storage slot 2).
+    uint64_t probesFor = 0;               // the scene serial the probes were made for
+    int probeCount = 0;
+    game::ProbeGridInfo probeGrid;
+    SDL_GPUBuffer* probeIdxBuf = nullptr;
+    SDL_GPUBuffer* probeIdxDummy = nullptr; // four zero bytes: the sky everywhere
+    bool capturingProbes = false;
+    uint64_t drawnSerial = 0;
+    void captureProbes(SDL_GPUCommandBuffer* cmd, const Scene& scene);
+    void dumpProbes(const char* path);
     SDL_GPUTexture* shadowDummyArray = nullptr;
     SDL_GPUTexture* worldShadowArray = nullptr; // the world cascades, one layer each
     SDL_GPUTexture* frameHist = nullptr;   // the previous frame's resolved scene while reflections are on, else null
@@ -2865,10 +2881,17 @@ struct Renderer {
             di.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
             di.width = di.height = 1, di.layer_count_or_depth = 1, di.num_levels = 1;
             shadowDummyArray = SDL_CreateGPUTexture(dev, &di);
-            envDummy = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 1, 1, 1, 6, SDL_GPU_TEXTURETYPE_CUBE);
+            envDummy = createTexture(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, 1, 1, 1, 6, SDL_GPU_TEXTURETYPE_2D_ARRAY);
             const uint8_t black[4] = {0, 0, 0, 255};
             Uploader up(dev);
             for (uint32_t f = 0; f < 6; ++f) up.texture(envDummy, 0, f, 1, 1, black, 4);
+            const uint32_t zero = 0;
+            SDL_GPUBufferCreateInfo pbi{};
+            pbi.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
+            pbi.size = sizeof zero;
+            probeIdxDummy = SDL_CreateGPUBuffer(dev, &pbi);
+            if (!probeIdxDummy) sdlFail("probe index dummy");
+            up.buffer(probeIdxDummy, &zero, sizeof zero);
             if (!shadowDummyArray) sdlFail("dummy shadow array");
         }
         lumLevels = 9; // 256 .. 1
@@ -2923,7 +2946,8 @@ struct Renderer {
             {frameDepth ? frameDepth : aoWhite, pointClampSampler},
             {lightShadowAtlas ? lightShadowAtlas : shadowDummy, shadowCmpSampler}};
         SDL_BindGPUFragmentSamplers(pass, shadowSlot, sb, 7);
-        SDL_BindGPUFragmentStorageBuffers(pass, 0, &latticeBuf, 1);
+        SDL_GPUBuffer* const storage[3] = {latticeBuf, probeIdxDummy, probeIdxBuf ? probeIdxBuf : probeIdxDummy};
+        SDL_BindGPUFragmentStorageBuffers(pass, 0, storage, 3); // lattice, (static-model lighting, bound by its draw), probe index
         EnhDrawUC d{};
         if (it && size_t(it - items.data()) < itemLattice.size()) d = itemLattice[size_t(it - items.data())];
         if (it && it->effects) d.step[3] = 1.0f; // sprites and clouds take no dynamic sun shadow
@@ -2973,7 +2997,7 @@ struct Renderer {
         if (enh.enabled) {
             fmain.num_samplers = 11;       // + moving-caster shadows, world cascades, AO, environment cube, history, $floatz
             fmain.num_uniform_buffers = 3; // + EnhFragU (slot 1) and EnhDrawU (slot 2)
-            fmain.num_storage_buffers = 1; // the light-grid lattices
+            fmain.num_storage_buffers = 3; // the light-grid lattices, (static-model lighting), the reflection probe index
             SDL_GPUShaderCreateInfo plain = fs;
             plain.code = reinterpret_cast<const Uint8*>(kShaderSource);
             plain.code_size = sizeof(kShaderSource) - 1;
@@ -3008,7 +3032,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo sfsi = fs;
         sfsi.entrypoint = "fs_spec";
         sfsi.num_samplers = 8;
-        if (enh.enabled) sfsi.num_samplers = 15, sfsi.num_uniform_buffers = 3, sfsi.num_storage_buffers = 1;
+        if (enh.enabled) sfsi.num_samplers = 15, sfsi.num_uniform_buffers = 3, sfsi.num_storage_buffers = 3;
         SDL_GPUShaderCreateInfo dfsi = fs;
         dfsi.entrypoint = "fs_dlight";
         dfsi.num_samplers = 3;
@@ -3028,7 +3052,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo pfsi = fs;
         pfsi.entrypoint = "fs_probe";
         pfsi.num_samplers = 5;
-        if (enh.enabled) pfsi.num_samplers = 12, pfsi.num_uniform_buffers = 3, pfsi.num_storage_buffers = 1;
+        if (enh.enabled) pfsi.num_samplers = 12, pfsi.num_uniform_buffers = 3, pfsi.num_storage_buffers = 3;
         SDL_GPUShader* probeVsh = SDL_CreateGPUShader(dev, &pvsi);
         SDL_GPUShader* probeFsh = SDL_CreateGPUShader(dev, &pfsi);
         if (!probeVsh || !probeFsh) sdlFail("probe shaders");
@@ -3036,7 +3060,7 @@ struct Renderer {
         smvsi.entrypoint = "vs_smodel";
         SDL_GPUShaderCreateInfo smfsi = pfsi;
         smfsi.entrypoint = "fs_smodel";
-        smfsi.num_storage_buffers = enh.enabled ? 2 : 1; // enhanced: the lattice, then the static-model lighting
+        smfsi.num_storage_buffers = enh.enabled ? 3 : 1; // enhanced: the lattice, the static-model lighting, the probe index
         SDL_GPUShader* smodelVsh = SDL_CreateGPUShader(dev, &smvsi);
         SDL_GPUShader* smodelFsh = SDL_CreateGPUShader(dev, &smfsi);
         if (!smodelVsh || !smodelFsh) sdlFail("static model shaders");
@@ -3394,7 +3418,7 @@ struct Renderer {
             SDL_GPUShaderCreateInfo wfs = fs;
             wfs.entrypoint = "fs_water";
             wfs.num_samplers = 2;
-            if (enh.enabled) wfs.num_samplers = 9, wfs.num_uniform_buffers = 3, wfs.num_storage_buffers = 1;
+            if (enh.enabled) wfs.num_samplers = 9, wfs.num_uniform_buffers = 3, wfs.num_storage_buffers = 3;
             wfs.num_uniform_buffers = 1;
             SDL_GPUShader* wv = SDL_CreateGPUShader(dev, &wvs);
             SDL_GPUShader* wf = SDL_CreateGPUShader(dev, &wfs);
@@ -3724,6 +3748,14 @@ struct Renderer {
     // offscreen texture first and a final full-screen pass applies the ramp (game/gammaramp.h, docs/spec/ui.md "Brightness").
     void draw(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam,
               const std::vector<DrawItem>& items = {}, const std::vector<Quad2D>& overlay = {}, float blur = 0.0f) {
+        if (enh.enabled && enh.ggx && enh.probes && !capturingProbes && probesFor != scene.serial && !scene.batches.empty()) {
+            captureProbes(cmd, scene);
+        }
+        if (const char* dump = std::getenv("IW2_PROBE_DUMP"); dump && probeCount > 0 && drawnSerial == scene.serial) {
+            static bool dumped = false;
+            if (!dumped) dumped = true, dumpProbes(dump);
+        }
+        drawnSerial = scene.serial;
         const float g = game::clampGamma(gamma);
         const bool present = enh.enabled && edrOut; // the EDR frame goes through fs_enh_present (an SDR image for a capture)
         if (g == 1.0f && !present) return drawFrame(cmd, target, w, h, scene, cam, items, overlay, blur);
@@ -5077,6 +5109,10 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
         frameHist = ssrOn ? taaHist[taaCur] : nullptr;
         frameDepth = nullptr;
         f.specParams[0] = enh.ggx ? 1.0f : 0.0f, f.specParams[1] = enh.specScale, f.specParams[2] = enh.envScale, f.specParams[3] = float(std::max(envLevels - 1, 0));
+        if (enh.probes && probeCount > 0 && probeIdxBuf && !capturingProbes) {
+            for (int a = 0; a < 3; ++a) f.probeGrid[0][a] = probeGrid.origin[a], f.probeGrid[1][a] = float(probeGrid.dims[a]);
+            f.probeGrid[0][3] = 1.0f / probeGrid.cell, f.probeGrid[1][3] = 1.0f;
+        }
     }
     if (enh.ggx && enh.mapLightSpec && !scene.mapLights.empty()) { // the 8 map lights nearest the camera that reach within 1500 units
         std::vector<std::pair<float, size_t>> near;
@@ -5638,8 +5674,10 @@ void Renderer::enhMotionBlur(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h) 
 
 // A copy of the sky cube with a mip chain (box-filtered), so rough surfaces reflect a blurred sky.
 void Renderer::ensureEnvCube(SDL_GPUCommandBuffer* cmd, const Scene& scene) {
+    if (capturingProbes || (probeCount > 0 && probesFor == scene.serial)) return; // the probe array holds the sky as cube 0
     if (envFor == scene.sky && (envCube || !scene.sky)) return;
     if (envCube) SDL_ReleaseGPUTexture(dev, envCube), envCube = nullptr;
+    probeCount = 0;
     envFor = scene.sky;
     if (!scene.sky || !enh.ggx) return;
     // the sky's size is not kept with the texture: read it back from the image record at load (Scene::skySize)
@@ -5648,7 +5686,7 @@ void Renderer::ensureEnvCube(SDL_GPUCommandBuffer* cmd, const Scene& scene) {
     envLevels = 1;
     for (uint32_t s = size; s > 1; s /= 2) ++envLevels;
     SDL_GPUTextureCreateInfo ti{};
-    ti.type = SDL_GPU_TEXTURETYPE_CUBE;
+    ti.type = SDL_GPU_TEXTURETYPE_2D_ARRAY;
     ti.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
     ti.width = ti.height = size;
@@ -5669,6 +5707,192 @@ void Renderer::ensureEnvCube(SDL_GPUCommandBuffer* cmd, const Scene& scene) {
         SDL_BlitGPUTexture(cmd, &bi);
     }
     SDL_GenerateMipmapsForGPUTexture(cmd, envCube);
+}
+
+void Renderer::dumpProbes(const char* dump) { // debug IW2_PROBE_DUMP: the sky and the first probes, six faces each, as a PPM
+    constexpr uint32_t kProbeSize = 64;
+    const int n = probeCount;
+    {
+        const uint32_t cubes = uint32_t(std::min(n + 1, 8)), W = 6 * kProbeSize, H = cubes * kProbeSize;
+        SDL_GPUTextureCreateInfo di{};
+        di.type = SDL_GPU_TEXTURETYPE_2D, di.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, di.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+        di.width = W, di.height = H, di.layer_count_or_depth = 1, di.num_levels = 1;
+        SDL_GPUTexture* sheet = SDL_CreateGPUTexture(dev, &di);
+        SDL_GPUTransferBufferCreateInfo tbi{};
+        tbi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, tbi.size = W * H * 4;
+        SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(dev, &tbi);
+        SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
+        for (uint32_t k = 0; k < cubes; ++k)
+            for (uint32_t f = 0; f < 6; ++f) {
+                SDL_GPUBlitInfo bi{};
+                bi.source.texture = envCube, bi.source.layer_or_depth_plane = 6 * k + f, bi.source.w = bi.source.h = kProbeSize;
+                bi.destination.texture = sheet, bi.destination.x = f * kProbeSize, bi.destination.y = k * kProbeSize;
+                bi.destination.w = bi.destination.h = kProbeSize;
+                bi.load_op = SDL_GPU_LOADOP_LOAD, bi.filter = SDL_GPU_FILTER_NEAREST;
+                SDL_BlitGPUTexture(cmd, &bi);
+            }
+        SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+        SDL_GPUTextureRegion rg{};
+        rg.texture = sheet, rg.w = W, rg.h = H, rg.d = 1;
+        SDL_GPUTextureTransferInfo dst{};
+        dst.transfer_buffer = tb;
+        SDL_DownloadFromGPUTexture(cp, &rg, &dst);
+        SDL_EndGPUCopyPass(cp);
+        SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+        SDL_WaitForGPUFences(dev, true, &fence, 1);
+        SDL_ReleaseGPUFence(dev, fence);
+        const auto* px = static_cast<const uint8_t*>(SDL_MapGPUTransferBuffer(dev, tb, false));
+        if (FILE* fo = std::fopen(dump, "wb")) {
+            std::fprintf(fo, "P6\n%u %u\n255\n", W, H);
+            for (uint32_t i = 0; i < W * H; ++i) std::fwrite(px + i * 4, 1, 3, fo);
+            std::fclose(fo);
+        }
+        SDL_UnmapGPUTransferBuffer(dev, tb);
+        SDL_ReleaseGPUTransferBuffer(dev, tb);
+        SDL_ReleaseGPUTexture(dev, sheet);
+    }
+}
+
+// Reflection probes (docs/render-enhanced.md "Reflection probes"): placed on the light grid's points (playable space), at most
+// kProbeMax, one per portal cell first; each is six 64 x 64 faces of the scene (the lightmapped world, static models and the sky,
+// no moving models, effects or dynamic lights; the post passes off) drawn through drawFrame and copied out of the linear scene
+// target into the face array (cube 0 the sky). The index grid gives each 128-unit cell its probe (game::assignProbes).
+void Renderer::captureProbes(SDL_GPUCommandBuffer* cmd, const Scene& scene) {
+    constexpr size_t kProbeMax = 64;
+    constexpr uint32_t kProbeSize = 64;
+    probesFor = scene.serial;
+    probeCount = 0;
+    if (probeIdxBuf) SDL_ReleaseGPUBuffer(dev, probeIdxBuf), probeIdxBuf = nullptr;
+    if (!scene.grid || scene.grid->empty() || !scene.vis.valid() || scene.batches.empty()) return;
+    const uint64_t t0 = SDL_GetTicksNS();
+    std::vector<std::array<float, 3>> pts = game::pointsNearBoxes(scene.grid->points(), scene.soupBoxes, 128.0f, 4096.0f);
+    if (pts.empty()) return;
+    if (const size_t stride = pts.size() / 40000 + 1; stride > 1) { // thin very dense grids (placement is points x probes)
+        size_t n = 0;
+        for (size_t i = 0; i < pts.size(); i += stride) pts[n++] = pts[i];
+        pts.resize(n);
+    }
+    std::vector<int> ptCell(pts.size());
+    for (size_t i = 0; i < pts.size(); ++i) ptCell[i] = game::cellForPoint(scene.vis, pts[i].data());
+    const std::vector<int> pick = game::placeProbes(pts, ptCell, kProbeMax);
+    if (pick.empty()) return;
+    std::vector<std::array<float, 3>> pos;
+    std::vector<int> pcell;
+    for (const int i : pick) pos.push_back(pts[size_t(i)]), pcell.push_back(ptCell[size_t(i)]);
+    if (const char* at = std::getenv("IW2_PROBE_AT")) // debug: probe 0 at x,y,z (e.g. above the map, to compare its faces with the sky)
+        std::sscanf(at, "%f,%f,%f", &pos[0][0], &pos[0][1], &pos[0][2]);
+    // The index grid covers the playable space (the grid points' box, 256 units more on each side); outside it, the sky.
+    float mn[3] = {1e30f, 1e30f, 1e30f}, mx[3] = {-1e30f, -1e30f, -1e30f};
+    for (const auto& p : pts)
+        for (int a = 0; a < 3; ++a) mn[a] = std::min(mn[a], p[size_t(a)] - 256.0f), mx[a] = std::max(mx[a], p[size_t(a)] + 256.0f);
+    probeGrid = game::probeGridInfo(mn, mx, 128.0f, size_t(1) << 20);
+    std::vector<std::vector<int>> next(scene.vis.cells.size());
+    for (size_t c = 0; c < scene.vis.cells.size(); ++c) {
+        const game::VisCell& vc = scene.vis.cells[c];
+        for (int p = vc.firstPortal; p < vc.firstPortal + vc.portalCount && p < int(scene.vis.portals.size()); ++p)
+            if (p >= 0) next[c].push_back(scene.vis.portals[size_t(p)].cell);
+    }
+    auto adjacent = [&](int a, int b) {
+        for (const int x : next[size_t(a)]) if (x == b) return true;
+        for (const int x : next[size_t(b)]) if (x == a) return true;
+        return false;
+    };
+    std::vector<uint8_t> idx = game::assignProbes(probeGrid, pos, pcell, [&](const float p[3]) { return game::cellForPoint(scene.vis, p); }, adjacent);
+    idx.resize((idx.size() + 3) / 4 * 4, 0);
+    {
+        SDL_GPUBufferCreateInfo bi{};
+        bi.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
+        bi.size = uint32_t(idx.size());
+        probeIdxBuf = SDL_CreateGPUBuffer(dev, &bi);
+        if (!probeIdxBuf) return;
+        Uploader up(dev);
+        up.buffer(probeIdxBuf, idx.data(), uint32_t(idx.size()));
+    }
+    const int n = int(pos.size());
+    if (envCube) SDL_ReleaseGPUTexture(dev, envCube), envCube = nullptr;
+    envLevels = 1;
+    for (uint32_t s = kProbeSize; s > 1; s /= 2) ++envLevels;
+    SDL_GPUTextureCreateInfo ti{};
+    ti.type = SDL_GPU_TEXTURETYPE_2D_ARRAY;
+    ti.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+    ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    ti.width = ti.height = kProbeSize;
+    ti.layer_count_or_depth = uint32_t(6 * (n + 1));
+    ti.num_levels = uint32_t(envLevels);
+    envCube = SDL_CreateGPUTexture(dev, &ti);
+    if (!envCube) { SDL_ReleaseGPUBuffer(dev, probeIdxBuf), probeIdxBuf = nullptr; return; }
+    envFor = scene.sky;
+    // Everything goes into the frame's command buffer, before the frame itself: it carries the uniforms the caller pushed for it.
+    for (uint32_t face = 0; face < 6; ++face) { // cube 0: the sky (black without one)
+        SDL_GPUBlitInfo bi{};
+        if (scene.sky && scene.skySize > 0) {
+            bi.source.texture = scene.sky;
+            bi.source.layer_or_depth_plane = face;
+            bi.source.w = bi.source.h = scene.skySize;
+            bi.load_op = SDL_GPU_LOADOP_DONT_CARE;
+        } else {
+            bi.source.texture = envDummy;
+            bi.source.layer_or_depth_plane = face;
+            bi.source.w = bi.source.h = 1;
+        }
+        bi.destination.texture = envCube;
+        bi.destination.layer_or_depth_plane = face;
+        bi.destination.w = bi.destination.h = kProbeSize;
+        bi.filter = SDL_GPU_FILTER_LINEAR;
+        SDL_BlitGPUTexture(cmd, &bi);
+    }
+    SDL_GenerateMipmapsForGPUTexture(cmd, envCube); // the captures reflect cube 0 (rough surfaces read its mips)
+    SDL_GPUTextureCreateInfo ci{};
+    ci.type = SDL_GPU_TEXTURETYPE_2D;
+    ci.format = colorFormat;
+    ci.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    ci.width = ci.height = kProbeSize;
+    ci.layer_count_or_depth = 1, ci.num_levels = 1;
+    SDL_GPUTexture* target = SDL_CreateGPUTexture(dev, &ci);
+    const game::EnhancedSettings saved = enh;
+    const std::vector<DLight> savedLights = dlights;
+    enh.taa = false, enh.autoExposure = false, enh.bloom = false, enh.volumetric = 0.0f, enh.motionBlur = 0.0f, enh.dof = 0.0f;
+    enh.grade = 0, enh.ssr = false, enh.ao = false, enh.contactShadows = false, enh.sunShadows = 0, enh.worldShadows = 0;
+    enh.lightShadows = false;
+    dlights.clear();
+    capturingProbes = true;
+    // Face k of a cube: forward and right as the cube's face axes. The copy flips the image vertically except for the +y / -y faces:
+    // that orientation reproduces the sky cube's own faces exactly from a probe above the map (IW2_PROBE_AT, IW2_PROBE_DUMP).
+    static const float kFace[6][2][3] = {{{1, 0, 0}, {0, 0, -1}}, {{-1, 0, 0}, {0, 0, 1}}, {{0, 1, 0}, {1, 0, 0}},
+                                         {{0, -1, 0}, {1, 0, 0}}, {{0, 0, 1}, {1, 0, 0}}, {{0, 0, -1}, {-1, 0, 0}}};
+    Camera c;
+    c.hasBasis = true;
+    c.fovX43 = 2.0f * std::atan(4.0f / 3.0f) * 180.0f / float(M_PI); // 90 degrees vertically (viewProj takes the 4:3 width)
+    const std::vector<DrawItem> noItems;
+    const std::vector<Quad2D> noOverlay;
+    for (int k = 0; target && k < n; ++k) {
+        for (int f = 0; f < 6; ++f) {
+            c.pos = {pos[size_t(k)][0], pos[size_t(k)][1], pos[size_t(k)][2]};
+            c.basisF = {kFace[f][0][0], kFace[f][0][1], kFace[f][0][2]};
+            c.basisR = {kFace[f][1][0], kFace[f][1][1], kFace[f][1][2]};
+            drawFrame(cmd, target, kProbeSize, kProbeSize, scene, c, noItems, noOverlay, 0.0f);
+            SDL_GPUBlitInfo bi{};
+            bi.source.texture = sceneTex; // the linear scene before the tone pass
+            bi.source.w = bi.source.h = kProbeSize;
+            bi.destination.texture = envCube;
+            bi.destination.layer_or_depth_plane = uint32_t(6 * (k + 1) + f);
+            bi.destination.w = bi.destination.h = kProbeSize;
+            bi.load_op = SDL_GPU_LOADOP_DONT_CARE;
+            bi.flip_mode = f == 2 || f == 3 ? SDL_FLIP_NONE : SDL_FLIP_VERTICAL; // measured against the sky cube's own faces
+            bi.filter = SDL_GPU_FILTER_NEAREST;
+            SDL_BlitGPUTexture(cmd, &bi);
+        }
+    }
+    SDL_GenerateMipmapsForGPUTexture(cmd, envCube);
+    if (target) SDL_ReleaseGPUTexture(dev, target);
+    enh = saved;
+    dlights = savedLights;
+    capturingProbes = false;
+    taaHistValid = false, taaPrevVPValid = false;
+    for (WorldCascade& wc : worldCascades) wc.valid = false;
+    probeCount = target ? n : 0;
+    std::cout << "reflection probes: " << probeCount << " in " << (SDL_GetTicksNS() - t0) / 1000000ull << " ms (grid " << probeGrid.dims[0]
+              << " x " << probeGrid.dims[1] << " x " << probeGrid.dims[2] << ", " << probeGrid.cell << " units)\n";
 }
 
 void Renderer::enhPost(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam, bool floatzReady) {
