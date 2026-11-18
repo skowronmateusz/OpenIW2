@@ -47,6 +47,20 @@ cvar that is set overrides the preset. Presets: low = moving-caster shadows 1, n
 shadows, TAA, screen-space reflections or light shadows; medium = shadows 2, two world cascades; high = shadows 3, three world cascades. The other features are on in
 every preset. Gameplay, the server and the network are not affected; it is render-only.
 
+## Menu
+
+Options > OpenIW2 > Enhanced graphics (an OpenIW2 page added in memory to the game's own menus, src/ui/iw2options.cpp). The mode is
+experimental and may cause visual glitches and bugs; a note at the top of the page says so.
+- the master row (`r_enhanced`, Off / On, applies at the next start) is always shown; every other row only while it is On;
+- Quality (`r_enhPreset`: Low / Medium / High);
+- one row per feature cvar; the on/off features offer Preset / On / Off, where Preset is the value -1 and leaves the feature to the
+  quality choice (`game::enhancedSettings` ignores negative per-feature values); Sun shafts Preset / Off / On / Strong; Colour
+  grade Neutral / Period film; Motion blur, Depth of field and HDR output Off / On;
+- all values are saved in the profile (archived like the shipped options) and, while the mode is on, read every frame and
+  applied at once (the shadow maps are made again at a new size), except the master row and HDR output, which change the
+  swapchain and the scene format and so need the next start.
+Labels: the game's own Low / Medium / High / On / Off strings, English OpenIW2 texts for the rest. Test: tests/test_iw2options.cpp.
+
 ## How it stays apart from the default look
 
 - The scene renders into RGBA16F instead of the window format. The frame after it (composite, HUD, menus) keeps the window
@@ -164,11 +178,12 @@ not shine.
 
 ## Baked light shadows (moving objects)
 
-The two strongest map lights near the camera (power = colour x radius / distance, within 600 units of their reach) that reach a
-moving model get a shadow map of the moving casters, in rows 4 and 5 of the light shadow atlas. Where a world surface, static
-model or the water is in such a shadow, our estimate of that light's contribution (falloff x N.L x colour, at most the baked
-light itself) is taken from the baked light. So soldiers cast shadows under street lamps at night. The estimate can disagree
-with the bake; it never makes a surface darker than black or brighter than before.
+The two strongest local map lights near the camera (power = colour x radius / distance; radius at most 1500 units, origin
+within 1500 units of the camera and reach within 600 units of it, `game::bakedShadowLightNearCamera`, so large fill lights far
+away cast none) that reach a moving model get a shadow map of the moving casters, in rows 4 and 5 of the light shadow atlas.
+Where a world surface, static model or the water is in such a shadow, our estimate of that light's contribution (falloff x N.L x
+colour, at most the baked light itself) is taken from the baked light. So soldiers cast shadows under street lamps at night. The
+estimate can disagree with the bake; it never makes a surface darker than black or brighter than before.
 
 ## Depth of field while aiming
 

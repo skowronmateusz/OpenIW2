@@ -263,8 +263,19 @@ pixel with the per-instance block in a storage buffer (`assets::LightGrid::smode
 baked into world space, so the instance travels in a vertex coordinate). Deviation: the box is the box of the model's LOD 0
 vertices, not the record's bounds (not read).
 
-World surfaces without a lightmap take the lightprobe technique too (entity 0x7fe above). TODO(spec): which probe constants the
-DLL sets for them; iw2view draws them with a fixed ambient plus sun term.
+World surfaces without a lightmap take the lightprobe technique too (entity 0x7fe above). Their probe constants (1.3 DLL
+0x1003a750, run for the technique slots 6..17 before a draw, shader path; code constants named by the table at 0x1018eed0, stored
+at 0x1070c020 + (index - 0x82) x 16):
+- An entity with a lighting record (set by the surface walker at 0x1002faa3 for entities of type 0 and 1) gets light color
+  (index 0x85) = the primary light's colour (0x1070eb80) with w = the record's sun visibility (+0x04), and colorsR / colorsG /
+  colorsB (0x92 / 0x94 / 0x96, two registers each: the eight grid coefficients per channel) from the record (+0x08..+0x64).
+- The world (0x7fe) and the list entity 0x7ff have no record (0x1002fac0 clears it): only light color is set, with the primary
+  light's own w. colorsR / G / B are not written (0x1003a826 is their only writer), so such a surface takes the coefficients of
+  the previous probe-lit draw of the frame, zero before the first.
+- Type-2 records (static models) also set lightingLookupScale (0x99, from the world's lighting-texture record +0x110) and
+  baseLightingCoords (0x98, record +0x08..+0x10).
+iw2view (deliberate deviation): those surfaces are drawn with a fixed ambient plus the sun term, since the left-over
+coefficients depend on the draw order of unrelated entities.
 
 iw2view: every surface of an xmodel entity whose material uses a phong_* technique set is drawn by `vs_probe` / `fs_probe`
 (apps/iw2view/shaders.metal.inc); the other technique sets keep the per-vertex-normal probe of `fs_main`.

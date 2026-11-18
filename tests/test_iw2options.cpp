@@ -232,6 +232,37 @@ void checkSet(bool multiplayer) {
         CHECK(page->rect.x == 0 && page->rect.w <= 385 && !page->fullScreen && !page->popup);
         for (const auto& it : page->items) CHECK(it->rect.x + it->rect.w <= page->rect.w);
     }
+    // Enhanced graphics (docs/render-enhanced.md "Menu"): a button on the OpenIW2 page opens its page; every row is bound to its cvar;
+    // all rows but the master switch are shown only while r_enhanced is 1; Esc goes back to the OpenIW2 page; the options menu closes it.
+    if (page) {
+        const Item* eb = byName(*page, "iw2_enhanced_button");
+        CHECK(eb && eb->type == 1 && hasCommand(eb->action, "open", kEnhancedPage) && hasCommand(eb->action, "close", "iw2_options"));
+    }
+    const Menu* enh = lib.find(kEnhancedPage);
+    CHECK(enh != nullptr && hasCommand(opt->onClose, "close", kEnhancedPage));
+    if (enh) {
+        CHECK(hasCommand(enh->onEsc, "open", "iw2_options") && hasCommand(enh->onEsc, "close", kEnhancedPage));
+        float lastY = -1.0f;
+        for (const EnhancedRow& r : enhancedRows()) {
+            const Item* it = byName(*enh, r.name);
+            const Item* lb = byName(*enh, std::string(r.name) + "_label");
+            CHECK(it && lb && it->type == 12 && it->dvar == r.cvar && lb->text == r.label && lb->decoration);
+            if (!it || !lb) continue;
+            CHECK(it->rect.y > lastY); // rows top to bottom in table order
+            lastY = it->rect.y;
+            if (r.master) CHECK(it->dvarTest.empty() && lb->dvarTest.empty());
+            else
+                CHECK(it->dvarTest == "r_enhanced" && it->showDvar.size() == 1 && it->showDvar[0] == "1" && lb->dvarTest == "r_enhanced" && lb->showDvar.size() == 1);
+            if (r.kind == EnhancedRow::PresetOnOff)
+                CHECK(it->floatList.size() == 3 && it->floatList[0].second == -1.0f && it->floatList[1].second == 1.0f && it->floatList[2].second == 0.0f);
+            else CHECK(it->floatList.size() == r.choices.size());
+            CHECK(!registeredDefault(r.cvar).empty() && isArchivedCvar(r.cvar)); // saved in the profile, with a default
+            CHECK(it->rect.x + it->rect.w <= enh->rect.w);
+        }
+        const Item* note = byName(*enh, "iw2_enh_note"); // the experimental warning, always visible
+        CHECK(note && note->decoration && note->dvarTest.empty() && note->text == "@IW2_ENH_NOTE" && note->rect.x + note->rect.w <= enh->rect.w);
+        CHECK(registeredDefault("r_enhanced") == "0" && registeredDefault("r_enhSunShadows") == "-1" && registeredDefault("r_enhPreset") == "1");
+    }
     // Game Options is left alone: no hit marker row there any more.
     const Menu* g = lib.find("options_game");
     CHECK(g && g->items.size() == 1);
@@ -261,7 +292,15 @@ int main() {
     CHECK(missionSvCheats(true, false) == "1" && missionSvCheats(false, false).empty() && missionSvCheats(true, true).empty());
     // Texts: English and Polish (Windows-1250) for every key the page uses.
     const auto en = openIw2Strings("english"), pl = openIw2Strings("polish");
-    CHECK(en.size() == pl.size() && en.size() == 10);
+    CHECK(en.size() == pl.size() && en.size() == 34);
+    {   // every OpenIW2 string key the two pages use has a text (shipped MENU_* keys come from the game's own files)
+        auto has = [&](const std::string& key) { for (const auto& [k, t] : en) if ("@" + k == key) return true; return false; };
+        for (const EnhancedRow& r : enhancedRows()) {
+            CHECK(has(r.label));
+            for (const auto& [label, value] : r.choices) CHECK(label.rfind("@MENU_", 0) == 0 || has(label));
+        }
+        CHECK(has("@IW2_ENH_TITLE") && has("@IW2_ENH_PRESET"));
+    }
     for (size_t i = 0; i < en.size() && i < pl.size(); ++i) CHECK(en[i].first == pl[i].first && !en[i].second.empty() && !pl[i].second.empty());
     CHECK(en[2].second == "Red on kill" && pl[2].second != en[2].second);
     {

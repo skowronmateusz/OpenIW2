@@ -55,6 +55,15 @@ in your profile.
 | Show FPS | Frame counter in the top right corner. |
 | Cheats | Single player only. Turns on cheats for the mission and shows three key rows: fullbright (default `L`), god mode (`F10`) and noclip (`N`), all rebindable there. Never works in multiplayer. |
 | Open log folder | Opens the folder with the logs in Finder (for a bug report). |
+| Enhanced graphics | Opens the Enhanced graphics page (below). |
+
+**Options > OpenIW2 > Enhanced graphics**: a modern lighting mode that is off by default, so the game looks as it did
+originally. It is experimental: it may cause visual glitches and bugs (the page says so too). "Enhanced graphics" turns it on at the next start of the game. With it on, the page shows a quality choice (Low,
+Medium, High) and one row per effect: shadows of moving objects, sharp world shadows, ambient occlusion, contact shadows,
+temporal anti-aliasing, highlights and reflections, screen reflections on water and metal, shadows of flashes and lamps, lamp
+highlights, sun shafts, bloom, auto exposure, a "Period film" colour grade, motion blur, depth of field when aiming and HDR
+output on displays that support it. "Preset" leaves a row to the quality choice. Changes apply at once, except Enhanced graphics
+itself and HDR output, which apply at the next start. More in `docs/render-enhanced.md`.
 
 ### Options that differ
 

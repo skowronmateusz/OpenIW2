@@ -71,6 +71,11 @@ std::string registeredDefault(const std::string& n) {
         {"iw2_cheats", "0"},        // openiw2 option (src/ui/iw2options.h): single-player cheats, off by default
         {"iw2_showFps", "0"},       // openiw2 option: the frame counter, off by default
         {"iw2_hitMarker", "0"},     // openiw2 option (src/game/hitmarker.h), off by default; not a dvar of the shipped game
+        // openiw2 enhanced rendering (docs/render-enhanced.md "Menu"): off; the per-feature rows -1 = as the preset
+        {"r_enhanced", "0"}, {"r_enhPreset", "1"}, {"r_enhSunShadows", "-1"}, {"r_enhWorldShadows", "-1"}, {"r_enhAO", "-1"},
+        {"r_enhContactShadows", "-1"}, {"r_enhTAA", "-1"}, {"r_enhGGX", "-1"}, {"r_enhSSR", "-1"}, {"r_enhLightShadows", "-1"},
+        {"r_enhMapLightSpec", "-1"}, {"r_enhVolumetric", "-1"}, {"r_enhBloom", "-1"}, {"r_enhAutoExposure", "-1"}, {"r_enhGrade", "0"},
+        {"r_enhMotionBlur", "0"}, {"r_enhDOF", "0"}, {"r_enhEdr", "1"},
         {"monkeytoy", "1"},         // 0x4037ba
         {"cl_freelook", "1"},       // 0x40e2e0
         {"m_filter", "0"},          // 0x40e3c0 (bool, flags 0x1001)

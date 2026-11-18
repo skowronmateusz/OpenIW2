@@ -100,11 +100,12 @@ struct EnhancedSettings {
 // is set overrides it.
 inline EnhancedSettings enhancedSettings(const std::function<std::string(const char*)>& get) {
     EnhancedSettings s;
+    // A negative value of a per-feature cvar means "as the preset" (the menu's Preset choice, docs/render-enhanced.md "Menu").
     auto num = [&](const char* n, float& out) {
         const std::string v = get(n);
         if (v.empty()) return false;
         out = float(std::atof(v.c_str()));
-        return true;
+        return out >= 0.0f;
     };
     float f = 0.0f;
     s.enabled = num("r_enhanced", f) && f != 0.0f;
@@ -137,7 +138,7 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhDOF", f)) s.dof = std::clamp(f, 0.0f, 2.0f);
     if (num("r_enhMotionDebug", f)) s.motionDebug = std::clamp(int(f), 0, 2);
     if (num("r_enhBloomIntensity", f)) s.bloomIntensity = std::clamp(f, 0.0f, 1.0f);
-    if (num("r_enhExposureBias", f)) s.exposureBias = std::clamp(f, -2.0f, 2.0f);
+    if (const std::string v = get("r_enhExposureBias"); !v.empty()) s.exposureBias = std::clamp(float(std::atof(v.c_str())), -2.0f, 2.0f); // signed
     return s;
 }
 
@@ -354,6 +355,15 @@ inline float mapLightFalloff(const MapLight& l, const float p[3]) {
         f *= t * t * (3.0f - 2.0f * t);
     }
     return f;
+}
+
+// Baked-light shadows of moving objects take only local lamps: a light whose radius is at most 1500 units and whose origin is
+// within 1500 units of the camera (large fill lights far away would cast a meaningless point shadow at a cost), and that reaches
+// within 600 units of the camera.
+inline bool bakedShadowLightNearCamera(const MapLight& l, const float cam[3]) {
+    const float dx = l.pos[0] - cam[0], dy = l.pos[1] - cam[1], dz = l.pos[2] - cam[2];
+    const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+    return l.radius <= 1500.0f && d <= 1500.0f && d - l.radius <= 600.0f;
 }
 
 // ---- atmosphere and grading ------------------------------------------------------------------------------------------------------

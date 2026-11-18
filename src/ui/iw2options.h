@@ -18,6 +18,20 @@ constexpr const char* kCheatCmdNoclip = "iw2_noclip";
 // The command of the page's "Open log folder" button (docs/logging.md): iw2view opens the log folder in Finder.
 constexpr const char* kOpenLogsCommand = "iw2_openlogs";
 
+// The enhanced rendering page (docs/render-enhanced.md "Menu"), opened from the OpenIW2 page.
+constexpr const char* kEnhancedPage = "iw2_enhanced";
+struct EnhancedRow {
+    const char* name;  // item name
+    const char* label; // string key
+    const char* cvar;
+    enum Kind { PresetOnOff, Choices } kind;
+    std::vector<std::pair<std::string, std::string>> choices; // (label key, value) for Choices
+    bool master;       // the r_enhanced row: always shown; the others only while it is 1
+};
+// The page's rows in order, and its menu text.
+const std::vector<EnhancedRow>& enhancedRows();
+std::string enhancedMenuSource();
+
 // Adds the page "iw2_options" and an "OpenIW2" entry in the options menu ("options_menu", below Game Options; the entries under it move
 // down one line). The page holds the Hit marker option (cvar iw2_hitMarker), Show FPS (iw2_showFps), a note, the "Open log folder"
 // button (command iw2_openlogs), and, unless `multiplayer`, the Cheats option (cvar

@@ -20,6 +20,7 @@ bool isArchivedCvar(const std::string& name) {
     if (n == "cg_blood" || n == "cg_drawcrosshair" || n == "cg_subtitles" || n == "m_filter" || n == "cl_freelook" || n == "r_swapinterval")
         return true;
     if (n == "iw2_hitmarker" || n == "iw2_cheats" || n == "iw2_showfps" || n == "iw2_keysver") return true; // openiw2 options (docs/debug-flags.md), archived like the shipped options
+    if (n.rfind("r_enh", 0) == 0) return true; // openiw2 enhanced rendering options (docs/render-enhanced.md), archived in the profile
     if (n == "cg_hudgrenadeiconinscope") return true; // flags 0x1001 at 0x4a1622 (archive)
     if (n == "sv_lastsavegame") return true; // registered with flags 0x1001 (archive) at 0x449d78
     return n.size() == 6 && n.compare(0, 4, "mis_") == 0 && std::isdigit(static_cast<unsigned char>(n[4])) && std::isdigit(static_cast<unsigned char>(n[5]));

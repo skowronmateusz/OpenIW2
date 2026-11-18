@@ -2567,6 +2567,41 @@ struct Renderer {
     SDL_GPUTexture* frameHist = nullptr;   // the previous frame's resolved scene while reflections are on, else null
     SDL_GPUTexture* frameDepth = nullptr;  // $floatz once built this frame, else null
     void ensureEnvCube(SDL_GPUCommandBuffer* cmd, const Scene& scene);
+    // The menu's enhanced settings while running (docs/render-enhanced.md "Menu"): everything but r_enhanced itself and EDR (both
+    // need the next start) applies at once; the shadow maps are made again at their new size.
+    void applyEnhancedLive(const game::EnhancedSettings& s) {
+        if (!enh.enabled) return;
+        game::EnhancedSettings n = s;
+        n.enabled = enh.enabled, n.edr = enh.edr;
+        if (n.sunShadows != enh.sunShadows) {
+            if (shadowTex) SDL_ReleaseGPUTexture(dev, shadowTex), shadowTex = nullptr;
+            const game::SunShadowQuality q = game::sunShadowQuality(n.sunShadows);
+            if (q.resolution > 0) {
+                SDL_GPUTextureCreateInfo ti{};
+                ti.type = SDL_GPU_TEXTURETYPE_2D;
+                ti.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+                ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                ti.width = uint32_t(q.resolution * q.cascades), ti.height = uint32_t(q.resolution), ti.layer_count_or_depth = 1, ti.num_levels = 1;
+                shadowTex = SDL_CreateGPUTexture(dev, &ti);
+            }
+        }
+        if (n.worldShadows != enh.worldShadows) {
+            if (worldShadowArray) SDL_ReleaseGPUTexture(dev, worldShadowArray), worldShadowArray = nullptr;
+            for (WorldCascade& wc : worldCascades) wc.valid = false;
+            const game::WorldShadowQuality wq = game::worldShadowQuality(n.worldShadows);
+            if (wq.cascades > 0) {
+                SDL_GPUTextureCreateInfo ti{};
+                ti.type = SDL_GPU_TEXTURETYPE_2D_ARRAY;
+                ti.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+                ti.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                ti.width = ti.height = uint32_t(wq.resolution), ti.layer_count_or_depth = uint32_t(wq.cascades), ti.num_levels = 1;
+                worldShadowArray = SDL_CreateGPUTexture(dev, &ti);
+            }
+        }
+        if (n.taa != enh.taa) taaHistValid = false, taaPrevVPValid = false;
+        if (n.ggx != enh.ggx) envFor = nullptr; // rebuild the environment cube
+        enh = n;
+    }
     // Atmosphere and grading (stage 4): sun shafts at half size, motion blur.
     SDL_GPUGraphicsPipeline *enhVolumePipe = nullptr, *enhVolumeApplyPipe = nullptr, *enhMotionBlurPipe = nullptr, *enhDofPipe = nullptr;
     float adsFrac = 0.0f; // set by the caller each frame: the player's aim-down-sights fraction (depth of field)
@@ -5000,9 +5035,10 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
     if (enh.lightShadows && !scene.mapLights.empty()) {
         std::vector<std::pair<float, const game::MapLight*>> cand;
         for (const game::MapLight& l : scene.mapLights) {
+            const float camPos[3] = {cam.pos.x, cam.pos.y, cam.pos.z};
+            if (!game::bakedShadowLightNearCamera(l, camPos)) continue;
             const float dx = l.pos[0] - cam.pos.x, dy = l.pos[1] - cam.pos.y, dz = l.pos[2] - cam.pos.z;
             const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
-            if (d - l.radius > 600.0f) continue;
             bool reaches = false;
             for (const DrawItem& it : items) {
                 if (!it.model || it.effects || it.depthMax < 1.0f || !it.model->hasBounds) continue;
@@ -11340,7 +11376,6 @@ int main(int argc, char** argv) {
             shotIn.fire = fireSeconds > 0;
             shotIn.ads = shotAds;
             if (pweapon.update(fireSeconds, shotIn) > 0) viewShot();
-            renderer.adsFrac = pweapon.adsFrac(); // enhanced depth of field while aiming (--ads)
             shotIn.fire = false;
             shotIn.frag = std::getenv("IW2_SHOT_FRAG") != nullptr; // debug: hold +frag for the shot (offhand view model)
             // Debug: IW2_SHOT_SCRIPT=t:action,... (reload+/-, fire+/-, ads+/-, frag+/-, smoke+/-, melee+/-, weapon=name) runs
@@ -11490,6 +11525,7 @@ int main(int argc, char** argv) {
             forcedBlur = std::max(forcedBlur, worldMenuBlur());
             renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars), lodDvarsFrom(uiCvars, renderer.lodScaleDvar, renderer.lodBiasDvar);
             renderer.renderTimeMs = world ? cgNowMs() : 0;
+            renderer.adsFrac = pweapon.adsFrac(); // enhanced depth of field while aiming (--ads)
             // IW2_BENCH=N (docs/debug-flags.md): draws the shot's frame N times into an offscreen target, each one gathered again
             // (entity skinning, culls) and waited for on the GPU, and prints the median times and what was submitted.
             if (const char* bn = std::getenv("IW2_BENCH"); bn && std::atoi(bn) > 0) {
@@ -13964,6 +14000,8 @@ int main(int argc, char** argv) {
                 renderer.gameTimeSeconds = float(((world ? cgNowMs() : int64_t(SDL_GetTicks())) % 1000) / 1000.0); // gameTime.z = frac(t)
                 renderer.renderTimeMs = world ? cgNowMs() : int64_t(SDL_GetTicks()); // client render time, not the 20 Hz world time
                 renderer.adsFrac = world ? pweapon.adsFrac() : 0.0f; // enhanced depth of field while aiming
+                if (renderer.enh.enabled) // the Enhanced graphics menu page, applied at once (docs/render-enhanced.md "Menu")
+                    renderer.applyEnhancedLive(game::enhancedSettings([&](const char* n) { return menuEnv.getCvar(n); }));
                 hudKillcam = killcamView;
                 const std::vector<Quad2D> hud = buildHud(w, h, cam);
                 hudKillcam.reset();

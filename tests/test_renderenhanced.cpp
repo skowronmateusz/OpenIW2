@@ -39,6 +39,13 @@ int main() {
         cv["r_enhanced"] = "0";
         chk(!enhancedSettings(get).enabled, __LINE__);
     }
+    // The menu's "Preset" value -1 leaves a feature to the preset.
+    {
+        std::map<std::string, std::string> cv{{"r_enhanced", "1"}, {"r_enhPreset", "0"}, {"r_enhSunShadows", "-1"}, {"r_enhTAA", "-1"}, {"r_enhAO", "1"}};
+        auto get = [&](const char* n) { const auto it = cv.find(n); return it == cv.end() ? std::string() : it->second; };
+        const EnhancedSettings s = enhancedSettings(get);
+        chk(s.sunShadows == 1 && !s.taa && s.ao, __LINE__);
+    }
     // Shadow quality levels.
     chk(sunShadowQuality(0).resolution == 0, __LINE__);
     chk(sunShadowQuality(1).resolution == 1024 && sunShadowQuality(1).cascades == 1, __LINE__);
@@ -169,6 +176,18 @@ int main() {
         l.cosOuter = std::cos(60.0f * 3.14159265f / 180.0f), l.cosInner = std::cos(30.0f * 3.14159265f / 180.0f);
         const float below[3] = {0, 0, -50}, side[3] = {50, 0, -5}, above[3] = {0, 0, 50};
         chk(near(mapLightFalloff(l, below), 0.25f) && mapLightFalloff(l, side) == 0.0f && mapLightFalloff(l, above) == 0.0f, __LINE__);
+    }
+
+    // Baked-light shadows: local lamps near the camera only.
+    {
+        MapLight l;
+        l.radius = 300.0f;
+        const float cam[3] = {0, 0, 0};
+        l.pos[0] = 800.0f; chk(bakedShadowLightNearCamera(l, cam), __LINE__);   // reaches within 500
+        l.pos[0] = 1000.0f; chk(!bakedShadowLightNearCamera(l, cam), __LINE__); // reaches only within 700
+        l.radius = 10000.0f, l.pos[0] = 200.0f; chk(!bakedShadowLightNearCamera(l, cam), __LINE__); // a fill light
+        l.radius = 1500.0f, l.pos[0] = 1500.0f; chk(bakedShadowLightNearCamera(l, cam), __LINE__);
+        l.pos[0] = 1600.0f; chk(!bakedShadowLightNearCamera(l, cam), __LINE__);  // origin too far
     }
 
     // Aim depth of field: sharp near, full radius far, scaled by the ADS fraction and the strength.

@@ -14,12 +14,13 @@ std::string lowerCopy(std::string s) {
 
 // One label + value row of the page: rows lie 15 apart from origin (50, 120), the value 170 right of the label.
 // `gate`: kNoGate, kHideInMp (hidden while ui_multiplayer is 1) or kOnWithCheats (shown only while the Cheats option is on).
-enum Gate { kNoGate, kHideInMp, kOnWithCheats };
+enum Gate { kNoGate, kHideInMp, kOnWithCheats, kOnWithEnhanced };
 std::string row(const char* name, const char* labelKey, int type, const char* dvar, const char* list, int y, Gate gate) {
     std::string s;
-    const std::string hide = gate == kHideInMp       ? "\t\tdvartest \"ui_multiplayer\"\n\t\thideDvar { \"1\" }\n"
-                             : gate == kOnWithCheats ? "\t\tdvartest \"iw2_cheats\"\n\t\tshowDvar { \"1\" }\n"
-                                                     : "";
+    const std::string hide = gate == kHideInMp         ? "\t\tdvartest \"ui_multiplayer\"\n\t\thideDvar { \"1\" }\n"
+                             : gate == kOnWithCheats   ? "\t\tdvartest \"iw2_cheats\"\n\t\tshowDvar { \"1\" }\n"
+                             : gate == kOnWithEnhanced ? "\t\tdvartest \"r_enhanced\"\n\t\tshowDvar { \"1\" }\n"
+                                                       : "";
     const std::string common =
         "\t\torigin 50 120\n\t\ttextstyle 3\n\t\ttextaligny 11\n\t\ttextscale .25\n\t\tstyle 1\n\t\tbackcolor 0 0 0 0\n\t\tforecolor .9 .9 .9 1\n\t\tvisible 1\n";
     s += std::string("\titemDef\n\t{\n\t\tname ") + name + "_label\n\t\ttype 1\n\t\ttext \"" + labelKey + "\"\n\t\trect 0 " + std::to_string(y) + " 1 13\n\t\ttextalignx 0\n" + common + hide + "\t\tdecoration\n\t}\n";
@@ -62,8 +63,67 @@ std::string openIw2MenuSource(bool multiplayer) {
     s += "\titemDef\n\t{\n\t\tname iw2_openlogs\n\t\ttype 1\n\t\ttext \"@IW2_OPT_OPENLOGS\"\n\t\trect 0 140 200 13\n\t\torigin 50 120\n"
          "\t\ttextstyle 3\n\t\ttextalignx 0\n\t\ttextaligny 11\n\t\ttextscale .25\n\t\tstyle 1\n\t\tbackcolor 0 0 0 0\n\t\tforecolor .9 .9 .9 1\n"
          "\t\tvisible 1\n\t\taction { play \"mouse_click\"; exec \"" + std::string(kOpenLogsCommand) + "\"; }\n\t\tmouseEnter { play \"mouse_over\"; }\n\t}\n";
+    // "Enhanced graphics": the button to the enhanced rendering page (docs/render-enhanced.md "Menu").
+    s += "\titemDef\n\t{\n\t\tname iw2_enhanced_button\n\t\ttype 1\n\t\ttext \"@IW2_ENH_TITLE\"\n\t\trect 0 160 200 13\n\t\torigin 50 120\n"
+         "\t\ttextstyle 3\n\t\ttextalignx 0\n\t\ttextaligny 11\n\t\ttextscale .25\n\t\tstyle 1\n\t\tbackcolor 0 0 0 0\n\t\tforecolor .9 .9 .9 1\n"
+         "\t\tvisible 1\n\t\taction { play \"mouse_click\"; close iw2_options; open " + std::string(kEnhancedPage) + "; }\n"
+         "\t\tmouseEnter { play \"mouse_over\"; }\n\t}\n";
     s += "}\n}\n";
     return s;
+}
+
+std::string enhancedMenuSource() {
+    std::string s =
+        "{\nmenuDef\n{\n\tname " + std::string(kEnhancedPage) + "\n\tfullScreen 0\n\trect 0 0 370 480\n\tfocusColor .98 .827 .58 1\n"
+        "\tonOpen { setdvar ui_background_gradient_show \"1\"; }\n"
+        "\tonESC { close " + std::string(kEnhancedPage) + "; open iw2_options; }\n"
+        "\titemDef\n\t{\n\t\tname iw2_enh_title\n\t\ttype 0\n\t\ttext \"@IW2_ENH_TITLE\"\n\t\torigin 48 64\n\t\ttextscale .5\n\t\tforecolor 1 1 1 1\n\t\tvisible 1\n\t\tdecoration\n\t}\n";
+    const std::string presetOnOff = "\t\tdvarFloatList { \"@IW2_ENH_PRESET\" -1 \"@MENU_ON\" 1 \"@MENU_OFF\" 0 }\n";
+    int y = 0;
+    for (const EnhancedRow& r : enhancedRows()) {
+        std::string list;
+        if (r.kind == EnhancedRow::PresetOnOff) list = presetOnOff;
+        else {
+            list = "\t\tdvarFloatList {";
+            for (const auto& [label, value] : r.choices) list += " \"" + label + "\" " + value;
+            list += " }\n";
+        }
+        s += row(r.name, r.label, 12, r.cvar, list.c_str(), y, r.master ? kNoGate : kOnWithEnhanced);
+        y += r.master ? 20 : 15;
+    }
+    // The experimental note, always shown (above the rows, under the title).
+    s += "\titemDef\n\t{\n\t\tname iw2_enh_note\n\t\ttype 0\n\t\ttext \"@IW2_ENH_NOTE\"\n\t\trect 0 -36 300 13\n\t\torigin 50 120\n"
+         "\t\ttextalignx 0\n\t\ttextaligny 11\n\t\ttextscale .22\n\t\tforecolor 1 .75 .4 1\n\t\tautowrapped\n\t\tvisible 1\n\t\tdecoration\n\t}\n";
+    s += "}\n}\n";
+    return s;
+}
+
+const std::vector<EnhancedRow>& enhancedRows() {
+    using C = std::vector<std::pair<std::string, std::string>>;
+    static const std::vector<EnhancedRow> rows = {
+        {"iw2_enh_master", "@IW2_ENH_MASTER", "r_enhanced", EnhancedRow::Choices, C{{"@MENU_OFF", "0"}, {"@MENU_ON", "1"}}, true},
+        {"iw2_enh_preset", "@IW2_ENH_QUALITY", "r_enhPreset", EnhancedRow::Choices, C{{"@MENU_LOW", "0"}, {"@MENU_MEDIUM", "1"}, {"@MENU_HIGH", "2"}}, false},
+        {"iw2_enh_sun", "@IW2_ENH_SUN", "r_enhSunShadows", EnhancedRow::Choices,
+         C{{"@IW2_ENH_PRESET", "-1"}, {"@MENU_OFF", "0"}, {"@MENU_LOW", "1"}, {"@MENU_MEDIUM", "2"}, {"@MENU_HIGH", "3"}}, false},
+        {"iw2_enh_world", "@IW2_ENH_WORLD", "r_enhWorldShadows", EnhancedRow::Choices,
+         C{{"@IW2_ENH_PRESET", "-1"}, {"@MENU_OFF", "0"}, {"@MENU_MEDIUM", "1"}, {"@MENU_HIGH", "2"}}, false},
+        {"iw2_enh_ao", "@IW2_ENH_AO", "r_enhAO", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_contact", "@IW2_ENH_CONTACT", "r_enhContactShadows", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_taa", "@IW2_ENH_TAA", "r_enhTAA", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_ggx", "@IW2_ENH_GGX", "r_enhGGX", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_ssr", "@IW2_ENH_SSR", "r_enhSSR", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_lights", "@IW2_ENH_LIGHTS", "r_enhLightShadows", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_lamps", "@IW2_ENH_LAMPS", "r_enhMapLightSpec", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_shafts", "@IW2_ENH_SHAFTS", "r_enhVolumetric", EnhancedRow::Choices,
+         C{{"@IW2_ENH_PRESET", "-1"}, {"@MENU_OFF", "0"}, {"@MENU_ON", "0.35"}, {"@IW2_ENH_STRONG", "0.7"}}, false},
+        {"iw2_enh_bloom", "@IW2_ENH_BLOOM", "r_enhBloom", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_exposure", "@IW2_ENH_EXPOSURE", "r_enhAutoExposure", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_grade", "@IW2_ENH_GRADE", "r_enhGrade", EnhancedRow::Choices, C{{"@IW2_ENH_NEUTRAL", "0"}, {"@IW2_ENH_FILM", "1"}}, false},
+        {"iw2_enh_mblur", "@IW2_ENH_MBLUR", "r_enhMotionBlur", EnhancedRow::Choices, C{{"@MENU_OFF", "0"}, {"@MENU_ON", "1"}}, false},
+        {"iw2_enh_dof", "@IW2_ENH_DOF", "r_enhDOF", EnhancedRow::Choices, C{{"@MENU_OFF", "0"}, {"@MENU_ON", "1"}}, false},
+        {"iw2_enh_edr", "@IW2_ENH_EDR", "r_enhEdr", EnhancedRow::Choices, C{{"@MENU_ON", "1"}, {"@MENU_OFF", "0"}}, false},
+    };
+    return rows;
 }
 
 std::vector<std::pair<std::string, std::string>> openIw2Strings(const std::string& language) {
@@ -80,6 +140,31 @@ std::vector<std::pair<std::string, std::string>> openIw2Strings(const std::strin
         {"IW2_OPT_KEY_NOCLIP", "Noclip (walk / fly)", "Chodzenie / latanie"},
         {"IW2_OPT_SHOWFPS", "Show FPS", "Poka\xBF FPS"},
         {"IW2_OPT_OPENLOGS", "Open log folder", "Otw\xF3rz folder log\xF3w"},
+        {"IW2_ENH_TITLE", "Enhanced graphics", "Enhanced graphics"},
+        {"IW2_ENH_MASTER", "Enhanced graphics (next start)", "Enhanced graphics (next start)"},
+        {"IW2_ENH_QUALITY", "Quality", "Quality"},
+        {"IW2_ENH_PRESET", "Preset", "Preset"},
+        {"IW2_ENH_STRONG", "Strong", "Strong"},
+        {"IW2_ENH_SUN", "Shadows of moving objects", "Shadows of moving objects"},
+        {"IW2_ENH_WORLD", "Sharp world shadows", "Sharp world shadows"},
+        {"IW2_ENH_AO", "Ambient occlusion", "Ambient occlusion"},
+        {"IW2_ENH_CONTACT", "Contact shadows", "Contact shadows"},
+        {"IW2_ENH_TAA", "Temporal anti-aliasing", "Temporal anti-aliasing"},
+        {"IW2_ENH_GGX", "Highlights and reflections", "Highlights and reflections"},
+        {"IW2_ENH_SSR", "Screen reflections (water, metal)", "Screen reflections (water, metal)"},
+        {"IW2_ENH_LIGHTS", "Shadows of flashes and lamps", "Shadows of flashes and lamps"},
+        {"IW2_ENH_LAMPS", "Lamp highlights", "Lamp highlights"},
+        {"IW2_ENH_SHAFTS", "Sun shafts", "Sun shafts"},
+        {"IW2_ENH_BLOOM", "Bloom", "Bloom"},
+        {"IW2_ENH_EXPOSURE", "Auto exposure", "Auto exposure"},
+        {"IW2_ENH_GRADE", "Colour grade", "Colour grade"},
+        {"IW2_ENH_NEUTRAL", "Neutral", "Neutral"},
+        {"IW2_ENH_FILM", "Period film", "Period film"},
+        {"IW2_ENH_MBLUR", "Motion blur", "Motion blur"},
+        {"IW2_ENH_DOF", "Depth of field when aiming", "Depth of field when aiming"},
+        {"IW2_ENH_EDR", "HDR display output (next start)", "HDR display output (next start)"},
+        {"IW2_ENH_NOTE", "Experimental: Enhanced graphics may cause visual glitches and bugs.",
+         "Funkcja eksperymentalna: Enhanced graphics mo\xBF" "e powodowa\xE6 b\xB3\xEA" "dy i usterki obrazu."},
         {"IW2_OPT_NOTE", "These settings are OpenIW2 additions and differ from the original game.", "Te ustawienia to dodatki OpenIW2 i r\xF3\xBFni\xB9 si\xEA od oryginalnej gry."},
     };
     const bool polish = strcasecmp(language.c_str(), "polish") == 0;
@@ -103,6 +188,7 @@ bool addOpenIw2Options(MenuLibrary& lib, bool multiplayer) {
         if (it->type == 1 && lowerCopy(it->text) == "@menu_game_options" && it->rect.x == 400) tmpl = it.get();
     if (!tmpl) return false;
     lib.parseSource(openIw2MenuSource(multiplayer), "openiw2/options.menu");
+    lib.parseSource(enhancedMenuSource(), "openiw2/enhanced.menu");
     if (!lib.find("iw2_options")) return false;
 
     // The entry: a copy of the Game Options entry, one line below it; what lay at or below that line in its column moves down.
@@ -120,7 +206,7 @@ bool addOpenIw2Options(MenuLibrary& lib, bool multiplayer) {
     // Every entry that opens a page closes all the other pages first (and the OpenIW2 page): two pages open at once are drawn over
     // each other. The shipped entries miss some (the Game Options entry does not close its own page, which our copy would inherit; the
     // single-player Game Options entry has the Shoot page's close commented out), so the missing closes are added here.
-    std::vector<std::string> pages = {"iw2_options"};
+    std::vector<std::string> pages = {"iw2_options", kEnhancedPage};
     for (const auto& m : lib.menus()) {
         const std::string n = lowerCopy(m->name);
         if (n.rfind("options_", 0) == 0 && n != "options_menu") pages.push_back(m->name);
@@ -130,7 +216,7 @@ bool addOpenIw2Options(MenuLibrary& lib, bool multiplayer) {
             const Command& c = it->action[i];
             if (!(c.size() > 1 && lowerCopy(c[0]) == "open")) continue;
             const std::string target = lowerCopy(c[1]);
-            if (target.rfind("options_", 0) != 0 && target != "iw2_options") continue;
+            if (target.rfind("options_", 0) != 0 && target != "iw2_options" && target != kEnhancedPage) continue;
             if (target == "options_graphics_defaults" || target == "options_control_defaults" || target == "options_graphics_texture") break; // popups of their pages
             for (const std::string& pg : pages) {
                 if (lowerCopy(pg) == target) continue;
@@ -142,6 +228,7 @@ bool addOpenIw2Options(MenuLibrary& lib, bool multiplayer) {
         }
     const Command close = {"close", "iw2_options"};
     options->onClose.push_back(close);
+    options->onClose.push_back(Command{"close", kEnhancedPage});
     return true;
 }
 
