@@ -288,6 +288,15 @@ Screenshots stay 8-bit SDR images with white 1.
 With TAA off, the debug view (`r_enhMotionDebug 1`) shows the camera motion of the static scene reconstructed from `$floatz`
 and the two frames' view-projections (`game::cameraMotion`). With TAA on it shows the motion vectors of the TAA pass.
 
+## Stage 5: MetalFX and ray tracing
+
+These need the native Metal objects behind SDL's handles, which SDL 3.4.20 does not give out; `tools/sdl/` has our patch that
+adds them (`SDL_GPU_OPENIW2_METAL_HANDLES`). Without it the features are compiled out. `apps/iw2view/metalnative.mm` asks the
+device at start what it can do and prints it (`metal: <GPU>, MetalFX yes / no, ray tracing yes / no`): MetalFX temporal
+scaling where `MTLFXTemporalScalerDescriptor` supports the device, ray tracing only on Apple GPU family 9 and later (M3 and
+later, hardware intersection; `game::metalRayTracingAllowed`). `IW2_NO_METALFX` and `IW2_NO_METAL_RT` force them off, to check
+the fallback (the stage 1-4 paths) on any machine.
+
 ## Cost
 
 GPU-bound frame time with `IW2_BENCH_GPU` (frames submitted back to back), 1920 × 1080, 4x MSAA, Apple M4 Pro (20-core GPU),

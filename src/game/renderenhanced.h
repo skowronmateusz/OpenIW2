@@ -652,4 +652,12 @@ inline std::vector<uint8_t> assignProbes(const ProbeGridInfo& g, const std::vect
     return out;
 }
 
+
+// ---- stage 5: MetalFX and ray tracing (docs/render-enhanced.md "Stage 5") ---------------------------------------------------------
+
+// Ray tracing is used only on GPUs with hardware intersection (Apple GPU family 9: M3 and later); earlier Apple GPUs run it in
+// software and keep the shadow maps. forcedOff: IW2_NO_METAL_RT.
+inline bool metalRayTracingAllowed(bool supportsRaytracing, bool apple9, bool forcedOff) {
+    return supportsRaytracing && apple9 && !forcedOff;
+}
 } // namespace iw2::game

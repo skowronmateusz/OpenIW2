@@ -176,6 +176,11 @@ cmake --build build
 IW2_MAIN=/path/to/main ctest --test-dir build --output-on-failure
 ```
 
+The enhanced renderer's MetalFX and ray tracing need SDL 3.4.20 with our small patch that exposes the native Metal objects
+([tools/sdl/README.md](tools/sdl/README.md) has the build steps); point CMake at it with
+`-DSDL3_DIR=/path/to/sdl-prefix/lib/cmake/SDL3`. The release app is built that way. With Homebrew's SDL those features are
+left out and everything else works the same.
+
 Tests that need game data find the `main` folder through `IW2_MAIN` or `-DIW2_TEST_MAIN=/path/to/main`; without it
 they are not registered.
 

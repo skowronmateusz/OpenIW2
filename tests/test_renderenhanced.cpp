@@ -397,6 +397,10 @@ int main() {
         chk(assignProbes(g, {}, {}, cellOf, adj)[0] == 0, __LINE__); // no probes: the sky
     }
 
+    // Ray tracing only with hardware intersection (Apple family 9), never when forced off.
+    chk(metalRayTracingAllowed(true, true, false) && !metalRayTracingAllowed(true, false, false) &&
+            !metalRayTracingAllowed(false, true, false) && !metalRayTracingAllowed(true, true, true), __LINE__);
+
     if (bad) std::printf("%d failures\n", bad);
     else std::printf("ok\n");
     return bad ? 1 : 0;

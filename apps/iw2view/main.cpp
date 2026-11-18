@@ -46,6 +46,7 @@
 #include "game/shellshock.h"
 #include "game/gammaramp.h"
 #include "game/renderenhanced.h"
+#include "metalnative.h"
 #include "game/glow_filter.h"
 #include "game/screen_blur.h"
 #include "game/viewweapon.h"
@@ -6542,6 +6543,10 @@ int main(int argc, char** argv) {
         std::cout << "sound aliases: " << aliases.size() << "\n";
         SDL_GPUDevice* dev = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_MSL, false, nullptr);
         if (!dev) sdlFail("SDL_CreateGPUDevice");
+        const metal::Caps metalCaps = metal::query(dev); // stage 5 (docs/render-enhanced.md): MetalFX and ray tracing
+        std::cout << "metal: " << (metalCaps.handles ? metalCaps.gpu : std::string("no native handles (SDL without the openiw2 patch)"))
+                  << (metalCaps.handles ? std::string(", MetalFX ") + (metalCaps.metalFx ? "yes" : "no") + ", ray tracing " + (metalCaps.rayTracing ? "yes" : "no") : "")
+                  << "\n";
 
         // Key bindings, one table for single player and multiplayer (openiw2 deviation, docs/spec/controls.md "Profile key tables"):
         // the game's default.cfg (default_localize.cfg only changes the console key) plus the multiplayer-only binds of

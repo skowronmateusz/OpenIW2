@@ -1,0 +1,195 @@
+diff -ruN a/include/SDL3/SDL_gpu.h b/include/SDL3/SDL_gpu.h
+--- a/include/SDL3/SDL_gpu.h
++++ b/include/SDL3/SDL_gpu.h
+@@ -4629,6 +4629,45 @@
+ 
+ #endif /* SDL_PLATFORM_GDK */
+ 
++/* openiw2 patch (tools/sdl/sdl-3.4.20-metal-handles.patch): the native Metal objects behind GPU handles, so an application can
++   encode Metal work (e.g. MetalFX or ray tracing) into SDL's command buffers. NULL (and SDL_GetError set) on other backends. */
++#define SDL_GPU_OPENIW2_METAL_HANDLES 1
++
++/**
++ * Get the id<MTLDevice> of a GPU device created with the Metal backend.
++ *
++ * \param device a GPU context.
++ * \returns the device as a void pointer (not retained), or NULL on other backends.
++ */
++extern SDL_DECLSPEC void * SDLCALL SDL_GetGPUDeviceMetalDevice(SDL_GPUDevice *device);
++
++/**
++ * Get the id<MTLCommandBuffer> of a command buffer of the Metal backend. Encode native work only between SDL passes (no SDL
++ * render, compute or copy pass open on the command buffer).
++ *
++ * \param command_buffer a command buffer.
++ * \returns the command buffer as a void pointer (not retained), or NULL on other backends.
++ */
++extern SDL_DECLSPEC void * SDLCALL SDL_GetGPUCommandBufferMetalCommandBuffer(SDL_GPUCommandBuffer *command_buffer);
++
++/**
++ * Get the id<MTLTexture> that a texture of the Metal backend currently refers to (a texture that is cycled changes it).
++ *
++ * \param device a GPU context.
++ * \param texture a texture.
++ * \returns the texture as a void pointer (not retained), or NULL on other backends.
++ */
++extern SDL_DECLSPEC void * SDLCALL SDL_GetGPUTextureMetalTexture(SDL_GPUDevice *device, SDL_GPUTexture *texture);
++
++/**
++ * Get the id<MTLBuffer> that a buffer of the Metal backend currently refers to (a buffer that is cycled changes it).
++ *
++ * \param device a GPU context.
++ * \param buffer a buffer.
++ * \returns the buffer as a void pointer (not retained), or NULL on other backends.
++ */
++extern SDL_DECLSPEC void * SDLCALL SDL_GetGPUBufferMetalBuffer(SDL_GPUDevice *device, SDL_GPUBuffer *buffer);
++
+ #ifdef __cplusplus
+ }
+ #endif /* __cplusplus */
+diff -ruN a/src/dynapi/SDL_dynapi.sym b/src/dynapi/SDL_dynapi.sym
+--- a/src/dynapi/SDL_dynapi.sym
++++ b/src/dynapi/SDL_dynapi.sym
+@@ -1271,6 +1271,10 @@
+     SDL_LoadSurface_IO;
+     SDL_LoadSurface;
+     SDL_SetWindowFillDocument;
++    SDL_GetGPUDeviceMetalDevice;
++    SDL_GetGPUCommandBufferMetalCommandBuffer;
++    SDL_GetGPUTextureMetalTexture;
++    SDL_GetGPUBufferMetalBuffer;
+     # extra symbols go here (don't modify this line)
+   local: *;
+ };
+diff -ruN a/src/dynapi/SDL_dynapi_overrides.h b/src/dynapi/SDL_dynapi_overrides.h
+--- a/src/dynapi/SDL_dynapi_overrides.h
++++ b/src/dynapi/SDL_dynapi_overrides.h
+@@ -1297,3 +1297,7 @@
+ #define SDL_LoadSurface_IO SDL_LoadSurface_IO_REAL
+ #define SDL_LoadSurface SDL_LoadSurface_REAL
+ #define SDL_SetWindowFillDocument SDL_SetWindowFillDocument_REAL
++#define SDL_GetGPUDeviceMetalDevice SDL_GetGPUDeviceMetalDevice_REAL
++#define SDL_GetGPUCommandBufferMetalCommandBuffer SDL_GetGPUCommandBufferMetalCommandBuffer_REAL
++#define SDL_GetGPUTextureMetalTexture SDL_GetGPUTextureMetalTexture_REAL
++#define SDL_GetGPUBufferMetalBuffer SDL_GetGPUBufferMetalBuffer_REAL
+diff -ruN a/src/dynapi/SDL_dynapi_procs.h b/src/dynapi/SDL_dynapi_procs.h
+--- a/src/dynapi/SDL_dynapi_procs.h
++++ b/src/dynapi/SDL_dynapi_procs.h
+@@ -1305,3 +1305,7 @@
+ SDL_DYNAPI_PROC(SDL_Surface*,SDL_LoadSurface_IO,(SDL_IOStream *a,bool b),(a,b),return)
+ SDL_DYNAPI_PROC(SDL_Surface*,SDL_LoadSurface,(const char *a),(a),return)
+ SDL_DYNAPI_PROC(bool,SDL_SetWindowFillDocument,(SDL_Window *a,bool b),(a,b),return)
++SDL_DYNAPI_PROC(void*,SDL_GetGPUDeviceMetalDevice,(SDL_GPUDevice *a),(a),return)
++SDL_DYNAPI_PROC(void*,SDL_GetGPUCommandBufferMetalCommandBuffer,(SDL_GPUCommandBuffer *a),(a),return)
++SDL_DYNAPI_PROC(void*,SDL_GetGPUTextureMetalTexture,(SDL_GPUDevice *a,SDL_GPUTexture *b),(a,b),return)
++SDL_DYNAPI_PROC(void*,SDL_GetGPUBufferMetalBuffer,(SDL_GPUDevice *a,SDL_GPUBuffer *b),(a,b),return)
+diff -ruN a/src/gpu/SDL_gpu.c b/src/gpu/SDL_gpu.c
+--- a/src/gpu/SDL_gpu.c
++++ b/src/gpu/SDL_gpu.c
+@@ -784,6 +784,73 @@
+     return device->backend;
+ }
+ 
++#ifdef SDL_GPU_METAL
++extern void *METAL_GetNativeDevice(SDL_GPURenderer *driverData);
++extern void *METAL_GetNativeCommandBuffer(SDL_GPUCommandBuffer *commandBuffer);
++extern void *METAL_GetNativeTexture(SDL_GPUTexture *texture);
++extern void *METAL_GetNativeBuffer(SDL_GPUBuffer *buffer);
++#endif
++
++void *SDL_GetGPUDeviceMetalDevice(SDL_GPUDevice *device)
++{
++    CHECK_DEVICE_MAGIC(device, NULL);
++#ifdef SDL_GPU_METAL
++    if (SDL_strcmp(device->backend, "metal") == 0) {
++        return METAL_GetNativeDevice(device->driverData);
++    }
++#endif
++    SDL_Unsupported();
++    return NULL;
++}
++
++void *SDL_GetGPUCommandBufferMetalCommandBuffer(SDL_GPUCommandBuffer *command_buffer)
++{
++    if (command_buffer == NULL) {
++        SDL_InvalidParamError("command_buffer");
++        return NULL;
++    }
++#ifdef SDL_GPU_METAL
++    SDL_GPUDevice *device = ((CommandBufferCommonHeader *)command_buffer)->device;
++    if (device && SDL_strcmp(device->backend, "metal") == 0) {
++        return METAL_GetNativeCommandBuffer(command_buffer);
++    }
++#endif
++    SDL_Unsupported();
++    return NULL;
++}
++
++void *SDL_GetGPUTextureMetalTexture(SDL_GPUDevice *device, SDL_GPUTexture *texture)
++{
++    CHECK_DEVICE_MAGIC(device, NULL);
++    if (texture == NULL) {
++        SDL_InvalidParamError("texture");
++        return NULL;
++    }
++#ifdef SDL_GPU_METAL
++    if (SDL_strcmp(device->backend, "metal") == 0) {
++        return METAL_GetNativeTexture(texture);
++    }
++#endif
++    SDL_Unsupported();
++    return NULL;
++}
++
++void *SDL_GetGPUBufferMetalBuffer(SDL_GPUDevice *device, SDL_GPUBuffer *buffer)
++{
++    CHECK_DEVICE_MAGIC(device, NULL);
++    if (buffer == NULL) {
++        SDL_InvalidParamError("buffer");
++        return NULL;
++    }
++#ifdef SDL_GPU_METAL
++    if (SDL_strcmp(device->backend, "metal") == 0) {
++        return METAL_GetNativeBuffer(buffer);
++    }
++#endif
++    SDL_Unsupported();
++    return NULL;
++}
++
+ SDL_GPUShaderFormat SDL_GetGPUShaderFormats(SDL_GPUDevice *device)
+ {
+     CHECK_DEVICE_MAGIC(device, SDL_GPU_SHADERFORMAT_INVALID);
+diff -ruN a/src/gpu/metal/SDL_gpu_metal.m b/src/gpu/metal/SDL_gpu_metal.m
+--- a/src/gpu/metal/SDL_gpu_metal.m
++++ b/src/gpu/metal/SDL_gpu_metal.m
+@@ -700,6 +700,29 @@
+ 
+ // Quit
+ 
++// openiw2 patch: native handles (SDL_GetGPUDeviceMetalDevice and friends in SDL_gpu.c)
++void *METAL_GetNativeDevice(SDL_GPURenderer *driverData)
++{
++    return (__bridge void *)((MetalRenderer *)driverData)->device;
++}
++
++void *METAL_GetNativeCommandBuffer(SDL_GPUCommandBuffer *commandBuffer)
++{
++    return (__bridge void *)((MetalCommandBuffer *)commandBuffer)->handle;
++}
++
++void *METAL_GetNativeTexture(SDL_GPUTexture *texture)
++{
++    MetalTextureContainer *container = (MetalTextureContainer *)texture;
++    return container->activeTexture ? (__bridge void *)container->activeTexture->handle : NULL;
++}
++
++void *METAL_GetNativeBuffer(SDL_GPUBuffer *buffer)
++{
++    MetalBufferContainer *container = (MetalBufferContainer *)buffer;
++    return container->activeBuffer ? (__bridge void *)container->activeBuffer->handle : NULL;
++}
++
+ static void METAL_DestroyDevice(SDL_GPUDevice *device)
+ {
+     MetalRenderer *renderer = (MetalRenderer *)device->driverData;

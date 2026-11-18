@@ -165,7 +165,12 @@ add_test(NAME d3dbsp COMMAND test_d3dbsp)
 
 find_package(SDL3 CONFIG)
 if(SDL3_FOUND)
-  add_executable(iw2view apps/iw2view/main.cpp apps/iw2view/jpeg.cpp)
+  # Native Metal interop for the enhanced renderer's MetalFX and ray tracing (apps/iw2view/metalnative.mm); the features are
+  # compiled in only with SDL3 built with tools/sdl/sdl-3.4.20-metal-handles.patch (README "Build from source").
+  enable_language(OBJCXX)
+  add_executable(iw2view apps/iw2view/main.cpp apps/iw2view/jpeg.cpp apps/iw2view/metalnative.mm)
+  set_source_files_properties(apps/iw2view/metalnative.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_link_libraries(iw2view PRIVATE "-framework Metal" "-framework MetalFX" "-framework Foundation")
   target_link_libraries(iw2view PRIVATE iw2_dedicated iw2_netgame iw2_video SDL3::SDL3)
   # The main menu shows the build's version (src/ui/appversion.h), IW2_GIT_DESCRIBE above.
   target_compile_definitions(iw2view PRIVATE IW2_VERSION="${IW2_GIT_DESCRIBE}")

@@ -30,6 +30,7 @@ described in the code that reads them.
 | `IW2_SCREENSHOT_AT=s` | iw2view (window) | Runs the `screenshot` command once, s seconds after the window opens (checks the screenshot path without a key press). |
 | `IW2_BENCH_TURN=deg` | iw2view `--shot` with `IW2_BENCH` | Turns the camera by deg degrees of yaw before every bench frame (and so the shot after them), e.g. to see temporal anti-aliasing under camera motion. |
 | `IW2_ENH_CASCADE_REDRAW=1` | iw2view, `r_enhanced 1` | Re-renders the world sun cascades every frame (the cost of a cascade move, for benchmarks). |
+| `IW2_NO_METALFX=1`, `IW2_NO_METAL_RT=1` | iw2view | Treat the GPU as without MetalFX / hardware ray tracing (the enhanced renderer then keeps its own TAA and shadow maps; docs/render-enhanced.md "Stage 5"). |
 | `IW2_PROBE_DUMP=file.ppm` | iw2view, `r_enhanced 1` | On the frame after the reflection probes were captured, writes the sky cube and the first seven probes (six 64 x 64 faces each, +x -x +y -y +z -z, one row per cube) as a PPM image (needs a second frame, e.g. `IW2_BENCH=2` with `--shot`). |
 | `IW2_PROBE_AT=x,y,z` | iw2view, `r_enhanced 1` | Moves reflection probe 0 to that point; with a point above the map its faces must equal the sky's (the face orientation check). |
 | `IW2_DLIGHT_TEST=dist,radius` | iw2view | Adds one white dynamic light `dist` units ahead of the camera and 40 up, with the given radius (dynamic light and point light shadow checks). |
