@@ -420,6 +420,8 @@ int main() {
     chk(metalRayTracingAllowed(true, true, false) && !metalRayTracingAllowed(true, false, false) &&
             !metalRayTracingAllowed(false, true, false) && !metalRayTracingAllowed(true, true, true), __LINE__);
 
+    // MetalFX holds its last output during a single-player pause only.
+    chk(metalFxHold(true, false) && !metalFxHold(false, false) && !metalFxHold(true, true), __LINE__);
     // Shadow-only player body: on in every preset, off with its cvar.
     {
         auto get = [](const std::map<std::string, std::string>& m) {

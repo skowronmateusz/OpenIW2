@@ -349,6 +349,13 @@ history is reset where ours is invalid. Cost at 1920 x 1080 (high preset, duhoc 
 and from a cut it needs about a second to become as sharp as ours does in 12 frames, so it is off by default; it is the base
 for rendering below the output size.
 
+MetalFX while paused (`game::metalFxHold`): during a single-player pause (`cl_paused`, a menu over a frozen world) the
+scaler is not run. The frame shows its last output again, and its history is reset on the first frame after the pause. The
+frame does not change while paused, so nothing is lost. On macOS 27 the scaler runs a network on the Neural Engine, which can
+fail an internal assertion and abort the process (seen once after about 12 000 frames, in the pause menu). The hold avoids that
+work in the menu, and MetalFX stays off by default. It is not a complete fix: the failure is inside MetalFX, and the API has no
+way to keep the scaler off the Neural Engine.
+
 Render scale (`r_enhRenderScale`, the page's "MetalFX render resolution": Native, Quality 77 %, Balanced 67 %, Performance
 50 %; only with MetalFX on, `game::effectiveRenderScale`, `game::renderSize`): the frame's scene part (depth, `$floatz` and
 motion vectors, AO, the scene and post-sun images, sun shafts) runs at the render size; MetalFX writes the output size into the

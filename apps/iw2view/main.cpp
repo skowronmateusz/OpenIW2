@@ -2765,6 +2765,10 @@ struct Renderer {
     // r_enhPlayerShadow: the player's shadow-only body (docs/render-enhanced.md "Player shadow"): the sun cascades and the ray
     // tracing (its own instance mask) see it, nothing else draws it
     std::vector<DrawItem> shadowOnlyItems;
+    // The game is paused (cl_paused, a menu over a frozen world): the MetalFX scaler is not run, its last output is shown
+    // again, and its history is reset once the game runs again (docs/render-enhanced.md "MetalFX while paused").
+    bool temporalHold = false;
+    bool temporalHeld = false; // the previous frame reused the output: the next encode starts a new history
     bool rtWantsBeyondView() const { return metalCaps.rayTracing && enh.enabled && enh.rtBeyondView && (enh.rtReflections || enh.rtShadows); }
     bool rtReflNow = false;
     bool rtShadowNow = false;   // this frame: ray-traced shadows / contact occlusion of the moving objects (the AO image)
@@ -5673,7 +5677,20 @@ bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_
     pass(enhMfxMotionPipe, mfxMotion, mb, 2);
     const SDL_GPUTextureSamplerBinding db[1] = {{floatzTex, pointClampSampler}};
     pass(enhMfxDepthPipe, mfxDepth, db, 1);
-    const bool reset = !(taaHistValid && taaPrevVPValid);
+    if (temporalHold && taaHistValid && taaW == w && taaH == h) { // paused: the last output again, no scaler run
+        restoreScaledScene();
+        SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+        SDL_GPUTextureLocation src{}, dst{};
+        src.texture = taaHist[taaCur];
+        dst.texture = sceneTex;
+        SDL_CopyGPUTextureToTexture(cp, &src, &dst, w, h, 1, false);
+        SDL_EndGPUCopyPass(cp);
+        if (!temporalHeld) std::cout << "MetalFX: paused, the last frame is kept\n";
+        temporalHeld = true;
+        return true;
+    }
+    if (temporalHeld) std::cout << "MetalFX: running again, history reset\n";
+    const bool reset = !(taaHistValid && taaPrevVPValid) || std::exchange(temporalHeld, false);
     if (!metalFx.encode(dev, cmd, sceneTex, mfxDepth, mfxMotion, taaHist[1 - taaCur], rw, rh, w, h, cam.jitterX, cam.jitterY, reset)) {
         if (!metalFxLogged) metalFxLogged = true, std::cout << metalFx.describe() << " (our TAA instead)\n";
         return false;
@@ -14713,6 +14730,7 @@ int main(int argc, char** argv) {
             }
             auto items = killcamView ? gatherKillcamItems(cam, lerpFrac) : gatherItems(cam);
             items.insert(items.end(), vmItems.begin(), vmItems.end());
+            renderer.temporalHold = game::metalFxHold(menuEnv.getCvar("cl_paused") == "1", world != nullptr && world->multiplayer());
             { // r_enhPlayerShadow: the shadow-only body at the eye's ground point (none in the killcam, dead or spectating)
                 ShadowBodyInput sb;
                 sb.ground = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight};

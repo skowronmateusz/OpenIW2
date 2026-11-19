@@ -705,6 +705,10 @@ inline bool withinRtBeyondViewRange(float dx, float dy, float dz) { return dx * 
 inline bool metalRayTracingAllowed(bool supportsRaytracing, bool apple9, bool forcedOff) {
     return supportsRaytracing && apple9 && !forcedOff;
 }
+// MetalFX while paused (docs/render-enhanced.md "MetalFX while paused"): a single-player pause (a menu over a frozen world)
+// shows the scaler's last output again instead of running it; a multiplayer world never pauses.
+inline bool metalFxHold(bool clPaused, bool multiplayer) { return clPaused && !multiplayer; }
+
 // ---- shadow-only player body (r_enhPlayerShadow, docs/render-enhanced.md "Player shadow") ---------------------------------------
 // Our own design: the first-person player has no body, so the sun shadow and the ray tracing get one that is never drawn in the
 // view. Its models come from the multiplayer character that uses the same view hands (character/mp_*.gsc set the view hands,
