@@ -2406,6 +2406,20 @@ struct Quad2D {
     float qx[4] = {}, qy[4] = {};
 };
 
+// Debug IW2_ENH_PREV_CAM=dx,dy,dz,dyaw (--shot): the previous-frame camera of the motion vectors is this camera moved by (dx, dy, dz)
+// and turned by dyaw degrees, so a single shot shows camera motion (the motion-vector view, motion blur, TAA reprojection).
+static Mat4 debugPrevCamViewProj(const Camera& cam, const char* spec, float aspect) {
+    Camera pc = cam;
+    float d[4] = {0, 0, 0, 0};
+    std::sscanf(spec, "%f,%f,%f,%f", &d[0], &d[1], &d[2], &d[3]);
+    pc.pos = pc.pos + Vec3{d[0], d[1], d[2]};
+    pc.yaw += d[3];
+    return pc.viewProj(aspect);
+}
+
+// Motion vectors (NDC motion in rg) and the view-model mask (b = 1 on view-model pixels, docs/render-enhanced.md "Motion blur").
+constexpr SDL_GPUTextureFormat kVelocityFormat = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+
 struct Renderer {
     // Per-frame submission counters (IW2_BENCH, docs/debug-flags.md): indexed draws and their triangles.
     struct Stats { uint64_t draws = 0, triangles = 0, phaseTriangles[4] = {0, 0, 0, 0}; int phase = 0; } stats; // phase: 0 other, 1 floatz, 2 lit + emissive walks, 3 dynamic lights
@@ -2679,7 +2693,7 @@ struct Renderer {
         if (velocityTex) SDL_ReleaseGPUTexture(dev, velocityTex);
         SDL_GPUTextureCreateInfo ti{};
         ti.type = SDL_GPU_TEXTURETYPE_2D;
-        ti.format = SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
+        ti.format = kVelocityFormat;
         ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
         ti.width = w, ti.height = h, ti.layer_count_or_depth = 1, ti.num_levels = 1;
         velocityTex = SDL_CreateGPUTexture(dev, &ti);
@@ -2894,7 +2908,7 @@ struct Renderer {
         enhBloomUpPipe = mk("fs_enh_bloom_up", 1, 1, true, false, true, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhPresentPipe = mk("fs_enh_present", 1, 1, false, false);
         enhPresentSdrPipe = mk("fs_enh_present", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
-        enhVelocityPipe = mk("fs_enh_velocity", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT);
+        enhVelocityPipe = mk("fs_enh_velocity", 1, 1, false, false, false, kVelocityFormat);
         enhMotionViewPipe = mk("fs_enh_motion_view", 1, 0, false, true);
         enhAoPipe = mk("fs_enh_ao", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhAoBlurPipe = mk("fs_enh_ao_blur", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
@@ -2923,7 +2937,7 @@ struct Renderer {
             const SDL_GPUVertexAttribute va[4] = {attrs[0], attrs[2], attrs[3], {9, 1, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, offsetof(GpuVertex, pos)}};
             SDL_GPUColorTargetDescription ct[2]{};
             ct[0].format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
-            ct[1].format = SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
+            ct[1].format = kVelocityFormat;
             SDL_GPUGraphicsPipelineCreateInfo pi{};
             pi.vertex_shader = svs;
             pi.fragment_shader = sfs;
@@ -5476,7 +5490,9 @@ void Renderer::enhFloatzVelocity(SDL_GPUCommandBuffer* cmd, const SDL_GPUColorTa
     const float aspect = frameAspect();
     struct VVU { Mat4 vp; float eye[4]; Mat4 model; Mat4 curVP; Mat4 prevVP; Mat4 prevModel; };
     const Mat4 vpJ = cam.viewProj(aspect), vpU = camIn.viewProj(aspect);
-    const Mat4 prevVP = taaPrevVPValid ? taaPrevVP : vpU;
+    Mat4 prevVP = taaPrevVPValid ? taaPrevVP : vpU;
+    if (const char* py = std::getenv("IW2_ENH_PREV_CAM")) prevVP = debugPrevCamViewProj(camIn, py, aspect); // debug (--shot)
+    float viewModelMask = 0.0f; // 1 while the view model is drawn: the velocity image's blue channel (motion blur leaves it out)
     auto drawV = [&](const Batch& b, VVU u) {
         if (b.pass != Pass::Opaque && b.pass != Pass::AlphaTest) return;
         SDL_BindGPUGraphicsPipeline(fp, enhFloatzVelPipes[std::clamp(int(b.polygonOffset), 0, 2)][std::clamp(b.cull, 0, 2)]);
@@ -5484,7 +5500,7 @@ void Renderer::enhFloatzVelocity(SDL_GPUCommandBuffer* cmd, const SDL_GPUColorTa
         SDL_PushGPUVertexUniformData(cmd, 0, &u, sizeof(u));
         const SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(b.texture)], matSampler(b.colorState)};
         SDL_BindGPUFragmentSamplers(fp, 0, &tb, 1);
-        const float fzu[4] = {b.pass == Pass::AlphaTest ? 1.0f : 0.0f, 0, 0, 0};
+        const float fzu[4] = {b.pass == Pass::AlphaTest ? 1.0f : 0.0f, viewModelMask, 0, 0};
         SDL_PushGPUFragmentUniformData(cmd, 0, fzu, sizeof(fzu));
         drawIndexed(fp, b.indexCount, 1, b.firstIndex, 0, 0);
     };
@@ -5545,6 +5561,7 @@ void Renderer::enhFloatzVelocity(SDL_GPUCommandBuffer* cmd, const SDL_GPUColorTa
         SDL_BindGPUVertexBuffers(fp, 0, vb, 2);
         const SDL_GPUBufferBinding mib{it.model->indices, 0};
         SDL_BindGPUIndexBuffer(fp, &mib, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+        viewModelMask = it.depthMax < 1.0f ? 1.0f : 0.0f;
         for (const Batch& b : it.model->batches) drawV(b, u);
     }
     SDL_EndGPURenderPass(fp);
@@ -6260,7 +6277,7 @@ void Renderer::enhPost(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const 
             if (velocityTex) SDL_ReleaseGPUTexture(dev, velocityTex);
             SDL_GPUTextureCreateInfo ti{};
             ti.type = SDL_GPU_TEXTURETYPE_2D;
-            ti.format = SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
+            ti.format = kVelocityFormat;
             ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
             ti.width = w, ti.height = h, ti.layer_count_or_depth = 1, ti.num_levels = 1;
             velocityTex = SDL_CreateGPUTexture(dev, &ti);
@@ -6276,14 +6293,7 @@ void Renderer::enhPost(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const 
             struct { float inv[16], prev[16], z[4]; } vu{};
             std::memcpy(vu.inv, inv.data(), sizeof vu.inv);
             Mat4 prev = hasPrevViewProj ? prevViewProj : vp;
-            if (const char* py = std::getenv("IW2_ENH_PREV_CAM")) { // debug (--shot): the previous camera = this one moved by dx,dy,dz,dyaw
-                Camera pc = cam;
-                float d[4] = {0, 0, 0, 0};
-                std::sscanf(py, "%f,%f,%f,%f", &d[0], &d[1], &d[2], &d[3]);
-                pc.pos = pc.pos + Vec3{d[0], d[1], d[2]};
-                pc.yaw += d[3];
-                prev = pc.viewProj(float(w) / float(h));
-            }
+            if (const char* py = std::getenv("IW2_ENH_PREV_CAM")) prev = debugPrevCamViewProj(cam, py, float(w) / float(h)); // debug (--shot)
             std::memcpy(vu.prev, prev.data(), sizeof vu.prev);
             vu.z[0] = zl[0], vu.z[1] = zl[1], vu.z[2] = 262144.0f * 2.0f * 1.7f; // below the $floatz sky clear (build floatz)
             const SDL_GPUTextureSamplerBinding fb{floatzTex, pointClampSampler};

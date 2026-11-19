@@ -132,6 +132,10 @@ keeps them out), at half size:
 - ambient occlusion: ground-truth AO (Jimenez et al. 2016), two slices per pixel rotated by interleaved gradient noise, six
   horizon steps per side within 40 units, normals reconstructed from the depth; samples on or under the tangent plane do not
   occlude, so flat surfaces stay open (`game::gtaoSliceVisibility` holds the slice integral).
+  Each half-size pixel reads `$floatz` at the centre of the first texel of its 2 × 2 block, never at the half-size pixel
+  centre: that point lies on the edge between two texels, where point sampling picks either one by rounding. The
+  reconstructed normal then tilted in regular bands, and flat ceilings and walls occluded themselves in stripes that moved
+  with the camera. The ray-traced shadow pass (stage 5) samples the same way.
 - contact shadows: twelve steps of a ray from the surface towards the sun over 18 units in `$floatz`; an occluder up to 10
   units thick shadows the sun term. Only within about 1200 units of the camera.
 A 5 × 5 depth-aware blur follows. AO scales the baked lightmap, the light-grid probe and the static models' baked light, at
@@ -243,6 +247,10 @@ takes four compare taps, with a normal offset. The baked light and the light's f
   put, values above 1 keep their excess), warmer shadows and a fine animated grain (`game::periodFilmGrade` describes the
   curve). No look-up tables: the game ships none, and a neutral default needs none.
 - Motion blur (off by default): eight taps along the TAA motion vector after the resolve, so the history stays sharp.
+  The view weapon and hands move with the camera, so they are left out. The motion-vector image is RGBA16F, and its blue
+  channel is 1 on view-model pixels (written by the $floatz velocity pass). A masked pixel keeps its own colour, and taps
+  that land on a masked pixel are skipped, so the weapon is not smeared into the background during fast turns. Depth of
+  field already keeps the weapon sharp: it reads $floatz, where the weapon is within 40 units, and never samples it.
 - Depth of field and the baked light shadows: below.
 
 ## Per-pixel light grid

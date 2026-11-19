@@ -58,13 +58,16 @@ in your profile.
 | Enhanced graphics | Opens the Enhanced graphics page (below). |
 
 **Options > OpenIW2 > Enhanced graphics**: a modern lighting mode that is off by default, so the game looks as it did
-originally. It is experimental: it may cause visual glitches and bugs (the page says so too). "Enhanced graphics" turns it on at the next start of the game. With it on, the page shows a quality choice (Low,
-Medium, High) and one row per effect: shadows of moving objects, sharp world shadows, ambient occlusion, contact shadows,
-temporal anti-aliasing, highlights and reflections, screen reflections on water and metal, shadows of flashes and lamps, lamp
-highlights, room reflections, sun shafts, bloom, auto exposure, a "Period film" colour grade, motion blur, depth of field when aiming, MetalFX anti-aliasing, ray-traced reflections, shadows and contact occlusion of moving objects, ray-traced shadows of muzzle flashes
-and explosions (only on Macs and builds that have them) and HDR
-output on displays that support it. "Preset" leaves a row to the quality choice. Changes apply at once, except Enhanced graphics
-itself and HDR output, which apply at the next start. More in `docs/render-enhanced.md`.
+originally. It is experimental: it may cause visual glitches and bugs (the page says so too). It has been tested only on an
+Apple M4 Pro; on M1, M2 and M3 Macs it may look or perform differently. "Enhanced graphics" turns it on at the next start
+of the game. With it on, the page shows a quality choice (Low, Medium, High) and one row per effect: shadows of moving
+objects, sharp world shadows, ambient occlusion, contact shadows, temporal anti-aliasing, highlights and reflections,
+screen reflections on water and metal, shadows of flashes and lamps, lamp highlights, room reflections, sun shafts,
+bloom, auto exposure, a "Period film" colour grade, motion blur, depth of field when aiming, MetalFX anti-aliasing,
+ray-traced reflections, shadows and contact occlusion of moving objects, ray-traced shadows of muzzle flashes
+and explosions (only on Macs and builds that have them) and HDR output on displays that support it. "Preset" leaves a
+row to the quality choice. Changes apply at once, except Enhanced graphics itself and HDR output, which apply at the
+next start. More in `docs/render-enhanced.md`.
 
 ### Options that differ
 

@@ -194,20 +194,24 @@ static float enh_ign(float2 px, float frame) { // interleaved gradient noise
 }
 fragment float4 fs_enh_ao(GlowVOut in [[stage_in]], constant AOU& u [[buffer(0)]], texture2d<float> fz [[texture(0)]], sampler s [[sampler(0)]],
                           texture2d<float> rtTex [[texture(1)]], sampler rs [[sampler(1)]]) {
+    // A half-size pixel centre lies on the edge between two $floatz texels: point sampling there (and one texel to each side)
+    // picks either neighbour by rounding, which bends the reconstructed normal in bands across flat surfaces. Work from the
+    // centre of the 2 x 2 block's first texel instead.
+    const float2 uv0 = (floor(in.position.xy) * 2.0 + 0.5) / float2(fz.get_width(), fz.get_height());
     float w;
-    const float3 P = enh_world_at(in.uv, u, fz, s, w);
+    const float3 P = enh_world_at(uv0, u, fz, s, w);
     if (w > 1e8) return float4(1.0, 1.0, 0.0, 1.0);
     // normal from the nearer neighbour on each axis
     const float2 tx = float2(u.size.x, 0.0), ty = float2(0.0, u.size.y);
     float wa, wb, wc, wd;
-    const float3 pr = enh_world_at(in.uv + tx, u, fz, s, wa), pl = enh_world_at(in.uv - tx, u, fz, s, wb);
-    const float3 pd = enh_world_at(in.uv + ty, u, fz, s, wc), pu = enh_world_at(in.uv - ty, u, fz, s, wd);
+    const float3 pr = enh_world_at(uv0 + tx, u, fz, s, wa), pl = enh_world_at(uv0 - tx, u, fz, s, wb);
+    const float3 pd = enh_world_at(uv0 + ty, u, fz, s, wc), pu = enh_world_at(uv0 - ty, u, fz, s, wd);
     const float3 dx = abs(wa - w) < abs(wb - w) ? pr - P : P - pl;
     const float3 dy = abs(wc - w) < abs(wd - w) ? pd - P : P - pu;
     float3 N = normalize(cross(dy, dx));
     const float3 V = normalize(u.eye.xyz - P);
     if (dot(N, V) < 0.0) N = -N;
-    const float2 px = in.uv * u.size.zw;
+    const float2 px = uv0 * u.size.zw;
     float ao = 1.0;
     if (u.params.y > 0.5) {
         const float radius = u.params.x;
@@ -219,7 +223,7 @@ fragment float4 fs_enh_ao(GlowVOut in [[stage_in]], constant AOU& u [[buffer(0)]
             const float2 dir = float2(cos(phi), sin(phi));
             // the slice plane: the view vector and the world direction of the screen direction at P
             float wq;
-            const float3 Q = enh_world_at(in.uv + dir * u.size.xy * 4.0, u, fz, s, wq);
+            const float3 Q = enh_world_at(uv0 + dir * u.size.xy * 4.0, u, fz, s, wq);
             float3 dW = (Q - P) - V * dot(Q - P, V);
             if (dot(dW, dW) < 1e-8) continue;
             dW = normalize(dW);
@@ -235,7 +239,7 @@ fragment float4 fs_enh_ao(GlowVOut in [[stage_in]], constant AOU& u [[buffer(0)]
                 float maxCos = -1.0;
                 for (int j = 0; j < 6; ++j) {
                     const float t = (float(j) + jitter) / 6.0;
-                    const float2 suv = in.uv + sgn * dir * (t * t * pixRadius + 1.0) * u.size.xy;
+                    const float2 suv = uv0 + sgn * dir * (t * t * pixRadius + 1.0) * u.size.xy;
                     float ws;
                     const float3 S = enh_world_at(suv, u, fz, s, ws);
                     const float3 d = S - P;
@@ -344,7 +348,7 @@ fragment FloatzVelFOut fs_floatz_vel(FloatzVelOut in [[stage_in]], constant floa
     if (p.x > 0.5 && (in.color * colorMap.sample(cs, in.uv)).a < 128.0 / 255.0) discard_fragment();
     FloatzVelFOut o;
     o.z = float4(in.dist);
-    o.v = float4(in.cur.xy / in.cur.w - in.prev.xy / in.prev.w, 0.0, 1.0);
+    o.v = float4(in.cur.xy / in.cur.w - in.prev.xy / in.prev.w, p.y, 1.0); // b: the view-model mask
     return o;
 }
 
@@ -485,10 +489,19 @@ fragment float4 fs_enh_volume_apply(GlowVOut in [[stage_in]], texture2d<float> v
 // ---- motion blur (r_enhMotionBlur): 8 taps along the motion vector, after TAA, before the tone curve ----
 fragment float4 fs_enh_motion_blur(GlowVOut in [[stage_in]], constant float4& u [[buffer(0)]], texture2d<float> scene [[texture(0)]],
                                    texture2d<float> vel [[texture(1)]], sampler s [[sampler(0)]], sampler ps [[sampler(1)]]) {
-    const float2 v = vel.sample(ps, in.uv).rg * float2(0.5, -0.5) * u.x; // NDC -> uv, times the amount
+    const float4 v0 = vel.sample(ps, in.uv);
+    const float3 c0 = scene.sample(s, in.uv).rgb;
+    if (v0.b > 0.5) return float4(c0, 1.0); // the view model moves with the camera: kept sharp
+    const float2 v = v0.rg * float2(0.5, -0.5) * u.x; // NDC -> uv, times the amount
     float3 c = 0.0;
-    for (int i = 0; i < 8; ++i) c += scene.sample(s, in.uv - v * ((float(i) + 0.5) / 8.0 - 0.5)).rgb;
-    return float4(c / 8.0, 1.0);
+    float n = 0.0;
+    for (int i = 0; i < 8; ++i) {
+        const float2 t = in.uv - v * ((float(i) + 0.5) / 8.0 - 0.5);
+        if (vel.sample(ps, t).b > 0.5) continue; // never smear the view model into the background
+        c += scene.sample(s, t).rgb;
+        n += 1.0;
+    }
+    return float4(n > 0.0 ? c / n : c0, 1.0);
 }
 
 // ---- depth of field while aiming (game::aimDofRadius), after TAA ----

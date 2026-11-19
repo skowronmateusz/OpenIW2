@@ -204,11 +204,14 @@ kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]]
                               texture2d_array<float> masks [[texture(3)]], uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= uint(u.size.z) || gid.y >= uint(u.size.w)) return;
     constexpr sampler ps(filter::nearest, address::clamp_to_edge);
-    const float2 uv = (float2(gid) + 0.5) * u.size.xy;
+    // the centre of the first $floatz texel of the pixel's 2 x 2 block (a half-size pixel centre lies on a texel edge, where
+    // point sampling picks either neighbour by rounding and bends the reconstructed normal in bands)
+    const float2 fzSize = float2(fz.get_width(), fz.get_height());
+    const float2 uv = (float2(gid) * 2.0 + 0.5) / fzSize;
     if (fz.sample(ps, uv).r >= u.z.z) { outMask.write(float4(1.0), gid); outLights.write(float4(1.0), gid); return; }
     float w, wx, wy;
     const float3 P = posAt(fz, ps, u, uv, w);
-    const float3 Px = posAt(fz, ps, u, uv + float2(u.size.x, 0.0), wx), Py = posAt(fz, ps, u, uv + float2(0.0, u.size.y), wy);
+    const float3 Px = posAt(fz, ps, u, uv + float2(2.0 / fzSize.x, 0.0), wx), Py = posAt(fz, ps, u, uv + float2(0.0, 2.0 / fzSize.y), wy);
     float3 n = normalize(cross(Px - P, Py - P));
     if (dot(n, u.eye.xyz - P) < 0.0) n = -n;
     const float3 o = P + n * (1.0 + w * 0.002);
