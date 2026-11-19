@@ -368,6 +368,10 @@ static float3 enh_history(texture2d<float> t, sampler ls, float2 uv, float2 texS
     const float wsum = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
     return max(r / wsum, 0.0);
 }
+// Stage 5 alpha test in the ray tracing: a material's alpha into one layer of the alpha mask array.
+fragment float4 fs_enh_alpha_mask(GlowVOut in [[stage_in]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
+    return float4(src.sample(s, in.uv).a);
+}
 // MetalFX inputs (docs/render-enhanced.md "Stage 5"): the motion of every pixel as the TAA takes it (the sky's from the camera),
 // and the device depth (clip z / w) from $floatz, 1 for the sky.
 static float2 enh_pixel_motion(constant TaaU& u, float2 uv, texture2d<float> vel, sampler vs, float fzv) {

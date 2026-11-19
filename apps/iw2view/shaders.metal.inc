@@ -775,6 +775,11 @@ struct DLightU {
     float4 eye;
     float4 ramp[4]; // images/falloff_linear.iwi texels / 255 (16 x 1, bilinear, clamp)
     float4 detail;  // xy: detailScale, z: l_point_dtl
+#ifdef IW2_ENHANCED
+    // the light's shadow: [0] the atlas (x on, y near, z radius, w index); [1] stage 5 ray traced (x on, yz 1 / frame size, w channel).
+    // In this block, not in slot 1: slot 1 holds the frame's enhanced uniforms for the scene draws between the light draws.
+    float4 ls[2];
+#endif
 };
 struct DLightVertexOut {
     float4 position [[position]];
@@ -810,7 +815,8 @@ vertex DLightVertexOut vs_dlight(DLightVertexIn in [[stage_in]], constant Vertex
 }
 fragment float4 fs_dlight(DLightVertexOut in [[stage_in]], constant DLightU& u [[buffer(0)]], texture2d<float> colorMap [[texture(0)]], texture2d<float> normalMap [[texture(1)]], texture2d<float> detailMap [[texture(2)]], sampler s [[sampler(0)]], sampler normalSampler [[sampler(1)]], sampler detailSampler [[sampler(2)]]
 #ifdef IW2_ENHANCED
-                          , constant float4& ls [[buffer(1)]], depth2d<float> lightShadow [[texture(3)]], sampler lightShadowSampler [[sampler(3)]]
+                          , depth2d<float> lightShadow [[texture(3)]], sampler lightShadowSampler [[sampler(3)]]
+                          , texture2d<float> rtLights [[texture(4)]], sampler rtLightsSampler [[sampler(4)]]
 #endif
                           ) {
     float4 tex = colorMap.sample(s, in.uv);
@@ -828,7 +834,8 @@ fragment float4 fs_dlight(DLightVertexOut in [[stage_in]], constant DLightU& u [
     }
     const float ndl = max(dot(normalize(n), delta / max(d, 1e-5)), 0.0);
 #ifdef IW2_ENHANCED
-    const float lsh = ls.x > 0.5 && ndl > 0.0 ? enh_light_shadow(wp - u.light.xyz, normalize(in.normal), ls, lightShadow, lightShadowSampler) : 1.0;
+    float lsh = u.ls[0].x > 0.5 && ndl > 0.0 ? enh_light_shadow(wp - u.light.xyz, normalize(in.normal), u.ls[0], lightShadow, lightShadowSampler) : 1.0;
+    if (u.ls[1].x > 0.5) lsh = rtLights.sample(rtLightsSampler, in.position.xy * u.ls[1].yz)[int(u.ls[1].w + 0.5)];
 #endif
     const float x = clamp(saturate(d) * 16.0 - 0.5, 0.0, 15.0);
     const int i0 = int(floor(x)), i1 = min(i0 + 1, 15);

@@ -14,9 +14,11 @@ using namespace metal;
 // buffer 6 (metal::SceneRT::kSceneBufferIndex), above SDL's uniform and storage buffers.
 #ifdef IW2_ENH_RT
 #include <metal_raytracing>
-#define ENH_RT_ARG , metal::raytracing::instance_acceleration_structure rtScene [[buffer(6)]]
-#define ENH_RT_PARAM , metal::raytracing::instance_acceleration_structure rtScene
-#define ENH_RT_PASS , rtScene
+#define ENH_RT_ARG , metal::raytracing::instance_acceleration_structure rtScene [[buffer(6)]], const device float* rtVtx [[buffer(7)]], \
+    const device uint* rtIdx [[buffer(8)]], const device uint4* rtTab [[buffer(9)]], texture2d_array<float> rtAlpha [[texture(20)]]
+#define ENH_RT_PARAM , metal::raytracing::instance_acceleration_structure rtScene, const device float* rtVtx, const device uint* rtIdx, \
+    const device uint4* rtTab, texture2d_array<float> rtAlpha
+#define ENH_RT_PASS , rtScene, rtVtx, rtIdx, rtTab, rtAlpha
 #else
 #define ENH_RT_ARG
 #define ENH_RT_PARAM
@@ -227,28 +229,46 @@ static float3 enh_env(texture2d_array<float> env, sampler es, const device uchar
     return env.sample(es, uv, cube * 6 + face, level(lod)).rgb;
 }
 #ifdef IW2_ENH_RT
+// Alpha test of a ray candidate on an alpha-tested world triangle (stage 5): the triangle's UVs from the world buffers, its
+// material's alpha mask layer and alpha function from the geometry table (x first index, y layer, z the AlphaFunc).
+static bool rt_alpha_pass(uint geom, uint prim, float2 bary, const device float* vtx, const device uint* idx, const device uint4* tab,
+                          texture2d_array<float> masks) {
+    constexpr sampler ms(filter::linear, address::repeat);
+    const uint4 t = tab[geom];
+    const uint i0 = idx[t.x + prim * 3], i1 = idx[t.x + prim * 3 + 1], i2 = idx[t.x + prim * 3 + 2];
+    const float2 uv = float2(vtx[i0 * 22 + 7], vtx[i0 * 22 + 8]) * (1.0 - bary.x - bary.y) + float2(vtx[i1 * 22 + 7], vtx[i1 * 22 + 8]) * bary.x +
+                      float2(vtx[i2 * 22 + 7], vtx[i2 * 22 + 8]) * bary.y;
+    const float a = rint(saturate(masks.sample(ms, uv, t.y).r) * 255.0);
+    return t.z == 1 ? a >= 128.0 : t.z == 2 ? a > 0.0 : t.z == 3 ? a < 128.0 : true; // GE128, GT0, LT128 pass
+}
 // Ray-traced reflection (docs/render-enhanced.md "Stage 5"): one mirror ray against the scene. A hit that is on screen and in front
 // of the opaque depth takes the previous frame's image there (textured, lit, with the moving objects); another hit takes the
 // reflection probe of its own cell; a miss takes the environment as before (sky or probe). Returns false where the ray tracing is off or the surface too rough.
 template <typename E>
 static bool enh_rt_reflection(float3 wp, float3 r, float a, constant EnhFragU& eu, E env, sampler es,
-                              const device uchar* pidx, texture2d<float> hist, sampler hs, texture2d<float> dep, sampler ds,
-                              metal::raytracing::instance_acceleration_structure rtScene, thread float3& outRefl) {
+                              const device uchar* pidx, texture2d<float> hist, sampler hs, texture2d<float> dep, sampler ds
+                              ENH_RT_PARAM, thread float3& outRefl) {
     if (eu.rtParams.x < 0.5 || a > eu.rtParams.y) return false;
     metal::raytracing::ray ray;
     ray.origin = wp + r * 1.0;
     ray.direction = r;
     ray.min_distance = 0.5;
     ray.max_distance = eu.rtParams.z;
-    metal::raytracing::intersector<metal::raytracing::instancing, metal::raytracing::triangle_data> isect;
-    isect.assume_geometry_type(metal::raytracing::geometry_type::triangle);
-    const auto hit = isect.intersect(ray, rtScene, 0xff);
+    // the alpha-tested world (its own non-opaque instance) is tested per candidate
+    metal::raytracing::intersection_query<metal::raytracing::instancing, metal::raytracing::triangle_data> q;
+    metal::raytracing::intersection_params qp;
+    qp.assume_geometry_type(metal::raytracing::geometry_type::triangle);
+    q.reset(ray, rtScene, 0xff, qp);
+    while (q.next())
+        if (rt_alpha_pass(q.get_candidate_geometry_id(), q.get_candidate_primitive_id(), q.get_candidate_triangle_barycentric_coord(), rtVtx,
+                          rtIdx, rtTab, rtAlpha))
+            q.commit_triangle_intersection();
     const float lod = a * eu.specParams.w;
-    if (hit.type == metal::raytracing::intersection_type::none) {
+    if (q.get_committed_intersection_type() == metal::raytracing::intersection_type::none) {
         outRefl = eu.rtParams.w > 0.5 ? float3(0, 0, 4) : enh_env(env, es, pidx, eu, wp, r, lod); // nothing in the way: as without ray tracing
         return true;
     }
-    const float3 hp = ray.origin + r * hit.distance;
+    const float3 hp = ray.origin + r * q.get_committed_distance();
     const float4 c = eu.viewProj * float4(hp, 1.0);
     if (c.w > 1.0 && eu.ssrParams.z > 0.5) {
         const float2 uv = float2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5);
@@ -275,7 +295,7 @@ static float3 enh_reflection_color(float3 wp, float3 r, float a, float4 fragPos,
                                    ENH_RT_PARAM, bool allowSsr = true) {
     float3 refl = enh_env(env, es, pidx, eu, wp, r, a * eu.specParams.w);
 #ifdef IW2_ENH_RT
-    if (allowSsr && enh_rt_reflection(wp, r, a, eu, env, es, pidx, hist, hs, dep, ds, rtScene, refl)) return refl;
+    if (allowSsr && enh_rt_reflection(wp, r, a, eu, env, es, pidx, hist, hs, dep, ds ENH_RT_PASS, refl)) return refl;
 #endif
     if (allowSsr && eu.ssrParams.z > 0.5 && a < 0.45) { // screen-space ray in $floatz, 20 steps up to ~1000 units
         const float noise = fract(52.9829189 * fract(dot(fragPos.xy, float2(0.06711056, 0.00583715))));

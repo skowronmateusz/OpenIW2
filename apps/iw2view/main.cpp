@@ -2357,6 +2357,8 @@ struct DrawItem {
     bool effects = false;
     // setshadowhint "receiver" on the entity (refEntity render flag 0x100): the build floatz walk takes the model (docs/spec/material.md).
     bool shadowReceiver = false;
+    // Stage 5: outside the view but near enough for the ray tracing (reflections, shadows); never drawn (Renderer::rtExtraItems).
+    bool rtOnly = false;
 };
 
 // Packs the light-grid coefficients as the lightprobe.hlsl lightGridColors{R,G,B}{0,1} constants (corner order 0..3, 4..7).
@@ -2642,13 +2644,16 @@ struct Renderer {
     int lightShadowsNow = 0;
     float lightShadowNear = 2.0f;
     void renderLightShadows(SDL_GPUCommandBuffer* cmd, const Scene& scene, const std::vector<DrawItem>& items);
-    void enhBindLight(SDL_GPURenderPass* pass, SDL_GPUCommandBuffer* cmd, size_t li) {
+    // The light pass's shadow resources, and its shadow parameters into ls (DLightU::ls, the light's own uniform block).
+    void enhBindLight(SDL_GPURenderPass* pass, size_t li, float ls[8]) {
         if (!enh.enabled) return;
         const bool on = int(li) < lightShadowsNow && lightShadowAtlas;
-        const SDL_GPUTextureSamplerBinding b{on ? lightShadowAtlas : shadowDummy, shadowCmpSampler};
-        SDL_BindGPUFragmentSamplers(pass, 3, &b, 1);
-        const float ls[4] = {on ? 1.0f : 0.0f, lightShadowNear, on ? dlights[li].radius : 1.0f, float(li)};
-        SDL_PushGPUFragmentUniformData(cmd, 1, ls, sizeof ls);
+        const bool rt = rtLightsReady && li < size_t(kLightShadowMax); // stage 5: ray traced in the AO pass
+        const SDL_GPUTextureSamplerBinding b[2] = {{on ? lightShadowAtlas : shadowDummy, shadowCmpSampler}, {rt ? rtLightTex : aoWhite, clampSampler}};
+        SDL_BindGPUFragmentSamplers(pass, 3, b, 2);
+        const float v[8] = {on ? 1.0f : 0.0f, lightShadowNear, on ? dlights[li].radius : 1.0f, float(li),
+                            rt ? 1.0f : 0.0f, enhFragPending.aoParams[0], enhFragPending.aoParams[1], float(li)};
+        std::memcpy(ls, v, sizeof v);
     }
     SDL_GPUGraphicsPipeline *enhAoPipe = nullptr, *enhAoBlurPipe = nullptr, *enhAoViewPipe = nullptr;
     // TAA: motion vectors from the $floatz pass, the history, the previous frame's skinned vertices and item transforms.
@@ -2732,6 +2737,8 @@ struct Renderer {
     metal::Caps metalCaps;
     metal::TemporalScaler metalFx;
     SDL_GPUGraphicsPipeline* enhMfxMotionPipe = nullptr;
+    SDL_GPUGraphicsPipeline* enhAlphaMaskPipe = nullptr;
+    SDL_GPUTexture* rtAlphaMasks = nullptr; // stage 5: the alpha-tested materials' alpha, one 64 x 64 layer each
     SDL_GPUGraphicsPipeline* enhMfxDepthPipe = nullptr;
     SDL_GPUTexture* mfxMotion = nullptr;
     SDL_GPUTexture* mfxDepth = nullptr;
@@ -2740,10 +2747,16 @@ struct Renderer {
     // Stage 5 ray queries: the scene (static world, then the moving objects), and whether this frame uses it.
     metal::SceneRT sceneRT;
     uint64_t sceneRTFor = 0;
+    std::vector<DrawItem> rtExtraItems; // this frame's items outside the view that only the ray tracing sees (gathered with the rest)
+    bool rtWantsBeyondView() const { return metalCaps.rayTracing && enh.enabled && enh.rtBeyondView && (enh.rtReflections || enh.rtShadows); }
     bool rtReflNow = false;
     bool rtShadowNow = false;   // this frame: ray-traced shadows / contact occlusion of the moving objects (the AO image)
+    // ray-traced shadows of the effect lights (with the shadows of moving objects and the light shadows switch)
+    bool rtDlightsNow() const { return rtShadowNow && enh.rtLightShadows && enh.lightShadows && !dlights.empty(); }
     uint64_t sceneRTFrame = ~0ull; // the frame (taaFrame + aoFrame) the scene was last prepared for
     SDL_GPUTexture* rtShadowTex = nullptr;
+    SDL_GPUTexture* rtLightTex = nullptr; // the effect lights' ray-traced visibility, one channel each (AO size)
+    bool rtLightsReady = false;           // this frame's rtLightTex holds them
     uint32_t rtShadowW = 0, rtShadowH = 0;
     void prepareSceneRT(SDL_GPUCommandBuffer* cmd, const Scene& scene, const std::vector<DrawItem>& items) {
         if (!metalCaps.rayTracing || !enh.enabled) return;
@@ -2754,16 +2767,47 @@ struct Renderer {
             sceneRTFor = scene.serial;
             sceneRT.clearStatic();
             std::vector<std::pair<uint32_t, uint32_t>> ranges;
-            // the static world and static models; not the alpha-tested surfaces (foliage, fences): without an any-hit alpha test
-            // they would be solid quads (TODO: an alpha mask lookup in an intersection function)
-            for (const Batch& b : scene.batches)
-                if (b.pass == Pass::Opaque && b.indexCount >= 3) ranges.push_back({b.firstIndex, b.indexCount});
-            sceneRT.buildStatic(dev, cmd, scene.vertices, uint32_t(sizeof(GpuVertex)), scene.indices, ranges);
+            // the static world and static models; the alpha-tested surfaces (foliage, fences) apart, tested per ray candidate
+            // against their material's alpha (an R8 array of 64 x 64 layers, at most 255 materials)
+            std::vector<metal::SceneRT::AlphaRange> alpha;
+            std::unordered_map<int, uint32_t> layerOf;
+            for (const Batch& b : scene.batches) {
+                if (b.indexCount < 3) continue;
+                if (b.pass == Pass::Opaque) ranges.push_back({b.firstIndex, b.indexCount});
+                else if (b.pass == Pass::AlphaTest && b.texture >= 0 && size_t(b.texture) < scene.textures.size()) {
+                    auto [li, fresh] = layerOf.try_emplace(b.texture, uint32_t(layerOf.size()));
+                    if (li->second >= 255) continue;
+                    alpha.push_back({b.firstIndex, b.indexCount, li->second, uint32_t(b.alphaFunc == assets::AlphaFunc::None ? 1 : int(b.alphaFunc))});
+                }
+            }
+            if (rtAlphaMasks) SDL_ReleaseGPUTexture(dev, rtAlphaMasks), rtAlphaMasks = nullptr;
+            const uint32_t layers = uint32_t(std::min<size_t>(layerOf.size(), 255));
+            if (layers > 0 && enhAlphaMaskPipe) {
+                SDL_GPUTextureCreateInfo ti{};
+                ti.type = SDL_GPU_TEXTURETYPE_2D_ARRAY, ti.format = SDL_GPU_TEXTUREFORMAT_R8_UNORM;
+                ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                ti.width = ti.height = 64, ti.layer_count_or_depth = layers, ti.num_levels = 1;
+                rtAlphaMasks = SDL_CreateGPUTexture(dev, &ti);
+                for (const auto& [tex, layer] : layerOf) {
+                    if (!rtAlphaMasks || layer >= layers) continue;
+                    SDL_GPUColorTargetInfo ct{};
+                    ct.texture = rtAlphaMasks, ct.layer_or_depth_plane = layer;
+                    ct.load_op = SDL_GPU_LOADOP_DONT_CARE, ct.store_op = SDL_GPU_STOREOP_STORE;
+                    SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+                    SDL_BindGPUGraphicsPipeline(p, enhAlphaMaskPipe);
+                    const SDL_GPUTextureSamplerBinding tb{scene.textures[size_t(tex)], clampSampler};
+                    SDL_BindGPUFragmentSamplers(p, 0, &tb, 1);
+                    SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+                    SDL_EndGPURenderPass(p);
+                }
+            }
+            sceneRT.buildStatic(dev, cmd, scene.vertices, uint32_t(sizeof(GpuVertex)), scene.indices, ranges, alpha, rtAlphaMasks);
         }
         // the moving objects: models in the world (not the view model or effect sprites), their opaque surfaces
         sceneRT.beginItems();
         if (active)
-            for (const DrawItem& it : items) {
+            for (const std::vector<DrawItem>* list : {&items, static_cast<const std::vector<DrawItem>*>(&rtExtraItems)})
+            for (const DrawItem& it : *list) {
                 if (!it.model || it.effects || it.depthMax < 1.0f || !it.model->vertices || !it.model->indices) continue;
                 std::vector<std::pair<uint32_t, uint32_t>> ranges;
                 for (const Batch& b : it.model->batches)
@@ -2857,6 +2901,7 @@ struct Renderer {
         enhAoViewPipe = mk("fs_enh_ao_view", 1, 0, false, true);
         enhTaaPipe = mk("fs_enh_taa", 4, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhMfxMotionPipe = mk("fs_enh_mfx_motion", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT);
+        enhAlphaMaskPipe = mk("fs_enh_alpha_mask", 1, 0, false, false, false, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
         enhMfxDepthPipe = mk("fs_enh_mfx_depth", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R32_FLOAT);
         enhVolumePipe = mk("fs_enh_volume", 3, 2, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhVolumeApplyPipe = mk("fs_enh_volume_apply", 1, 0, true, false, true, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
@@ -3155,7 +3200,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo dfsi = fs;
         dfsi.entrypoint = "fs_dlight";
         dfsi.num_samplers = 3;
-        if (enh.enabled) dfsi.num_samplers = 4, dfsi.num_uniform_buffers = 2; // + the point light shadow atlas
+        if (enh.enabled) dfsi.num_samplers = 5; // + the point light shadow atlas, the ray-traced lights
         SDL_GPUShader* dlightFsh = SDL_CreateGPUShader(dev, &dfsi);
         SDL_GPUShaderCreateInfo dvsi = vs;
         dvsi.entrypoint = "vs_dlight";
@@ -3942,7 +3987,9 @@ struct Renderer {
         const bool scaled = rw != w || rh != h;
         outW = w, outH = h, renderScaleNow = float(rw) / float(w);
         rtReflNow = enh.enabled && enh.rtReflections && metalCaps.rayTracing && !capturingProbes;
-        rtShadowNow = enh.enabled && (enh.rtShadows || enh.rtContactAO) && metalCaps.rayTracing && !capturingProbes;
+        rtShadowNow = enh.enabled && (enh.rtShadows || enh.rtContactAO || (enh.rtLightShadows && enh.lightShadows && !dlights.empty())) &&
+                      metalCaps.rayTracing && !capturingProbes;
+        rtLightsReady = false;
         ++frameCounter;
         frameItems = &items;
         if (taaOn) {
@@ -4223,8 +4270,8 @@ struct Renderer {
                                                         {scene.textures[size_t(hasNormalMap ? b.pointNormalTex : b.texture)], matSampler(b.pointNormalState)},
                                                         detailBinding(b.detail)};
             SDL_BindGPUFragmentSamplers(pass, 0, tb, 3);
-            enhBindLight(pass, cmd, size_t(&dl - dlights.data()));
-            struct DU { float light[4], color[4], params[4], eye[4], ramp[16], detail[4]; } fu{};
+            struct DU { float light[4], color[4], params[4], eye[4], ramp[16], detail[4], ls[8]; } fu{}; // ls: enhanced only
+            enhBindLight(pass, size_t(&dl - dlights.data()), fu.ls);
             if (b.detail >= 0) fu.detail[0] = scene.details[size_t(b.detail)].scale[0], fu.detail[1] = scene.details[size_t(b.detail)].scale[1], fu.detail[2] = 1.0f;
             std::memcpy(fu.light, dl.pos, 12);
             fu.light[3] = dl.radius;
@@ -4365,8 +4412,8 @@ struct Renderer {
                                                         {scene.textures[size_t(hasNormalMap ? b.pointNormalTex : b.texture)], matSampler(b.pointNormalState)},
                                                         detailBinding(b.detail)};
             SDL_BindGPUFragmentSamplers(pass, 0, tb, 3);
-            enhBindLight(pass, cmd, size_t(&dl - dlights.data()));
-            struct DU { float light[4], color[4], params[4], eye[4], ramp[16], detail[4]; } fu{};
+            struct DU { float light[4], color[4], params[4], eye[4], ramp[16], detail[4], ls[8]; } fu{}; // ls: enhanced only
+            enhBindLight(pass, size_t(&dl - dlights.data()), fu.ls);
             if (b.detail >= 0) fu.detail[0] = scene.details[size_t(b.detail)].scale[0], fu.detail[1] = scene.details[size_t(b.detail)].scale[1], fu.detail[2] = 1.0f;
             std::memcpy(fu.light, dl.pos, 12);
             fu.light[3] = dl.radius;
@@ -5688,12 +5735,13 @@ void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Ca
     if (rtShadowNow && frameItems) {
         prepareSceneRT(cmd, scene, *frameItems);
         if (!rtShadowTex || rtShadowW != hw || rtShadowH != hh) {
-            if (rtShadowTex) SDL_ReleaseGPUTexture(dev, rtShadowTex);
+            for (SDL_GPUTexture** t : {&rtShadowTex, &rtLightTex}) if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
             SDL_GPUTextureCreateInfo ti{};
             ti.type = SDL_GPU_TEXTURETYPE_2D, ti.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
             ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE;
             ti.width = hw, ti.height = hh, ti.layer_count_or_depth = 1, ti.num_levels = 1;
             rtShadowTex = SDL_CreateGPUTexture(dev, &ti);
+            rtLightTex = SDL_CreateGPUTexture(dev, &ti);
             rtShadowW = hw, rtShadowH = hh;
         }
         float ru[44] = {};
@@ -5710,10 +5758,19 @@ void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Ca
         ru[40] = 1.0f / float(hw), ru[41] = 1.0f / float(hh), ru[42] = float(hw), ru[43] = float(hh);
         float rflags[4] = {enh.rtShadows && scene.sunColor.x + scene.sunColor.y + scene.sunColor.z > 0.0f ? 1.0f : 0.0f,
                            enh.rtContactAO ? game::kRtContactRange : 0.0f, game::kRtLampSize, 0.0f};
-        float full[48];
+        float full[68] = {};
         std::memcpy(full, ru, sizeof ru);
         std::memcpy(full + 44, rflags, sizeof rflags);
-        if (rtShadowTex && sceneRT.shadowPass(dev, cmd, floatzTex, rtShadowTex, hw, hh, full)) u.rt[0] = 1.0f;
+        const bool rtLights = rtDlightsNow();
+        for (int k = 0; rtLights && k < kLightShadowMax && size_t(k) < dlights.size(); ++k) { // the effect lights (first four)
+            for (int a = 0; a < 3; ++a) full[48 + k * 4 + a] = dlights[size_t(k)].pos[a];
+            full[48 + k * 4 + 3] = dlights[size_t(k)].radius;
+        }
+        full[64] = game::kRtEffectLightSize;
+        if (rtShadowTex && rtLightTex && sceneRT.shadowPass(dev, cmd, floatzTex, rtShadowTex, rtLightTex, hw, hh, full)) {
+            u.rt[0] = 1.0f;
+            rtLightsReady = rtLights;
+        }
     }
     auto pass = [&](SDL_GPUGraphicsPipeline* pipe, SDL_GPUTexture* dst, SDL_GPUTexture* src, SDL_GPUSampler* smp, const void* uu, uint32_t usize) {
         SDL_GPUColorTargetInfo ct{};
@@ -5750,7 +5807,7 @@ void Renderer::renderLightShadows(SDL_GPUCommandBuffer* cmd, const Scene& scene,
         lightShadowAtlas = SDL_CreateGPUTexture(dev, &ti);
         if (!lightShadowAtlas) return;
     }
-    const int n = std::min<int>(int(dlights.size()), kLightShadowMax);
+    const int n = rtDlightsNow() ? 0 : std::min<int>(int(dlights.size()), kLightShadowMax); // (ray-traced: the AO pass)
     struct ShadowLight { float pos[3]; float radius; int row; bool world; int dl; };
     std::vector<ShadowLight> lights;
     for (int li = 0; li < n; ++li) {
@@ -7471,8 +7528,15 @@ int main(int argc, char** argv) {
                     if (kcTrace && ((e->isPlayer && world->mpKillcamSwapped()) || (netKillcam.active && e->obj->get("$deathanim").isDefined())))
                         log::tracef("killcam", "kctrace draw t=%lld ent=%d org=%.1f,%.1f,%.1f vis=%d body=%d anim=%d model=%s\n", static_cast<long long>(world->timeMs()), e->number, // [server time]
                                     double(ov[0]), double(ov[1]), double(ov[2]), int(vis), int(body != nullptr), int(e->anim != nullptr), m.asString().c_str());
+                    bool rtOnlyEntity = false; // stage 5: behind the camera, near: for the ray tracing only
+                    if (!vis && renderer.rtWantsBeyondView() && game::withinRtBeyondViewRange(ov[0] - viewCam.pos.x, ov[1] - viewCam.pos.y, ov[2] - viewCam.pos.z))
+                        vis = rtOnlyEntity = true;
                     if (!vis) continue; // anim state already stepped
                     if (!body) continue;
+                    struct MarkRtOnly { // the entity's items (body, attachments) are marked at the end of this branch, whichever way it leaves
+                        std::vector<DrawItem>& v; size_t from; bool on;
+                        ~MarkRtOnly() { if (on) for (size_t i = from; i < v.size(); ++i) v[i].rtOnly = true; }
+                    } markRtOnly{items, items.size(), rtOnlyEntity};
                     lightBase();
                     assets::XPose pose;
                     const game::AnimState* animNow = e->anim.get();
@@ -7555,10 +7619,16 @@ int main(int argc, char** argv) {
                 }
                 const GpuModel* gm = sceneModel(scene, dev, vfs, m.asString());
                 if (!gm) continue;
-                if (!entityVisible({{gm->headerMins, gm->headerMaxs}}, ov)) continue;
+                bool rtOnlyModel = false;
+                if (!entityVisible({{gm->headerMins, gm->headerMaxs}}, ov)) {
+                    if (!renderer.rtWantsBeyondView() || !game::withinRtBeyondViewRange(ov[0] - viewCam.pos.x, ov[1] - viewCam.pos.y, ov[2] - viewCam.pos.z))
+                        continue;
+                    rtOnlyModel = true; // stage 5: for the ray tracing only
+                }
                 lightBase();
                 DrawItem it = base;
                 it.model = gm;
+                it.rtOnly = rtOnlyModel;
                 items.push_back(it);
             }
             skinBatch.run();
@@ -7650,6 +7720,11 @@ int main(int argc, char** argv) {
                 items.push_back(it);
             }
             up.flush();
+            // stage 5: the items only the ray tracing sees go to their own list, so nothing else draws them
+            renderer.rtExtraItems.clear();
+            for (DrawItem& it : items)
+                if (it.rtOnly) renderer.rtExtraItems.push_back(it);
+            items.erase(std::remove_if(items.begin(), items.end(), [](const DrawItem& it) { return it.rtOnly; }), items.end());
             return items;
         };
         // First-person weapon: hands and gun posed by the weapon's current view-model animation and drawn in

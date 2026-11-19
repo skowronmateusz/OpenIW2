@@ -142,6 +142,8 @@ struct RtShadowU {
     float4 lampW;   // x, y: the lamps' luminance (weights)
     float4 size;    // 1 / w, 1 / h, w, h
     float4 flags;   // x 1 = sun, y contact occlusion ray length (0 = off), z lamp radius (soft)
+    float4 dl[4];   // the effect lights (muzzle flashes, explosions): xyz, w radius (0: none); traced against the whole scene
+    float4 dlParams; // x: their size (soft edge)
 };
 static float rnd(uint2 p, uint k) {
     uint h = p.x * 1973u + p.y * 9277u + k * 26699u;
@@ -166,13 +168,44 @@ static bool blocked(instance_acceleration_structure as, float3 o, float3 d, floa
     isect.assume_geometry_type(geometry_type::triangle);
     return isect.intersect(r, as, 2u).type != intersection_type::none; // the moving objects only
 }
+// Alpha test of a ray candidate on an alpha-tested world triangle (stage 5): the triangle's UVs from the world buffers, its
+// material's alpha mask layer and alpha function from the geometry table (x first index, y layer, z the AlphaFunc).
+static bool rt_alpha_pass(uint geom, uint prim, float2 bary, const device float* vtx, const device uint* idx, const device uint4* tab,
+                          texture2d_array<float> masks) {
+    constexpr sampler ms(filter::linear, address::repeat);
+    const uint4 t = tab[geom];
+    const uint i0 = idx[t.x + prim * 3], i1 = idx[t.x + prim * 3 + 1], i2 = idx[t.x + prim * 3 + 2];
+    const float2 uv = float2(vtx[i0 * 22 + 7], vtx[i0 * 22 + 8]) * (1.0 - bary.x - bary.y) + float2(vtx[i1 * 22 + 7], vtx[i1 * 22 + 8]) * bary.x +
+                      float2(vtx[i2 * 22 + 7], vtx[i2 * 22 + 8]) * bary.y;
+    const float a = rint(saturate(masks.sample(ms, uv, t.y).r) * 255.0);
+    return t.z == 1 ? a >= 128.0 : t.z == 2 ? a > 0.0 : t.z == 3 ? a < 128.0 : true; // GE128, GT0, LT128 pass
+}
+static bool blockedAny(instance_acceleration_structure as, float3 o, float3 d, float len, const device float* vtx, const device uint* idx,
+                       const device uint4* tab, texture2d_array<float> masks) {
+    ray r;
+    r.origin = o;
+    r.direction = d;
+    r.min_distance = 0.05;
+    r.max_distance = len;
+    intersection_query<instancing, triangle_data> q; // everything (the effect lights are not baked), alpha-tested surfaces tested
+    intersection_params qp;
+    qp.assume_geometry_type(geometry_type::triangle);
+    qp.accept_any_intersection(true);
+    q.reset(r, as, 0xffu, qp);
+    while (q.next())
+        if (rt_alpha_pass(q.get_candidate_geometry_id(), q.get_candidate_primitive_id(), q.get_candidate_triangle_barycentric_coord(), vtx, idx, tab, masks))
+            q.commit_triangle_intersection();
+    return q.get_committed_intersection_type() != intersection_type::none;
+}
 kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]], texture2d<float, access::write> outMask [[texture(1)]],
+                              texture2d<float, access::write> outLights [[texture(2)]],
                               constant RtShadowU& u [[buffer(0)]], instance_acceleration_structure as [[buffer(1)]],
-                              uint2 gid [[thread_position_in_grid]]) {
+                              const device float* vtx [[buffer(2)]], const device uint* idx [[buffer(3)]], const device uint4* tab [[buffer(4)]],
+                              texture2d_array<float> masks [[texture(3)]], uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= uint(u.size.z) || gid.y >= uint(u.size.w)) return;
     constexpr sampler ps(filter::nearest, address::clamp_to_edge);
     const float2 uv = (float2(gid) + 0.5) * u.size.xy;
-    if (fz.sample(ps, uv).r >= u.z.z) { outMask.write(float4(1.0), gid); return; }
+    if (fz.sample(ps, uv).r >= u.z.z) { outMask.write(float4(1.0), gid); outLights.write(float4(1.0), gid); return; }
     float w, wx, wy;
     const float3 P = posAt(fz, ps, u, uv, w);
     const float3 Px = posAt(fz, ps, u, uv + float2(u.size.x, 0.0), wx), Py = posAt(fz, ps, u, uv + float2(0.0, u.size.y), wy);
@@ -217,12 +250,28 @@ kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]]
         ao = 1.0 - occ * 0.8;
     }
     outMask.write(float4(sun, lamp, ao, 1.0), gid);
+    float4 lv = 1.0;
+    for (int i = 0; i < 4; ++i) {
+        if (u.dl[i].w <= 0.0) continue;
+        const float3 j = float3(rnd(gid, frame * 5u + 40u + uint(i)), rnd(gid, frame * 5u + 44u + uint(i)), rnd(gid, frame * 5u + 48u + uint(i))) * 2.0 - 1.0;
+        const float3 dl = u.dl[i].xyz + j * u.dlParams.x - o;
+        const float ll = length(dl);
+        if (ll >= u.dl[i].w || ll < 1.0) continue;
+        lv[i] = blockedAny(as, o, dl / ll, ll - 1.0, vtx, idx, tab, masks) ? 0.0 : 1.0;
+    }
+    outLights.write(lv, gid);
 }
 )MSL";
 
 struct SceneRT::Impl {
     id<MTLComputePipelineState> shadowPipe = nil;
     id<MTLAccelerationStructure> world = nil;
+    id<MTLAccelerationStructure> worldAlpha = nil; // the alpha-tested surfaces (non-opaque)
+    id<MTLBuffer> worldVerts = nil, worldIdx = nil, alphaTable = nil;
+    id<MTLTexture> alphaMasks = nil;
+    id<MTLBuffer> dummyBuf = nil;
+    id<MTLTexture> dummyMasks = nil;
+    size_t alphaTriangles = 0;
     size_t worldTriangles = 0;
     id<MTLAccelerationStructure> placeholderBlas = nil, placeholderTlas = nil;
     id<MTLBuffer> placeholderVerts = nil;
@@ -298,6 +347,7 @@ bool SceneRT::hasStatic() const {
 void SceneRT::clearStatic() {
 #ifdef SDL_GPU_OPENIW2_METAL_HANDLES
     impl_->world = nil;
+    impl_->worldAlpha = nil;
     impl_->worldTriangles = 0;
     impl_->rigid.clear();
     impl_->skinned.clear();
@@ -325,7 +375,8 @@ void SceneRT::addItem(SDL_GPUBuffer* vertices, uint32_t vertexOffset, uint32_t v
 }
 
 bool SceneRT::buildStatic(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUBuffer* vertices, uint32_t vertexStride, SDL_GPUBuffer* indices,
-                          const std::vector<std::pair<uint32_t, uint32_t>>& ranges) {
+                          const std::vector<std::pair<uint32_t, uint32_t>>& ranges, const std::vector<AlphaRange>& alpha,
+                          SDL_GPUTexture* alphaMasks) {
 #ifdef SDL_GPU_OPENIW2_METAL_HANDLES
     Impl& I = *impl_;
     I.world = nil;
@@ -354,9 +405,38 @@ bool SceneRT::buildStatic(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPU
     desc.geometryDescriptors = geoms;
     I.world = buildPrimitive(d, cb, desc);
     if (!I.world) I.error = "the world structure could not be made";
+    I.worldVerts = vb, I.worldIdx = ib;
+    I.worldAlpha = nil, I.alphaTable = nil, I.alphaMasks = nil, I.alphaTriangles = 0;
+    id<MTLTexture> masks = alphaMasks ? (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, alphaMasks) : nil;
+    if (!alpha.empty() && masks) {
+        NSMutableArray<MTLAccelerationStructureTriangleGeometryDescriptor*>* ag = [NSMutableArray array];
+        std::vector<uint32_t> table;
+        for (const AlphaRange& r : alpha) {
+            if (r.count < 3) continue;
+            MTLAccelerationStructureTriangleGeometryDescriptor* g = [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+            g.vertexBuffer = vb;
+            g.vertexStride = vertexStride;
+            g.vertexFormat = MTLAttributeFormatFloat3;
+            g.indexBuffer = ib;
+            g.indexBufferOffset = NSUInteger(r.first) * 4;
+            g.indexType = MTLIndexTypeUInt32;
+            g.triangleCount = r.count / 3;
+            g.opaque = NO; // tested per candidate (rt_alpha_pass)
+            [ag addObject:g];
+            table.insert(table.end(), {r.first, r.layer, r.func, 0u});
+            I.alphaTriangles += r.count / 3;
+        }
+        if (ag.count) {
+            MTLPrimitiveAccelerationStructureDescriptor* ad = [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+            ad.geometryDescriptors = ag;
+            I.worldAlpha = buildPrimitive(d, cb, ad);
+            I.alphaTable = [d newBufferWithBytes:table.data() length:table.size() * 4 options:MTLResourceStorageModeShared];
+            I.alphaMasks = masks;
+        }
+    }
     return I.world != nil;
 #else
-    (void)dev, (void)cmd, (void)vertices, (void)vertexStride, (void)indices, (void)ranges;
+    (void)dev, (void)cmd, (void)vertices, (void)vertexStride, (void)indices, (void)ranges, (void)alpha, (void)alphaMasks;
     return false;
 #endif
 }
@@ -383,9 +463,23 @@ bool SceneRT::buildFrame(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, bool act
     I.frameTlas = nil;
     I.frameBlases = [NSMutableArray array];
     std::vector<MTLAccelerationStructureInstanceDescriptor> inst;
+    if (!I.dummyBuf) {
+        I.dummyBuf = [d newBufferWithLength:256 options:MTLResourceStorageModeShared];
+        MTLTextureDescriptor* td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm width:1 height:1 mipmapped:NO];
+        td.textureType = MTLTextureType2DArray;
+        td.arrayLength = 1;
+        td.usage = MTLTextureUsageShaderRead;
+        I.dummyMasks = [d newTextureWithDescriptor:td];
+    }
     if (active && I.world) {
         [I.frameBlases addObject:I.world];
         inst.push_back(identityInstance(0, kMaskStatic));
+        if (I.worldAlpha) {
+            MTLAccelerationStructureInstanceDescriptor a = identityInstance(uint32_t(I.frameBlases.count), kMaskAlpha);
+            a.options = MTLAccelerationStructureInstanceOptionNonOpaque;
+            [I.frameBlases addObject:I.worldAlpha];
+            inst.push_back(a);
+        }
     }
     I.dynamicTriangles = 0, I.itemCount = 0;
     // Bottom levels of the moving objects: rigid models built once; deforming (skinned) ones built once for refitting and refit
@@ -478,6 +572,12 @@ void SceneRT::bind(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPURenderP
     if (!top) return;
     [enc setFragmentAccelerationStructure:top atBufferIndex:kSceneBufferIndex];
     [enc useResource:top usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+    // the alpha test's resources (rt_alpha_pass): world vertices, indices, the geometry table, the alpha masks
+    const bool alphaOn = I.frameTlas && I.worldAlpha;
+    [enc setFragmentBuffer:alphaOn ? I.worldVerts : I.dummyBuf offset:0 atIndex:kSceneBufferIndex + 1];
+    [enc setFragmentBuffer:alphaOn ? I.worldIdx : I.dummyBuf offset:0 atIndex:kSceneBufferIndex + 2];
+    [enc setFragmentBuffer:alphaOn ? I.alphaTable : I.dummyBuf offset:0 atIndex:kSceneBufferIndex + 3];
+    [enc setFragmentTexture:alphaOn ? I.alphaMasks : I.dummyMasks atIndex:20];
     if (I.frameTlas)
         for (id<MTLAccelerationStructure> b in I.frameBlases) [enc useResource:b usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
     else if (I.placeholderBlas)
@@ -487,8 +587,8 @@ void SceneRT::bind(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPURenderP
 #endif
 }
 
-bool SceneRT::shadowPass(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* depth, SDL_GPUTexture* mask, uint32_t w, uint32_t h,
-                         const float* u) {
+bool SceneRT::shadowPass(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* depth, SDL_GPUTexture* mask, SDL_GPUTexture* lights,
+                         uint32_t w, uint32_t h, const float* u) {
 #ifdef SDL_GPU_OPENIW2_METAL_HANDLES
     Impl& I = *impl_;
     if (!I.frameTlas) return false;
@@ -496,7 +596,8 @@ bool SceneRT::shadowPass(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUT
     id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)SDL_GetGPUCommandBufferMetalCommandBuffer(cmd);
     id<MTLTexture> z = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, depth);
     id<MTLTexture> m = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, mask);
-    if (!d || !cb || !z || !m) return false;
+    id<MTLTexture> lt = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, lights);
+    if (!d || !cb || !z || !m || !lt) return false;
     if (!I.shadowPipe) {
         NSError* err = nil;
         id<MTLLibrary> lib = [d newLibraryWithSource:[NSString stringWithUTF8String:kShadowSource] options:nil error:&err];
@@ -511,16 +612,22 @@ bool SceneRT::shadowPass(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUT
     [enc setComputePipelineState:I.shadowPipe];
     [enc setTexture:z atIndex:0];
     [enc setTexture:m atIndex:1];
-    [enc setBytes:u length:sizeof(float) * 48 atIndex:0];
+    [enc setTexture:lt atIndex:2];
+    [enc setBytes:u length:sizeof(float) * 68 atIndex:0];
     [enc setAccelerationStructure:I.frameTlas atBufferIndex:1];
     [enc useResource:I.frameTlas usage:MTLResourceUsageRead];
+    const bool alphaOn = I.worldAlpha != nil;
+    [enc setBuffer:alphaOn ? I.worldVerts : I.dummyBuf offset:0 atIndex:2];
+    [enc setBuffer:alphaOn ? I.worldIdx : I.dummyBuf offset:0 atIndex:3];
+    [enc setBuffer:alphaOn ? I.alphaTable : I.dummyBuf offset:0 atIndex:4];
+    [enc setTexture:alphaOn ? I.alphaMasks : I.dummyMasks atIndex:3];
     for (id<MTLAccelerationStructure> b in I.frameBlases) [enc useResource:b usage:MTLResourceUsageRead];
     const NSUInteger tw = I.shadowPipe.threadExecutionWidth, th = std::max<NSUInteger>(1, I.shadowPipe.maxTotalThreadsPerThreadgroup / tw);
     [enc dispatchThreads:MTLSizeMake(w, h, 1) threadsPerThreadgroup:MTLSizeMake(tw, th, 1)];
     [enc endEncoding];
     return true;
 #else
-    (void)dev, (void)cmd, (void)depth, (void)mask, (void)w, (void)h, (void)u;
+    (void)dev, (void)cmd, (void)depth, (void)mask, (void)lights, (void)w, (void)h, (void)u;
     return false;
 #endif
 }
@@ -528,7 +635,8 @@ bool SceneRT::shadowPass(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUT
 std::string SceneRT::describe() const {
 #ifdef SDL_GPU_OPENIW2_METAL_HANDLES
     if (impl_->world)
-        return "ray tracing scene: " + std::to_string(impl_->worldTriangles) + " static triangles, " + std::to_string(impl_->itemCount) +
+        return "ray tracing scene: " + std::to_string(impl_->worldTriangles) + " static triangles (+" + std::to_string(impl_->alphaTriangles) +
+               " alpha-tested), " + std::to_string(impl_->itemCount) +
                " moving objects (" + std::to_string(impl_->dynamicTriangles) + " triangles)";
     return "ray tracing scene: none" + (impl_->error.empty() ? std::string() : " (" + impl_->error + ")");
 #else

@@ -41,6 +41,8 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhMetalFX` | 0 | MetalFX temporal anti-aliasing instead of ours (needs TAA, a MetalFX GPU and the patched SDL; see "Stage 5"). |
 | `r_enhRTShadows` | 1 | Ray-traced sun and lamp shadows of the moving objects, soft (GPU family 9 and later; see "Stage 5"). |
 | `r_enhRTContactAO` | 1 | Ray-traced contact occlusion of the moving objects (GPU family 9 and later). |
+| `r_enhRTLightShadows` | 1 | Ray-traced shadows of the effect lights (muzzle flashes, explosions), with `r_enhLightShadows` (GPU family 9 and later). |
+| `r_enhRTBeyondView` | 1 | Objects outside the view but within 1500 units in the ray tracing (reflections, shadows); costs their CPU skinning. |
 | `r_enhRTReflections` | 1 | Ray-traced reflections on water and the reflective surface classes (GPU family 9 and later: M3 and later; see "Stage 5"). |
 | `r_enhRenderScale` | 1 | With MetalFX: the scene's resolution as a fraction of the window (0.5..1; the page offers 1, 0.77, 0.67, 0.5), upscaled by MetalFX. |
 | `r_enhProbes` | preset | Reflection probes captured when the map loads: rooms reflect themselves instead of the sky (off in the low preset). |
@@ -333,12 +335,14 @@ native size and for our TAA. Cost at 1920 x 1080, high preset, duhoc beach: nati
 
 ### Ray-traced reflections
 
-On GPUs with hardware ray tracing (`r_enhRTReflections`, the page's "Ray-traced reflections" row, shown only there):
+On GPUs with hardware ray tracing (`r_enhRTReflections`, the page's "RT reflections" row, shown only there):
 - The scene: a two-level acceleration structure (`metal::SceneRT`): the static world and static models (the opaque surfaces of
   `Scene::batches`, built once per map) plus the frame's moving objects (models in the world: characters, their weapons,
   vehicles, script models; not the view model or effect sprites; opaque surfaces), one instance each with its model-to-world
-  transform. Alpha-tested surfaces (foliage, fences) are left out: without an any-hit alpha test they would be solid quads, so
-  they neither reflect off screen nor cast ray-traced shadows (open). Rigid models keep their bottom level; skinned ones are built once for refitting and refit every frame, all in one
+  transform. Alpha-tested surfaces (foliage, fences) of the world are a second, non-opaque structure (its own instance): the
+  queries that see the static world (reflections, the effect lights' shadows) walk their candidates with `intersection_query` and
+  keep a hit only where the material's alpha passes its alpha function (`rt_alpha_pass`: the triangle's UVs from the world
+  buffers, a 64 x 64 alpha mask per material in an R8 array, the geometry table; bound at fragment buffers 7-9 and texture 20). Rigid models keep their bottom level; skinned ones are built once for refitting and refit every frame, all in one
   encoder with one scratch buffer. It is bound at fragment buffer 6 of the scene passes, above SDL's buffers (the patch's render
   pass encoder getter); a placeholder that nothing hits is bound when it is off.
 - The ray queries live in a second build of the enhanced library (`IW2_ENH_RT`), used only by the pipelines of the draws that
@@ -349,8 +353,11 @@ On GPUs with hardware ray tracing (`r_enhRTReflections`, the page's "Ray-traced 
   reflection probe of its own cell, a miss the environment as without ray tracing (sky or probe). The temporal resolve (TAA or
   MetalFX) is the only filtering; a mirror ray needs no other. Blended reflective surfaces (the sea at duhoc) get it too, since
   the ray needs no depth of the surface itself.
-- Limits: the moving objects are those of the frame's item list, which is culled to a wide frustum (32:9) for the CPU skinning,
-  so objects behind the camera do not reflect; muzzle flashes and other effects appear only through the previous frame's image
+- Objects behind the camera: the item list is culled to the view (the original's entity cull, for the CPU skinning); with
+  `r_enhRTBeyondView` the entities outside it but within 1500 units (`game::kRtBeyondViewRange`) are gathered too, into their own
+  list (`Renderer::rtExtraItems`) that only the ray tracing reads (duhoc beach: 653 moving objects instead of 129; about 2.7 ms
+  more CPU per frame for their skinning, 0.5 ms GPU).
+- Limits: muzzle flashes and other effects appear only through the previous frame's image
   (one frame late, and not off screen). `IW2_RT_DEBUG=1` colours the reflections: red an on-screen hit, green another hit,
   blue a miss.
 - Cost at 1920 x 1080, high preset: duhoc beach 6.81 ms without, 7.70 ms with (129 moving objects, 74000 triangles); rhine
@@ -370,8 +377,18 @@ the position and a normal from the depth, offset off the surface, then rays agai
 The results join the AO image (sun with the contact shadow, occlusion with the AO, the lamps in its alpha), whose depth-aware
 blur and then TAA or MetalFX smooth the noise of the varying rays. With them the moving-caster sun shadow map and the lamps' rows
 of the light shadow atlas are not drawn. Receivers are every pixel of `$floatz` (the world, static models and the models in it);
-blended surfaces and the view model keep no screen-space terms, as before. Limits: the moving objects are the frame's culled
-item list (above); without TAA or MetalFX the soft edges show their noise.
+blended surfaces and the view model keep no screen-space terms, as before. Without TAA or MetalFX the soft edges show their noise.
+
+The effect lights (muzzle flashes, explosions; the first four, `r_enhRTLightShadows` with `r_enhLightShadows`) get their
+shadows from the same pass: one ray per light to a point jittered over `game::kRtEffectLightSize`, against the whole scene
+(these lights are not baked; alpha-tested surfaces tested), into a second half-size image, one channel per light, which the
+light pass samples at its pixel instead of the light shadow atlas (whose rows for these lights are then not drawn). Elsewhere
+(M1, M2, or with the switch off) the atlas shadows stay. The light pass now takes its shadow parameters in its own uniform
+block: in fragment slot 1 they had overwritten the frame's enhanced uniforms for the scene draws between the light draws.
+
+Ray-traced occlusion of the static world was measured and left out: against the static world as well, the contact occlusion
+changes about half the pixels by at most 22 of 255, nearly all by 1 to 3, darkening corners the screen-space AO already darkens;
+the lightmaps carry the indirect light.
 
 ## Cost
 
