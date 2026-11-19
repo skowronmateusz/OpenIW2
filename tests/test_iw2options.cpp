@@ -321,7 +321,7 @@ int main() {
     CHECK(missionSvCheats(true, false) == "1" && missionSvCheats(false, false).empty() && missionSvCheats(true, true).empty());
     // Texts: English and Polish (Windows-1250) for every key the page uses.
     const auto en = openIw2Strings("english"), pl = openIw2Strings("polish");
-    CHECK(en.size() == pl.size() && en.size() == 46);
+    CHECK(en.size() == pl.size() && en.size() == 47);
     {   // every OpenIW2 string key the two pages use has a text (shipped MENU_* keys come from the game's own files)
         auto has = [&](const std::string& key) { for (const auto& [k, t] : en) if ("@" + k == key) return true; return false; };
         for (const EnhancedRow& r : enhancedRows()) {

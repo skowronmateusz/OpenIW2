@@ -420,6 +420,53 @@ int main() {
     chk(metalRayTracingAllowed(true, true, false) && !metalRayTracingAllowed(true, false, false) &&
             !metalRayTracingAllowed(false, true, false) && !metalRayTracingAllowed(true, true, true), __LINE__);
 
+    // Shadow-only player body: on in every preset, off with its cvar.
+    {
+        auto get = [](const std::map<std::string, std::string>& m) {
+            return [m](const char* n) { const auto it = m.find(n); return it == m.end() ? std::string() : it->second; };
+        };
+        for (const char* preset : {"0", "1", "2"})
+            chk(enhancedSettings(get({{"r_enhanced", "1"}, {"r_enhPreset", preset}})).playerShadow, __LINE__);
+        chk(!enhancedSettings(get({{"r_enhanced", "1"}, {"r_enhPlayerShadow", "0"}})).playerShadow, __LINE__);
+        chk(enhancedSettings(get({{"r_enhanced", "1"}, {"r_enhPlayerShadow", "-1"}})).playerShadow, __LINE__);
+    }
+    // Its models: the multiplayer character with the same view hands.
+    chk(playerBodyForHands("xmodel/viewmodel_hands_british_bare").body == "xmodel/playerbody_british_africa01", __LINE__);
+    chk(playerBodyForHands("xmodel/viewmodel_hands_british").body == "xmodel/playerbody_british_normandy01", __LINE__);
+    chk(playerBodyForHands("xmodel/viewmodel_hands_british_wet").hat == "xmodel/helmet_british_normandy", __LINE__);
+    chk(playerBodyForHands("xmodel/viewmodel_hands_russian").head == "xmodel/head_russian_winter_jon", __LINE__);
+    chk(playerBodyForHands("xmodel/viewmodel_hands_german_winter").body == "xmodel/playerbody_german_winterlight", __LINE__);
+    chk(playerBodyForHands("xmodel/viewmodel_hands_cloth").body == "xmodel/playerbody_american_normandy01", __LINE__);
+    chk(playerBodyForHands("").body == "xmodel/playerbody_american_normandy01", __LINE__);
+    // Single player: the friendly squad's uniform.
+    {
+        PlayerBodyModels m;
+        chk(playerBodyForSquadModel("xmodel/character_british_afrca_body", m) && m.body == "xmodel/playerbody_british_africa01", __LINE__);
+        chk(playerBodyForSquadModel("xmodel/character_british_normandy_mac_body", m) && m.body == "xmodel/playerbody_british_normandy01", __LINE__);
+        chk(playerBodyForSquadModel("xmodel/character_russian_winter_body", m) && m.body == "xmodel/playerbody_russian_coat01", __LINE__);
+        chk(playerBodyForSquadModel("xmodel/character_us_ranger_body", m) && m.body == "xmodel/playerbody_american_normandy01", __LINE__);
+        chk(!playerBodyForSquadModel("xmodel/character_german_afrca_body", m) && !playerBodyForSquadModel("", m), __LINE__);
+    }
+    // Its anim type: the multiplayer weapon file's, else the weapon class.
+    chk(playerBodyAnimType("Thompson", "smg") == "thompson" && playerBodyAnimType("none", "Rifle") == "rifle", __LINE__);
+    chk(playerBodyAnimType("", "") == "none", __LINE__);
+    // Its move signs at the view yaw: forward, back-pedal, strafe right (yaw 0: forward +x, right -y), standing below 10 u/s.
+    {
+        float f = 0, r = 0;
+        playerBodyMoves(200, 0, 0, f, r);
+        chk(f == 1 && r == 0, __LINE__);
+        playerBodyMoves(-200, 0, 0, f, r);
+        chk(f == -1 && r == 0, __LINE__);
+        playerBodyMoves(0, -200, 0, f, r);
+        chk(f == 0 && r == 1, __LINE__);
+        playerBodyMoves(0, 200, 90, f, r); // yaw 90: forward is +y
+        chk(f == 1 && r == 0, __LINE__);
+        playerBodyMoves(140, -140, 0, f, r); // diagonal: both
+        chk(f == 1 && r == 1, __LINE__);
+        playerBodyMoves(5, 5, 0, f, r);
+        chk(f == 0 && r == 0, __LINE__);
+    }
+
     if (bad) std::printf("%d failures\n", bad);
     else std::printf("ok\n");
     return bad ? 1 : 0;

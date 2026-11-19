@@ -401,19 +401,23 @@ void World::mpPlayersFrame() {
     }
 }
 
-float World::mpAnimMoveSpeed(int node) {
-    if (!mp_) return 0.0f;
-    auto& cache = mp_->animData.moveSpeed;
-    if (const auto it = cache.find(node); it != cache.end()) return it->second;
+float animNodeMoveSpeed(AnimLibrary& lib, const AnimTree* tree, int node) {
     float speed = 0.0f;
-    const AnimTree* tree = animLib_.tree("multiplayer");
     if (tree && node > 0 && size_t(node) < tree->nodes().size() && tree->nodes()[size_t(node)].children.empty())
-        if (const assets::XAnim* a = animLib_.anim(tree->nodes()[size_t(node)].name); a && a->length() > 0 && !a->deltaTrans.keys.empty()) {
+        if (const assets::XAnim* a = lib.anim(tree->nodes()[size_t(node)].name); a && a->length() > 0 && !a->deltaTrans.keys.empty()) {
             const int keys = a->keyCount();
             const auto p0 = assets::sampleTrans(a->deltaTrans, 0.0f, keys), p1 = assets::sampleTrans(a->deltaTrans, float(keys - 1), keys);
             const float d0 = p1[0] - p0[0], d1 = p1[1] - p0[1], d2 = p1[2] - p0[2];
             speed = std::sqrt(d0 * d0 + d1 * d1 + d2 * d2) / a->length();
         }
+    return speed;
+}
+
+float World::mpAnimMoveSpeed(int node) {
+    if (!mp_) return 0.0f;
+    auto& cache = mp_->animData.moveSpeed;
+    if (const auto it = cache.find(node); it != cache.end()) return it->second;
+    const float speed = animNodeMoveSpeed(animLib_, animLib_.tree("multiplayer"), node);
     cache[node] = speed;
     return speed;
 }

@@ -56,6 +56,8 @@ public:
     static constexpr unsigned kSceneBufferIndex = 6;
     // instance masks: what a ray may hit
     static constexpr uint32_t kMaskStatic = 1, kMaskDynamic = 2, kMaskAlpha = 4;
+    // r_enhPlayerShadow: the player's shadow-only body; only the sun and lamp shadow rays of pixels away from the eye see it
+    static constexpr uint32_t kMaskBody = 8;
     // the alpha-tested world: index range, its alpha mask layer and AlphaFunc (assets::AlphaFunc as a number)
     struct AlphaRange { uint32_t first, count, layer, func; };
     SceneRT();
@@ -75,7 +77,8 @@ public:
     // every frame (skinned), so the kept bottom level is refit each frame.
     void beginItems();
     void addItem(SDL_GPUBuffer* vertices, uint32_t vertexOffset, uint32_t vertexStride, SDL_GPUBuffer* indices,
-                 const std::vector<std::pair<uint32_t, uint32_t>>& ranges, const float transform[16], const void* key, bool deforming);
+                 const std::vector<std::pair<uint32_t, uint32_t>>& ranges, const float transform[16], const void* key, bool deforming,
+                 uint32_t mask = kMaskDynamic);
     // active false: no top level this frame (the placeholder is bound).
     bool buildFrame(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, bool active);
     // Shadows and contact occlusion of the moving objects (only those: kMaskDynamic) for the pixels of a depth image ($floatz,

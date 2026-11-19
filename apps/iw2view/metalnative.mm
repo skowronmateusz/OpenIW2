@@ -157,7 +157,7 @@ static float3 posAt(texture2d<float> fz, sampler ps, constant RtShadowU& u, floa
     const float4 wp = u.inv * float4(ndc * w, cz, w);
     return wp.xyz / wp.w;
 }
-static bool blocked(instance_acceleration_structure as, float3 o, float3 d, float len) {
+static bool blocked(instance_acceleration_structure as, float3 o, float3 d, float len, uint mask = 2u) {
     ray r;
     r.origin = o;
     r.direction = d;
@@ -166,7 +166,7 @@ static bool blocked(instance_acceleration_structure as, float3 o, float3 d, floa
     intersector<instancing> isect;
     isect.accept_any_intersection(true);
     isect.assume_geometry_type(geometry_type::triangle);
-    return isect.intersect(r, as, 2u).type != intersection_type::none; // the moving objects only
+    return isect.intersect(r, as, mask).type != intersection_type::none; // the moving objects only (2), with the player's body 8
 }
 // Alpha test of a ray candidate on an alpha-tested world triangle (stage 5): the triangle's UVs from the world buffers, its
 // material's alpha mask layer and alpha function from the geometry table (x first index, y layer, z the AlphaFunc).
@@ -191,7 +191,7 @@ static bool blockedAny(instance_acceleration_structure as, float3 o, float3 d, f
     intersection_params qp;
     qp.assume_geometry_type(geometry_type::triangle);
     qp.accept_any_intersection(true);
-    q.reset(r, as, 0xffu, qp);
+    q.reset(r, as, 0xf7u, qp); // not the player's shadow-only body (8): the effect lights are at the gun, inside it
     while (q.next())
         if (rt_alpha_pass(q.get_candidate_geometry_id(), q.get_candidate_primitive_id(), q.get_candidate_triangle_barycentric_coord(), vtx, idx, tab, masks))
             q.commit_triangle_intersection();
@@ -216,12 +216,13 @@ kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]]
     if (dot(n, u.eye.xyz - P) < 0.0) n = -n;
     const float3 o = P + n * (1.0 + w * 0.002);
     const uint frame = uint(u.z.w);
+    const uint shadowMask = w > 40.0 ? 10u : 2u; // the player's body (8) shadows the world, not the view model or what is at the eye
     float sun = 1.0;
     if (u.flags.x > 0.5 && dot(n, u.sun.xyz) > 0.0) {
         const float3 t1 = normalize(cross(u.sun.xyz, abs(u.sun.z) < 0.9 ? float3(0, 0, 1) : float3(1, 0, 0))), t2 = cross(u.sun.xyz, t1);
         const float a = rnd(gid, frame * 2u) * 6.2831853, rr = sqrt(rnd(gid, frame * 2u + 1u)) * u.sun.w;
         const float3 d = normalize(u.sun.xyz + (t1 * cos(a) + t2 * sin(a)) * rr);
-        sun = blocked(as, o, d, 3000.0) ? 0.0 : 1.0;
+        sun = blocked(as, o, d, 3000.0, shadowMask) ? 0.0 : 1.0;
     }
     float lampSum = 0.0, lampVis = 0.0;
     for (int i = 0; i < 2; ++i) {
@@ -238,7 +239,7 @@ kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]]
         const float3 dl = tgt - o;
         const float ll = length(dl);
         lampSum += wgt;
-        lampVis += wgt * (blocked(as, o, dl / ll, ll - 1.0) ? 0.0 : 1.0);
+        lampVis += wgt * (blocked(as, o, dl / ll, ll - 1.0, shadowMask) ? 0.0 : 1.0);
     }
     const float lamp = lampSum > 1e-6 ? lampVis / lampSum : 1.0;
     float ao = 1.0;
@@ -291,6 +292,7 @@ struct SceneRT::Impl {
         float transform[16];
         const void* key = nullptr;
         bool deforming = false;
+        uint32_t mask = kMaskDynamic;
     };
     std::vector<Item> items;
     struct Cached { id<MTLAccelerationStructure> as; size_t triangles; };
@@ -364,16 +366,18 @@ void SceneRT::beginItems() {
 }
 
 void SceneRT::addItem(SDL_GPUBuffer* vertices, uint32_t vertexOffset, uint32_t vertexStride, SDL_GPUBuffer* indices,
-                      const std::vector<std::pair<uint32_t, uint32_t>>& ranges, const float transform[16], const void* key, bool deforming) {
+                      const std::vector<std::pair<uint32_t, uint32_t>>& ranges, const float transform[16], const void* key, bool deforming,
+                      uint32_t mask) {
 #ifdef SDL_GPU_OPENIW2_METAL_HANDLES
     if (!vertices || !indices || ranges.empty()) return;
     Impl::Item it;
     it.vertices = vertices, it.vertexOffset = vertexOffset, it.stride = vertexStride, it.indices = indices, it.ranges = ranges, it.key = key;
     it.deforming = deforming;
+    it.mask = mask;
     std::memcpy(it.transform, transform, sizeof it.transform);
     impl_->items.push_back(std::move(it));
 #else
-    (void)vertices, (void)vertexOffset, (void)vertexStride, (void)indices, (void)ranges, (void)transform, (void)key, (void)deforming;
+    (void)vertices, (void)vertexOffset, (void)vertexStride, (void)indices, (void)ranges, (void)transform, (void)key, (void)deforming, (void)mask;
 #endif
 }
 
@@ -540,7 +544,7 @@ bool SceneRT::buildFrame(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, bool act
         for (int cc = 0; cc < 4; ++cc)
             for (int r = 0; r < 3; ++r) id.transformationMatrix.columns[cc].elements[r] = it.transform[cc * 4 + r];
         id.options = MTLAccelerationStructureInstanceOptionOpaque;
-        id.mask = kMaskDynamic;
+        id.mask = it.mask;
         id.accelerationStructureIndex = uint32_t(I.frameBlases.count);
         [I.frameBlases addObject:blas];
         inst.push_back(id);

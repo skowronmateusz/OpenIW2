@@ -258,7 +258,7 @@ static bool enh_rt_reflection(float3 wp, float3 r, float a, constant EnhFragU& e
     metal::raytracing::intersection_query<metal::raytracing::instancing, metal::raytracing::triangle_data> q;
     metal::raytracing::intersection_params qp;
     qp.assume_geometry_type(metal::raytracing::geometry_type::triangle);
-    q.reset(ray, rtScene, 0xff, qp);
+    q.reset(ray, rtScene, 0xf7, qp); // not the player's shadow-only body (instance mask 8)
     while (q.next())
         if (rt_alpha_pass(q.get_candidate_geometry_id(), q.get_candidate_primitive_id(), q.get_candidate_triangle_barycentric_coord(), rtVtx,
                           rtIdx, rtTab, rtAlpha))

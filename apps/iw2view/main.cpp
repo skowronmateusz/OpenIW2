@@ -2762,6 +2762,9 @@ struct Renderer {
     metal::SceneRT sceneRT;
     uint64_t sceneRTFor = 0;
     std::vector<DrawItem> rtExtraItems; // this frame's items outside the view that only the ray tracing sees (gathered with the rest)
+    // r_enhPlayerShadow: the player's shadow-only body (docs/render-enhanced.md "Player shadow"): the sun cascades and the ray
+    // tracing (its own instance mask) see it, nothing else draws it
+    std::vector<DrawItem> shadowOnlyItems;
     bool rtWantsBeyondView() const { return metalCaps.rayTracing && enh.enabled && enh.rtBeyondView && (enh.rtReflections || enh.rtShadows); }
     bool rtReflNow = false;
     bool rtShadowNow = false;   // this frame: ray-traced shadows / contact occlusion of the moving objects (the AO image)
@@ -2820,14 +2823,16 @@ struct Renderer {
         // the moving objects: models in the world (not the view model or effect sprites), their opaque surfaces
         sceneRT.beginItems();
         if (active)
-            for (const std::vector<DrawItem>* list : {&items, static_cast<const std::vector<DrawItem>*>(&rtExtraItems)})
+            for (const std::vector<DrawItem>* list : {&items, static_cast<const std::vector<DrawItem>*>(&rtExtraItems),
+                                                      static_cast<const std::vector<DrawItem>*>(&shadowOnlyItems)})
             for (const DrawItem& it : *list) {
                 if (!it.model || it.effects || it.depthMax < 1.0f || !it.model->vertices || !it.model->indices) continue;
                 std::vector<std::pair<uint32_t, uint32_t>> ranges;
                 for (const Batch& b : it.model->batches)
                     if (b.pass == Pass::Opaque && b.indexCount >= 3) ranges.push_back({b.firstIndex, b.indexCount});
                 sceneRT.addItem(it.model->vertices, it.model->vertexOffset, uint32_t(sizeof(GpuVertex)), it.model->indices, ranges,
-                                it.transform.data(), it.model, it.model->arenaVertices);
+                                it.transform.data(), it.model, it.model->arenaVertices,
+                                list == &shadowOnlyItems ? metal::SceneRT::kMaskBody : metal::SceneRT::kMaskDynamic);
             }
         sceneRT.buildFrame(dev, cmd, active);
         static bool logged = false;
@@ -3120,6 +3125,8 @@ struct Renderer {
         EnhDrawUC d{};
         if (it && size_t(it - items.data()) < itemLattice.size()) d = itemLattice[size_t(it - items.data())];
         if (it && it->effects) d.step[3] = 1.0f; // sprites and clouds take no dynamic sun shadow
+        // r_enhPlayerShadow: the view weapon and hands sit inside the player's body, so they skip the moving casters' map
+        if (it && it->depthMax < 1.0f && !shadowOnlyItems.empty()) d.step[3] = 1.0f;
         // AO / contact shadows come from the opaque depth: not for blended surfaces, sprites or the view model
         if (noScreenSpace || (it && (it->effects || it->depthMax < 1.0f))) d.origin[3] = 1.0f;
         if (!it) d.origin[0] = float(reflectClass); // world draws: the reflective surface class (EnhDrawU.origin.x)
@@ -5170,7 +5177,8 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
                 }
                 return true;
             };
-            for (const DrawItem& it : items) {
+            for (const std::vector<DrawItem>* list : {&items, static_cast<const std::vector<DrawItem>*>(&shadowOnlyItems)}) // + the player's body
+            for (const DrawItem& it : *list) {
                 if (it.effects || it.depthMax < 1.0f) continue; // sprites; the view model (first-person arms and gun)
                 if (it.model) {
                     if (it.model->hasBounds) {
@@ -8030,6 +8038,153 @@ int main(int argc, char** argv) {
             s.flash = viewFlash;
             s.skinKey = -1;
             poseViewWeapon(items, c, s, drawn);
+        };
+        // r_enhPlayerShadow (our own design, docs/render-enhanced.md "Player shadow"): the player's shadow-only body, posed here at
+        // render time from the player's movement with the multiplayer anim tree and mp/playeranim.script (stance, idle / moving,
+        // the weapon's anim type and the aim), placed at the eye's ground point, and handed to the renderer's shadowOnlyItems:
+        // the sun cascades and the ray tracing see it, no view pass draws it.
+        struct ShadowBodyInput {
+            Vec3 ground{};        // the origin under the eye
+            float yaw = 0;
+            float vx = 0, vy = 0; // the horizontal velocity
+            int viewHeightTarget = 60;
+            float dtS = 0;        // the render frame's time step
+        };
+        struct ShadowBodyState {
+            bool scriptLoaded = false;
+            std::unique_ptr<game::PlayerAnimScript> script;
+            std::unique_ptr<game::AnimState> anim;
+            const game::World* animWorld = nullptr;
+            const game::PaItem* legsItem = nullptr;
+            int legsNode = 0;
+            uint32_t seed = 0x2545f491u;
+            std::map<int, float> moveSpeed;
+            std::map<std::string, std::string> mpAnimType; // weapon -> the multiplayer weapon file's playerAnimType
+            const game::World* squadWorld = nullptr;       // single player: the squad's uniform, looked up once per level
+            std::optional<game::PlayerBodyModels> squadModels;
+        };
+        static ShadowBodyState shadowBody;
+        auto addShadowBody = [&](const ShadowBodyInput& in) {
+            renderer.shadowOnlyItems.clear();
+            if (!world || !renderer.enh.enabled || !renderer.enh.playerShadow) return;
+            // prone: the animation lays the body forward of the origin, over the eye's view (left out, docs/render-enhanced.md)
+            if (in.viewHeightTarget <= 11) return;
+            if (world->playerLinked() || world->playerOnTurret() || (world->playerPmFlags() & 0x20000) || world->playerDeadWeaponless()) return;
+            ShadowBodyState& b = shadowBody;
+            if (!b.scriptLoaded) {
+                b.scriptLoaded = true;
+                if (const auto bytes = vfs.read("mp/playeranim.script")) {
+                    auto sc = std::make_unique<game::PlayerAnimScript>();
+                    if (sc->parse(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()))) b.script = std::move(sc);
+                }
+            }
+            game::AnimLibrary& lib = world->animLibrary();
+            const game::AnimTree* tree = lib.tree("multiplayer");
+            if (!b.script || !tree) return;
+            if (!b.anim || b.animWorld != world.get()) {
+                b.anim = std::make_unique<game::AnimState>(*tree, lib);
+                b.animWorld = world.get(), b.legsItem = nullptr, b.legsNode = 0;
+            }
+            // the weapon's anim type: its multiplayer file's (single-player files say "none"), else its class
+            game::PaContext ctx;
+            const std::string weapon = pweapon.equipped() ? pweapon.name() : std::string();
+            if (!weapon.empty()) {
+                auto mt = b.mpAnimType.find(weapon);
+                if (mt == b.mpAnimType.end()) {
+                    std::string type;
+                    if (const auto f = vfs.read("weapons/mp/" + weapon + "_mp")) {
+                        const std::string text(reinterpret_cast<const char*>(f->data()), f->size());
+                        const std::string key = "\\playerAnimType\\";
+                        if (const size_t at = text.find(key); at != std::string::npos) {
+                            const size_t from = at + key.size();
+                            type = text.substr(from, text.find('\\', from) - from);
+                        }
+                    }
+                    mt = b.mpAnimType.emplace(weapon, type).first;
+                }
+                ctx.weaponClass = lowerName(pweapon.field("weaponClass"));
+                ctx.playerAnimType = game::playerBodyAnimType(mt->second, ctx.weaponClass);
+            }
+            game::PaMovement mv;
+            mv.viewHeightTarget = in.viewHeightTarget;
+            mv.xySpeed = std::sqrt(in.vx * in.vx + in.vy * in.vy);
+            game::playerBodyMoves(in.vx, in.vy, in.yaw, mv.forwardMove, mv.rightMove);
+            mv.slow = pweapon.adsFrac() >= 0.5f;
+            ctx.moveType = game::paMoveType(mv);
+            ctx.strafing = game::paStrafing(mv);
+            ctx.weaponPosition = pweapon.adsFrac() >= 0.5f ? "ads" : "hip";
+            const int torso = tree->find("torso");
+            if (const game::PaItem* item = b.script->animation(ctx.moveType, ctx); item && item != b.legsItem && !item->commands.empty()) {
+                b.seed = b.seed * 1103515245u + 12345u;
+                const game::PaCommand& cmd = item->commands[size_t((b.seed >> 16) % item->commands.size())];
+                const float blend = b.legsItem ? (cmd.blendMs >= 0 ? float(cmd.blendMs) / 1000.0f : 0.2f) : 0.0f; // the first pose at once
+                for (const game::PaPart& part : cmd.parts) {
+                    const int n = tree->find(part.anim);
+                    if (n < 0) continue;
+                    game::AnimState::SetArgs a;
+                    a.blendTime = blend;
+                    a.knob = true;
+                    b.anim->set(n, a);
+                    if (part.body != game::PaBody::Torso) b.legsNode = n;
+                    if (part.body == game::PaBody::Both && torso >= 0) b.anim->clear(torso, blend);
+                }
+                b.legsItem = item;
+            }
+            // the legs play at the body's speed over the animation's own (docs/spec/mp-players.md "Animation rate from the movement")
+            if (b.legsNode > 0 && size_t(b.legsNode) < b.anim->nodeStates().size()) {
+                auto ms = b.moveSpeed.find(b.legsNode);
+                if (ms == b.moveSpeed.end()) ms = b.moveSpeed.emplace(b.legsNode, game::animNodeMoveSpeed(lib, tree, b.legsNode)).first;
+                b.anim->nodeStates()[size_t(b.legsNode)].rate = ms->second > 0 ? game::paMoveRate(mv.xySpeed / ms->second, ms->second, false) : 1.0f;
+            }
+            b.anim->update(in.dtS, [](const std::string&, const std::string&) {}, false);
+            // the models: the multiplayer character with the player's view hands
+            std::string hands = pweapon.handModel();
+            if (world->multiplayer() && world->player())
+                if (const script::Value vmv = world->player()->obj->get("$viewmodel"); vmv.isString()) hands = game::viewHandsModel(true, vmv.asString(), hands);
+            game::PlayerBodyModels models = game::playerBodyForHands(hands);
+            if (!world->multiplayer()) { // single player: the friendly squad's uniform (an allied actor's body model)
+                if (b.squadWorld != world.get()) {
+                    b.squadWorld = world.get(), b.squadModels.reset();
+                    for (const auto& e : world->entities()) {
+                        if (!e->isActor || e->obj->removed || e->obj->get("team").toString() != "allies") continue;
+                        game::PlayerBodyModels sm;
+                        if (game::playerBodyForSquadModel(e->obj->get("model").toString(), sm)) { b.squadModels = sm; break; }
+                    }
+                }
+                if (b.squadModels) models = *b.squadModels;
+            }
+            const Scene::CpuModel* body = sceneCpuModel(scene, dev, vfs, models.body);
+            if (!body) return;
+            Uploader up(dev, false);
+            DrawItem base;
+            base.transform = entityTransform(in.ground, {0, in.yaw, 0});
+            const assets::XPose pose = b.anim->pose(body->parts);
+            DrawItem it = base;
+            it.model = skinModel(scene, dev, up, -3, models.body, *body, pose);
+            if (it.model) renderer.shadowOnlyItems.push_back(it);
+            BoneMap bones;
+            addBones(bones, *body, pose);
+            for (const std::string& m : {models.head, models.hat}) {
+                const Scene::CpuModel* am = m.empty() ? nullptr : sceneCpuModel(scene, dev, vfs, m);
+                if (!am) continue;
+                const assets::XPose animated = b.anim->pose(am->parts);
+                const assets::XPose ap = attachmentPose(bones, *am, "", &animated);
+                addBones(bones, *am, ap);
+                DrawItem ai = base;
+                ai.model = skinModel(scene, dev, up, -3, m, *am, ap);
+                if (ai.model) renderer.shadowOnlyItems.push_back(ai);
+            }
+            if (!weapon.empty())
+                if (const std::string wm = pweapon.field("worldModel"); !wm.empty()) {
+                    const std::string wmPath = wm.rfind("xmodel/", 0) == 0 ? wm : "xmodel/" + wm;
+                    if (const Scene::CpuModel* wmodel = sceneCpuModel(scene, dev, vfs, wmPath)) {
+                        const assets::XPose wp = attachmentPose(bones, *wmodel, "tag_weapon_right");
+                        DrawItem wi = base;
+                        wi.model = skinModel(scene, dev, up, -3, wmPath, *wmodel, wp);
+                        if (wi.model) renderer.shadowOnlyItems.push_back(wi);
+                    }
+                }
+            up.flush();
         };
         // Killcam (docs/spec/mp-hud.md "Killcam", "The recorded view state"): the local killcam reads the followed client's
         // recorded view state from the archived frame, the network killcam from the followed player state the server sent;
@@ -12100,6 +12255,14 @@ int main(int argc, char** argv) {
             }
             auto shotItems = killcamView ? gatherKillcamItems(cam, 1.0f) : gatherItems(cam);
             shotItems.insert(shotItems.end(), shotVmItems.begin(), shotVmItems.end());
+            if (!killcamView) { // r_enhPlayerShadow: the shadow-only body under the shot's eye, standing (crouched / prone with --stance)
+                ShadowBodyInput sb;
+                sb.viewHeightTarget = int(shotViewHeight);
+                sb.ground = {cam.pos.x, cam.pos.y, cam.pos.z - float(sb.viewHeightTarget)};
+                sb.yaw = cam.yaw;
+                sb.dtS = 0.5f; // one step: the chosen animation's weight reaches its goal
+                addShadowBody(sb);
+            }
             std::cout << "effect particles: " << fxSystem.count() << "\n";
             for (const auto& l : fxSystem.lights()) std::cout << "fx light " << l.origin[0] << "," << l.origin[1] << "," << l.origin[2] << " radius " << l.radius << " rgb " << l.rgb[0] << "," << l.rgb[1] << "," << l.rgb[2] << "\n"; // dynamic lights submitted this frame (not rendered yet)
             if (atExitMarks) std::cout << "marks: " << scene.marks.marks().size() << "\n";
@@ -14550,6 +14713,13 @@ int main(int argc, char** argv) {
             }
             auto items = killcamView ? gatherKillcamItems(cam, lerpFrac) : gatherItems(cam);
             items.insert(items.end(), vmItems.begin(), vmItems.end());
+            { // r_enhPlayerShadow: the shadow-only body at the eye's ground point (none in the killcam, dead or spectating)
+                ShadowBodyInput sb;
+                sb.ground = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight};
+                sb.yaw = cam.yaw, sb.vx = ps.velocity[0], sb.vy = ps.velocity[1], sb.viewHeightTarget = ps.viewHeightTarget, sb.dtS = dt;
+                if (killcamView || ps.pmType >= 4 || playerDead) renderer.shadowOnlyItems.clear();
+                else addShadowBody(sb);
+            }
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
             SDL_GPUTexture* swap = nullptr;
             uint32_t w = 0, h = 0;

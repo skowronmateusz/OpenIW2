@@ -47,6 +47,7 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhRenderScale` | 1 | With MetalFX: the scene's resolution as a fraction of the window (0.5..1; the page offers 1, 0.77, 0.67, 0.5), upscaled by MetalFX. |
 | `r_enhProbes` | preset | Reflection probes captured when the map loads: rooms reflect themselves instead of the sky (off in the low preset). |
 | `r_enhDOF` | 0 | Depth of field while aiming down the sights (0 off .. 2). |
+| `r_enhPlayerShadow` | -1 | The player's shadow-only body (sun shadows, ray tracing); never drawn in the view. On in every preset. |
 | `r_enhMotionBlur` | 0 | Motion blur amount (0 off, 1 = one frame of motion; needs TAA). |
 | `r_enhMotionDebug` | 0 | Debug views instead of the frame: 1 the motion vectors, 2 AO (red) and contact shadow (green). |
 
@@ -141,6 +142,29 @@ keeps them out), at half size:
 A 5 × 5 depth-aware blur follows. AO scales the baked lightmap, the light-grid probe and the static models' baked light, at
 `r_enhAOStrength`; the contact shadow scales the sun term only. Blended surfaces, effect sprites and the view model take
 neither (they are not in the opaque depth).
+
+## Player shadow
+
+Our own design (`r_enhPlayerShadow`, on in every preset; the "Player shadow" row turns it off). The first-person player has no body, so in the
+original the player casts no shadow. With the switch on, iw2view builds a body that only the shadow passes see: the sun
+cascades and the ray-traced scene take it, while the view, `$floatz`, the motion vectors, the probes and the lamp shadow
+atlas never draw it.
+- Models: the multiplayer character that uses the player's view hands. Each `character/mp_*.gsc` sets the view hands, the
+  body, the head and the helmet together (for example `mp_british_africa_paul.gsc:4-8`), so the hands select the
+  character (`game::playerBodyForHands`). The weapon's world model is held at `tag_weapon_right`.
+- Pose: the multiplayer anim tree and `mp/playeranim.script`, stepped at render time. The inputs are the stance, the speed,
+  the move direction at the view yaw (`game::playerBodyMoves`), aiming, and the weapon's anim type. Single-player weapon files
+  say `none` for that type, so it comes from the multiplayer file of the same weapon (`<name>_mp`), else from the weapon
+  class (`game::playerBodyAnimType`). There are no events (jump, fire, reload), no lean and no ladder poses.
+- Placement: the eye's ground point (the camera minus the view height), turned to the view yaw.
+- No body on a turret, in a vehicle, while linked, dead, spectating, in the killcam or prone (the prone animations lay the
+  body forward of its origin, so it would cover the view's ground in shadow).
+- The view weapon and hands are inside the body, so while it is on they take no shadow from the moving casters' sun map
+  (the world cascades still shadow them).
+- Ray tracing: the body is its own instance (mask 8). Sun and lamp shadow rays see it, except from pixels within 40 units of
+  the eye (the view weapon and hands). Contact occlusion, the effect lights (a muzzle flash is inside the body) and
+  reflections do not.
+- Open: the character choice for each campaign and the missing event poses.
 
 ## Temporal anti-aliasing
 

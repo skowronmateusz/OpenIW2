@@ -5,6 +5,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <functional>
@@ -93,6 +94,7 @@ struct EnhancedSettings {
     bool metalFx = false;    // r_enhMetalFX: MetalFX temporal anti-aliasing instead of ours (needs TAA on and a MetalFX GPU / build)
     bool rtShadows = true;   // r_enhRTShadows: ray-traced sun and lamp shadows of the moving objects (GPU family 9+)
     bool rtLightShadows = true; // r_enhRTLightShadows: ray-traced shadows of the effect lights (muzzle flashes, explosions; GPU family 9+)
+    bool playerShadow = true; // r_enhPlayerShadow: a shadow-only body of the player (sun shadows, ray tracing), never drawn in the view
     bool rtBeyondView = true; // r_enhRTBeyondView: objects behind the camera (within kRtBeyondViewRange) in the ray tracing (CPU skinning)
     bool rtContactAO = true; // r_enhRTContactAO: ray-traced contact occlusion of the moving objects (GPU family 9+)
     bool rtReflections = true; // r_enhRTReflections: ray-traced reflections on water and the reflective surfaces (GPU family 9+)
@@ -153,6 +155,7 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhRTContactAO", f)) s.rtContactAO = f != 0.0f;
     if (num("r_enhRTLightShadows", f)) s.rtLightShadows = f != 0.0f;
     if (num("r_enhRTBeyondView", f)) s.rtBeyondView = f != 0.0f;
+    if (num("r_enhPlayerShadow", f)) s.playerShadow = f != 0.0f;
     if (num("r_enhMotionDebug", f)) s.motionDebug = std::clamp(int(f), 0, 2);
     if (num("r_enhBloomIntensity", f)) s.bloomIntensity = std::clamp(f, 0.0f, 1.0f);
     if (const std::string v = get("r_enhExposureBias"); !v.empty()) s.exposureBias = std::clamp(float(std::atof(v.c_str())), -2.0f, 2.0f); // signed
@@ -702,4 +705,63 @@ inline bool withinRtBeyondViewRange(float dx, float dy, float dz) { return dx * 
 inline bool metalRayTracingAllowed(bool supportsRaytracing, bool apple9, bool forcedOff) {
     return supportsRaytracing && apple9 && !forcedOff;
 }
+// ---- shadow-only player body (r_enhPlayerShadow, docs/render-enhanced.md "Player shadow") ---------------------------------------
+// Our own design: the first-person player has no body, so the sun shadow and the ray tracing get one that is never drawn in the
+// view. Its models come from the multiplayer character that uses the same view hands (character/mp_*.gsc set the view hands,
+// the body, the head and the helmet together); the single-player view hands pick that character.
+struct PlayerBodyModels {
+    std::string body, head, hat;
+};
+inline PlayerBodyModels playerBodyForHands(const std::string& hands) {
+    auto has = [&](const char* k) { return hands.find(k) != std::string::npos; };
+    if (has("british_bare")) // mp_british_africa_paul.gsc:4-8
+        return {"xmodel/playerbody_british_africa01", "xmodel/head_british_paul", "xmodel/helmet_british_afrca"};
+    if (has("british")) // mp_british_normandy_paul.gsc (viewmodel_hands_british; the _wet variant too)
+        return {"xmodel/playerbody_british_normandy01", "xmodel/head_british_paul", "xmodel/helmet_british_normandy"};
+    if (has("russian")) // mp_russian_coat_jon.gsc
+        return {"xmodel/playerbody_russian_coat01", "xmodel/head_russian_winter_jon", "xmodel/helmet_russian_padded_b"};
+    if (has("german_winter")) // mp_german_winterlight.gsc
+        return {"xmodel/playerbody_german_winterlight", "xmodel/head_german_winter_jon", "xmodel/helmet_german_winter_jon"};
+    if (has("german")) // mp_axis_default.gsc
+        return {"xmodel/playerbody_german_normandy01", "xmodel/head_german_normandy_josh", "xmodel/helmet_german_normandy"};
+    // viewmodel_hands_cloth (mp_american_normandy_david.gsc) and anything else
+    return {"xmodel/playerbody_american_normandy01", "xmodel/head_us_ranger_david", "xmodel/helmet_us_ranger_generic"};
+}
+// Single player: the weapon files give the view hands, so they do not tell the campaign. The player wears the uniform of the
+// friendly squad instead: the body model of an allied actor ("character_british_afrca_body", "character_russian_winter_body", ...)
+// picks the multiplayer character of the same army and region. false when the model names none of them.
+inline bool playerBodyForSquadModel(const std::string& model, PlayerBodyModels& out) {
+    auto has = [&](const char* k) { return model.find(k) != std::string::npos; };
+    if (has("british")) {
+        out = playerBodyForHands(has("normandy") ? "viewmodel_hands_british" : "viewmodel_hands_british_bare");
+        return true;
+    }
+    if (has("russian")) return out = playerBodyForHands("viewmodel_hands_russian"), true;
+    if (has("american") || has("ranger") || has("_us_")) return out = playerBodyForHands("viewmodel_hands_cloth"), true;
+    return false;
+}
+// The anim type of mp/playeranim.script for a weapon: the multiplayer weapon file's (<name>_mp) when it names one (single-player
+// weapon files say "none"), else the weapon class ("rifle", "smg", "pistol", ...); "none" without a weapon.
+inline std::string playerBodyAnimType(const std::string& mpAnimType, const std::string& weaponClass) {
+    auto lower = [](std::string v) {
+        for (char& c : v) c = char(std::tolower(static_cast<unsigned char>(c)));
+        return v;
+    };
+    const std::string t = lower(mpAnimType);
+    if (!t.empty() && t != "none") return t;
+    const std::string c = lower(weaponClass);
+    return c.empty() ? "none" : c;
+}
+// The command's forward / right move signs of the body from its velocity at the view yaw (degrees): the anim script picks the
+// run, back-pedal and strafe animations from them. Below 10 units per second the body stands.
+inline void playerBodyMoves(float vx, float vy, float yawDeg, float& forward, float& right) {
+    forward = right = 0.0f;
+    if (vx * vx + vy * vy < 100.0f) return;
+    const float yr = yawDeg * 3.14159265f / 180.0f;
+    const float f = vx * std::cos(yr) + vy * std::sin(yr), r = vx * std::sin(yr) - vy * std::cos(yr);
+    const float len = std::sqrt(vx * vx + vy * vy);
+    if (std::fabs(f) > 0.38f * len) forward = f > 0 ? 1.0f : -1.0f;
+    if (std::fabs(r) > 0.38f * len) right = r > 0 ? 1.0f : -1.0f;
+}
+
 } // namespace iw2::game

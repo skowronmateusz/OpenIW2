@@ -13,6 +13,9 @@
 
 namespace iw2::game {
 
+class AnimLibrary;
+class AnimTree;
+
 struct MpPlayerInput {
     bool valid = false;   // filled this life (else the driver derives the movement from the entity velocity)
     PaMovement move;      // stance, speed, command moves, slow flag
@@ -62,6 +65,10 @@ struct MpPlayerAnim {
 };
 
 // Shared multiplayer animation data (loaded on first use).
+// The move speed of an animation tree node (units per second): its delta translation from start to end over its length; 0 for
+// a blend node or an animation without one (docs/spec/mp-players.md "Animation rate from the movement").
+float animNodeMoveSpeed(AnimLibrary& lib, const AnimTree* tree, int node);
+
 struct MpAnimData {
     bool loaded = false;
     std::unique_ptr<PlayerAnimScript> script; // nullptr when mp/playeranim.script is missing or bad
