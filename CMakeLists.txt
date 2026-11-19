@@ -121,7 +121,8 @@ add_library(iw2_ui
   src/ui/iw2options.cpp
   src/ui/profile.cpp
   src/ui/profilelist.cpp
-  src/ui/savegame.cpp)
+  src/ui/savegame.cpp
+  src/ui/userhome.cpp)
 target_include_directories(iw2_ui PUBLIC src)
 target_link_libraries(iw2_ui PUBLIC iw2_fs)
 
@@ -421,6 +422,9 @@ add_executable(test_listbox tests/test_listbox.cpp)
 target_link_libraries(test_listbox PRIVATE iw2_ui)
 add_test(NAME listbox COMMAND test_listbox)
 
+add_executable(test_userhome tests/test_userhome.cpp)
+target_link_libraries(test_userhome PRIVATE iw2_ui)
+add_test(NAME userhome COMMAND test_userhome)
 add_executable(test_profile tests/test_profile.cpp)
 target_link_libraries(test_profile PRIVATE iw2_ui)
 add_test(NAME profile COMMAND test_profile)
@@ -1052,6 +1056,10 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
     $<TARGET_FILE:iw2netclient> $<TARGET_FILE:iw2netinfo> ${IW2_TEST_MAIN})
   set_tests_properties(iw2server_dedicated PROPERTIES ENVIRONMENT "IW2_NAV_CACHE=${CMAKE_BINARY_DIR}/navcache"
     PASS_REGULAR_EXPRESSION "iw2server dedicated: ok" TIMEOUT 240)
+  # A shot never reads or changes the profile next to the game folder (src/ui/userhome.h): it gets a temporary home; --home
+  # and IW2_HOME pick one. Starts iw2view (a window) four times.
+  add_test(NAME iw2viewhome_e2e COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2view_home.sh $<TARGET_FILE:iw2view> ${IW2_TEST_MAIN} elalamein)
+  set_tests_properties(iw2viewhome_e2e PROPERTIES PASS_REGULAR_EXPRESSION "iw2view home: ok" TIMEOUT 300)
   # The server's session log (docs/logging.md); the log folder is a temp folder, never the real one.
   add_test(NAME iw2server_log COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2server_log.sh $<TARGET_FILE:iw2server>
     $<TARGET_FILE:iw2netclient> $<TARGET_FILE:iw2netinfo> ${IW2_TEST_MAIN})

@@ -93,6 +93,7 @@
 #include "ui/appversion.h"
 #include "ui/esckey.h"
 #include "ui/profile.h"
+#include "ui/userhome.h"
 #include "ui/profilelist.h"
 #include "game/savestate.h"
 #include "ui/savegame.h"
@@ -5809,6 +5810,7 @@ int main(int argc, char** argv) {
     bool scripts = true;
     std::string connectAddr; // +connect host[:port]: join a network game (docs/spec/net.md section 10)
     bool spawnAll = false;
+    std::string homeFlag; // --home <dir>: the folder for profiles, saves and screenshots (src/ui/userhome.h)
     std::vector<std::pair<std::string, std::string>> extraCvars; // --cvar name=value (e.g. start=ride)
     const auto cheatsOn = [&extraCvars]() {
         bool on = false;
@@ -5876,6 +5878,7 @@ int main(int argc, char** argv) {
             else if (a == "--language") language = next();
             else if (a == "--no-scripts") scripts = false;
             else if (a == "--menu") menuMode = true;
+            else if (a == "--home") homeFlag = next();
             else if (a == "+connect" || a == "--connect") connectAddr = next();
             else if (a == "--no-intro") skipIntro = true;
             else if (a == "--spawn-all") spawnAll = true;
@@ -5894,6 +5897,24 @@ int main(int argc, char** argv) {
         std::cerr << "iw2view: error: " << e << "\n";
         SDL_Quit();
         return 1;
+    }
+    // The user home (src/ui/userhome.h): --home, IW2_HOME, a temporary one for a shot or a bench, else the normal folder. A test
+    // or bench run thus never reads or changes the player's profile, saves or screenshots.
+    std::optional<ui::TemporaryHome> tempHome;
+    std::filesystem::path homeDir;
+    bool homeChosen = false; // --home, IW2_HOME or a temporary home: saves go there too
+    {
+        ui::HomeChoice hc = ui::chooseHome(homeFlag, std::getenv("IW2_HOME"), !shot.empty(), app ? app->pref : commandLineBase(args[0]));
+        try {
+            if (hc.source == ui::HomeSource::Temporary) hc.dir = tempHome.emplace().dir();
+        } catch (const std::exception& e) {
+            std::cerr << "iw2view: error: " << e.what() << "\n";
+            SDL_Quit();
+            return 1;
+        }
+        homeDir = hc.dir;
+        homeChosen = hc.source != ui::HomeSource::Normal;
+        if (hc.source != ui::HomeSource::Normal) std::cout << "home (" << ui::homeSourceName(hc.source) << "): " << homeDir.string() << "\n";
     }
 
     // Network client (docs/spec/net.md section 10): the handshake runs before the level loads; the gamestate names the map.
@@ -5922,7 +5943,7 @@ int main(int argc, char** argv) {
         else {
         netClient = std::make_unique<net::GameClient>();
         ++netConnection;
-        netClient->name = ui::profilePlayerName((app ? app->pref : commandLineBase(args[0])) / "players", "");
+        netClient->name = ui::profilePlayerName(homeDir / "players", "");
         if (const char* n = std::getenv("IW2_NET_NAME")) netClient->name = n;
         for (const auto& [k, v] : extraCvars) if (k == "password") netClient->password = v; // --cvar password=...
         if (!netClient->connect(to, netNowMs())) {
@@ -6033,7 +6054,7 @@ int main(int argc, char** argv) {
         // Player profile: <game dir>/players/<name>/config.cfg (exe strings players/%s/, config.cfg; TODO(spec): [app folder is a deliberate choice, exe default not traced] the real base path
         // and the profile name when none is chosen, here "default").
         // The app start keeps profiles and saves in its preference folder, so the game folder may stay read-only.
-        const std::filesystem::path prefBase = app ? app->pref : commandLineBase(args[0]);
+        const std::filesystem::path prefBase = homeDir;
         const std::filesystem::path playersDir = prefBase / "players";
         // Screenshots (screenshotJpeg / screenshot) go under the same writable base as profiles and saves, never into the game folder.
         const std::filesystem::path shotBase = prefBase;
@@ -7872,10 +7893,10 @@ int main(int argc, char** argv) {
         int saveSel = -1;         // selected row (ownerdraw UI_SAVEGAME_SHOT 258 reads its image name, entry +8)
         // Savegame directory (docs/debug-flags.md): the app's preference folder whenever the binary runs from the application bundle
         // (Finder or Terminal start), so both see the same saves; a development build keeps its own <main>/save. IW2_SAVE_DIR
-        // overrides both.
-        std::filesystem::path savePref = app ? app->pref : std::filesystem::path();
+        // overrides both. A chosen home (--home, IW2_HOME, the temporary one of a shot) keeps its saves in <home>/save.
+        std::filesystem::path savePref = homeChosen ? homeDir : app ? app->pref : std::filesystem::path();
         const char* binBase = SDL_GetBasePath();
-        if (!app && binBase && ui::runsInAppBundle(binBase)) {
+        if (!homeChosen && !app && binBase && ui::runsInAppBundle(binBase)) {
             if (char* pref = SDL_GetPrefPath("OpenIW2", "OpenIW2")) {
                 savePref = pref;
                 SDL_free(pref);
@@ -11219,6 +11240,9 @@ int main(int argc, char** argv) {
                 atExitMarks = true;
             }
             renderer.enh = enhancedSettings();
+            if (renderer.enh.enabled)
+                std::cout << "enhanced rendering: preset " << renderer.enh.preset << ", sun shadows " << renderer.enh.sunShadows << ", MetalFX "
+                          << (renderer.enh.metalFx ? "on" : "off") << ", output SDR (shot)\n";
             renderer.init(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, aaSamples());
             syncWeapon();
             pweapon.update(1.0f, {});
@@ -11487,8 +11511,8 @@ int main(int argc, char** argv) {
             renderer.edrOut = true;
         }
         if (renderer.enh.enabled)
-            std::cout << "enhanced rendering: preset " << renderer.enh.preset << ", sun shadows " << renderer.enh.sunShadows << ", output "
-                      << (renderer.edrOut ? "EDR" : "SDR") << "\n";
+            std::cout << "enhanced rendering: preset " << renderer.enh.preset << ", sun shadows " << renderer.enh.sunShadows << ", MetalFX "
+                      << (renderer.enh.metalFx ? "on" : "off") << ", output " << (renderer.edrOut ? "EDR" : "SDR") << "\n";
         renderer.init(dev, SDL_GetGPUSwapchainTextureFormat(dev, window), aaSamples());
         SDL_SetWindowRelativeMouseMode(window, true);
 
