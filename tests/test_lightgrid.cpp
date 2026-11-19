@@ -74,6 +74,18 @@ int main() {
         iw2::assets::LightGridCoeffs out{};
         float sv = 0;
         if (!g.sample(pts[0], out, sv) || std::abs(sv - 1.0f) > 1e-4f) ++failures; // the point itself is found again
+        // Re-baked coefficients replace the shipped bytes (floats, not clamped to 0..1), the count must match.
+        LightGrid h(hash, coeff);
+        const auto shipped = h.entryCoefficients();
+        if (h.entryCount() != 1 || shipped.size() != 1 || std::abs(shipped[0][5] - 128.0f / 255.0f) > 1e-6f || h.rebaked()) ++failures;
+        if (h.setEntryCoefficients({})) ++failures;
+        std::array<float, 24> nv{};
+        nv.fill(0.0f);
+        nv[3] = 2.5f, nv[8 + 1] = 0.25f;
+        if (!h.setEntryCoefficients({nv}) || !h.rebaked()) ++failures;
+        if (!h.sample(pts[0], out, sv) || std::abs(out[0][3] - 2.5f) > 1e-4f || std::abs(out[1][1] - 0.25f) > 1e-4f || std::abs(out[2][0]) > 1e-6f ||
+            std::abs(sv - 1.0f) > 1e-4f)
+            ++failures;
     }
     if (failures) { std::cerr << failures << " check(s) failed\n"; return 1; }
     std::cout << "test_lightgrid: all checks passed\n";

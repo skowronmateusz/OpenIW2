@@ -50,6 +50,7 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhDOF` | 0 | Depth of field while aiming down the sights (0 off .. 2). |
 | `r_enhPlayerShadow` | -1 | The player's shadow-only body (sun shadows, ray tracing); never drawn in the view. On in every preset. |
 | `r_enhMotionBlur` | 0 | Motion blur amount (0 off, 1 = one frame of motion; needs TAA). |
+| `r_enhRebake` | 0 | Our own lighting re-bake instead of the shipped lightmaps (-1 = as the preset, which never turns it on; no menu row yet; needs the patched SDL and Metal ray tracing, read when a level loads; see docs/render-rebake.md). |
 | `r_enhMotionDebug` | 0 | Debug views instead of the frame: 1 the motion vectors, 2 AO (red) and contact shadow (green). |
 
 All are read once when the renderer starts, from the profile's config or `--cvar name=value` (case-insensitive). A per-feature

@@ -55,6 +55,19 @@ std::vector<std::array<float, 3>> LightGrid::points() const {
     return out;
 }
 
+std::vector<std::array<float, 24>> LightGrid::entryCoefficients() const {
+    std::vector<std::array<float, 24>> out(entries_.size());
+    for (size_t i = 0; i < entries_.size(); ++i)
+        for (size_t k = 0; k < 24; ++k) out[i][k] = float(coeffs_[entries_[i].coeffIndex][k]) / 255.0f;
+    return out;
+}
+
+bool LightGrid::setEntryCoefficients(std::vector<std::array<float, 24>> c) {
+    if (c.size() != entries_.size()) return false;
+    override_ = std::move(c);
+    return true;
+}
+
 bool LightGrid::sample(const std::array<float, 3>& pos, LightGridCoeffs& out, float& sunVisibility) const {
     for (auto& ch : out) ch.fill(0);
     sunVisibility = 0;
@@ -67,9 +80,15 @@ bool LightGrid::sample(const std::array<float, 3>& pos, LightGridCoeffs& out, fl
         if (!e) continue;
         const float w = ((corner & 1) ? tx : 1 - tx) * (((corner >> 1) & 1) ? ty : 1 - ty) * (((corner >> 2) & 1) ? tz : 1 - tz);
         total += w;
-        const auto& c = coeffs_[e->coeffIndex];
-        for (int ch = 0; ch < 3; ++ch)
-            for (int k = 0; k < 8; ++k) out[size_t(ch)][size_t(k)] += c[size_t(ch * 8 + k)] / 255.0f * w;
+        if (!override_.empty()) {
+            const auto& c = override_[size_t(e - entries_.data())];
+            for (int ch = 0; ch < 3; ++ch)
+                for (int k = 0; k < 8; ++k) out[size_t(ch)][size_t(k)] += c[size_t(ch * 8 + k)] * w;
+        } else {
+            const auto& c = coeffs_[e->coeffIndex];
+            for (int ch = 0; ch < 3; ++ch)
+                for (int k = 0; k < 8; ++k) out[size_t(ch)][size_t(k)] += c[size_t(ch * 8 + k)] / 255.0f * w;
+        }
         if (e->sub & 1) sunVisibility += w;
     }
     if (total <= 0) return false;

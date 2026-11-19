@@ -99,6 +99,7 @@ struct EnhancedSettings {
     bool rtContactAO = true; // r_enhRTContactAO: ray-traced contact occlusion of the moving objects (GPU family 9+)
     bool rtGI = false;       // r_enhRTGI: ray-traced one-bounce indirect light of the moving objects (GPU family 9+; on in the ultra preset only)
     bool rtReflections = true; // r_enhRTReflections: ray-traced reflections on water and the reflective surfaces (GPU family 9+)
+    bool rebake = false;     // r_enhRebake: our own lighting re-bake instead of the shipped lightmaps (docs/render-rebake.md; Metal ray tracing build only); no preset turns it on
     float renderScale = 1.0f; // r_enhRenderScale: scene resolution as a fraction of the window, upscaled by MetalFX (0.5..1)
     float dof = 0.0f;        // r_enhDOF: depth of field while aiming down the sights (0 = off, 1 = default strength, up to 2)
     float motionBlur = 0.0f; // r_enhMotionBlur: motion blur amount (0 = off, 1 = one frame of motion)
@@ -159,6 +160,7 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhRTBeyondView", f)) s.rtBeyondView = f != 0.0f;
     if (num("r_enhRTGI", f)) s.rtGI = f != 0.0f;
     if (num("r_enhPlayerShadow", f)) s.playerShadow = f != 0.0f;
+    if (num("r_enhRebake", f)) s.rebake = f != 0.0f; // -1: as the preset, which never turns it on
     if (num("r_enhMotionDebug", f)) s.motionDebug = std::clamp(int(f), 0, 2);
     if (num("r_enhBloomIntensity", f)) s.bloomIntensity = std::clamp(f, 0.0f, 1.0f);
     if (const std::string v = get("r_enhExposureBias"); !v.empty()) s.exposureBias = std::clamp(float(std::atof(v.c_str())), -2.0f, 2.0f); // signed

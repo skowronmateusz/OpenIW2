@@ -108,7 +108,7 @@ add_library(iw2_game
   src/game/actorstate.cpp src/game/actorcover.cpp src/game/friendlychain.cpp src/game/friendlychainworld.cpp src/game/grenadehint.cpp
   src/game/actorpath.cpp src/game/actorfollow.cpp src/game/badplace.cpp src/game/spawnchecks.cpp src/game/softlock.cpp src/game/firemonitor.cpp src/game/inventorydiff.cpp src/game/grenades.cpp src/game/actorgrenade.cpp src/game/actorevents.cpp
   src/game/mpgame.cpp src/game/mpkillcam.cpp src/game/maprotation.cpp src/game/mphud.cpp src/game/mpchat.cpp src/game/mpscoreboard.cpp src/game/mpspectate.cpp src/game/mpgametypes.cpp src/game/mpbots.cpp src/game/mpbotcombat.cpp src/game/mpbotgoals.cpp src/game/mpbotitems.cpp src/game/mpbotturret.cpp src/game/mpbotsense.cpp src/game/mpbotaim.cpp src/game/mpplayers.cpp src/game/playeranimscript.cpp src/game/navgen.cpp src/game/watersim.cpp src/game/clientinput.cpp src/game/profilekeys.cpp src/game/playeractions.cpp src/game/playeruse.cpp
-  src/game/mpremote.cpp src/game/prone.cpp src/game/proneworld.cpp src/game/savestate.cpp src/game/actorfacing.cpp src/game/actorpredict.cpp)
+  src/game/mpremote.cpp src/game/prone.cpp src/game/proneworld.cpp src/game/savestate.cpp src/game/actorfacing.cpp src/game/actorpredict.cpp src/game/rebake.cpp)
 target_include_directories(iw2_game PUBLIC src)
 target_link_libraries(iw2_game PUBLIC iw2_fs iw2_script iw2_assets iw2_ui ZLIB::ZLIB)
 
@@ -168,8 +168,8 @@ if(SDL3_FOUND)
   # Native Metal interop for the enhanced renderer's MetalFX and ray tracing (apps/iw2view/metalnative.mm); the features are
   # compiled in only with SDL3 built with tools/sdl/sdl-3.4.20-metal-handles.patch (README "Build from source").
   enable_language(OBJCXX)
-  add_executable(iw2view apps/iw2view/main.cpp apps/iw2view/jpeg.cpp apps/iw2view/metalnative.mm)
-  set_source_files_properties(apps/iw2view/metalnative.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  add_executable(iw2view apps/iw2view/main.cpp apps/iw2view/jpeg.cpp apps/iw2view/metalnative.mm apps/iw2view/rebake.mm)
+  set_source_files_properties(apps/iw2view/metalnative.mm apps/iw2view/rebake.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
   target_link_libraries(iw2view PRIVATE "-framework Metal" "-framework MetalFX" "-framework Foundation")
   target_link_libraries(iw2view PRIVATE iw2_dedicated iw2_netgame iw2_video SDL3::SDL3)
   # The main menu shows the build's version (src/ui/appversion.h), IW2_GIT_DESCRIBE above.
@@ -1230,6 +1230,13 @@ add_test(NAME gammaramp COMMAND test_gammaramp)
 add_executable(test_renderenhanced tests/test_renderenhanced.cpp)
 target_link_libraries(test_renderenhanced PRIVATE iw2_game)
 add_test(NAME renderenhanced COMMAND test_renderenhanced)
+# The lighting re-bake's pure parts (docs/render-rebake.md).
+add_executable(test_rebake tests/test_rebake.cpp)
+target_link_libraries(test_rebake PRIVATE iw2_game)
+add_test(NAME rebake COMMAND test_rebake)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  set_tests_properties(rebake PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
 # The client's per-frame clock and the effects read on it.
 add_executable(test_clienttime tests/test_clienttime.cpp)
 target_link_libraries(test_clienttime PRIVATE iw2_netgame)

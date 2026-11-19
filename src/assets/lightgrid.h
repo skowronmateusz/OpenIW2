@@ -39,6 +39,13 @@ public:
     // rounded, clamped to 0..255) and back to 0..1.
     static void smodelLighting(LightGridCoeffs& c, float& sunVisibility, float directLightScale, float indirectLightScale);
 
+    // Re-baked light (docs/render-rebake.md stage 4): float coefficients per grid point (entry), [channel * 8 + k], used instead of the
+    // shipped bytes where set. `entryCoefficients` is the shipped values of every entry (bytes / 255), in the order of points().
+    size_t entryCount() const { return entries_.size(); }
+    std::vector<std::array<float, 24>> entryCoefficients() const;
+    bool setEntryCoefficients(std::vector<std::array<float, 24>> c); // false (and nothing set) if the count differs from entryCount()
+    bool rebaked() const { return !override_.empty(); }
+
     // World positions of all grid points (for the enhanced renderer's reflection probes: points known to be in playable space).
     std::vector<std::array<float, 3>> points() const;
 
@@ -50,6 +57,7 @@ private:
 
     std::vector<LightGridEntry> entries_;
     std::vector<std::array<uint8_t, 24>> coeffs_;
+    std::vector<std::array<float, 24>> override_; // per entry, empty: the shipped coefficients
 };
 
 } // namespace iw2::assets
