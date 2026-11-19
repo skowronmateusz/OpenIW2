@@ -143,7 +143,7 @@ struct RtShadowU {
     float4 size;    // 1 / w, 1 / h, w, h
     float4 flags;   // x 1 = sun, y contact occlusion ray length (0 = off), z lamp radius (soft)
     float4 dl[4];   // the effect lights (muzzle flashes, explosions): xyz, w radius (0: none); traced against the whole scene
-    float4 dlParams; // x: their size (soft edge), y: contact occlusion fades out over flags.y .. y units when above flags.y (global illumination)
+    float4 dlParams; // z, w: the player's body shadow weight rises from distance z to w from the eye; x: their size (soft edge), y: contact occlusion fades out over flags.y .. y units when above flags.y (global illumination)
 };
 static float rnd(uint2 p, uint k) {
     uint h = p.x * 1973u + p.y * 9277u + k * 26699u;
@@ -197,6 +197,11 @@ static bool blockedAny(instance_acceleration_structure as, float3 o, float3 d, f
             q.commit_triangle_intersection();
     return q.get_committed_intersection_type() != intersection_type::none;
 }
+// 1 = open: the moving objects block fully, the player's body (instance mask 8) with the weight bodyW.
+static float visibility(instance_acceleration_structure as, float3 o, float3 d, float len, float bodyW) {
+    if (blocked(as, o, d, len, 2u)) return 0.0;
+    return bodyW > 0.0 && blocked(as, o, d, len, 8u) ? 1.0 - bodyW : 1.0;
+}
 kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]], texture2d<float, access::write> outMask [[texture(1)]],
                               texture2d<float, access::write> outLights [[texture(2)]],
                               constant RtShadowU& u [[buffer(0)]], instance_acceleration_structure as [[buffer(1)]],
@@ -216,13 +221,15 @@ kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]]
     if (dot(n, u.eye.xyz - P) < 0.0) n = -n;
     const float3 o = P + n * (1.0 + w * 0.002);
     const uint frame = uint(u.z.w);
-    const uint shadowMask = w > 40.0 ? 10u : 2u; // the player's body (8) shadows the world, not the view model or what is at the eye
+    // The player's shadow body (mask 8) shadows the world but not the view model or what is at the eye: its rays count with a weight
+    // that rises smoothly with the distance from the eye (no visible edge on the ground), the other moving objects (2) always.
+    const float bodyW = smoothstep(u.dlParams.z, max(u.dlParams.w, u.dlParams.z + 1.0), distance(P, u.eye.xyz));
     float sun = 1.0;
     if (u.flags.x > 0.5 && dot(n, u.sun.xyz) > 0.0) {
         const float3 t1 = normalize(cross(u.sun.xyz, abs(u.sun.z) < 0.9 ? float3(0, 0, 1) : float3(1, 0, 0))), t2 = cross(u.sun.xyz, t1);
         const float a = rnd(gid, frame * 2u) * 6.2831853, rr = sqrt(rnd(gid, frame * 2u + 1u)) * u.sun.w;
         const float3 d = normalize(u.sun.xyz + (t1 * cos(a) + t2 * sin(a)) * rr);
-        sun = blocked(as, o, d, 3000.0, shadowMask) ? 0.0 : 1.0;
+        sun = visibility(as, o, d, 3000.0, bodyW);
     }
     float lampSum = 0.0, lampVis = 0.0;
     for (int i = 0; i < 2; ++i) {
@@ -239,7 +246,7 @@ kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]]
         const float3 dl = tgt - o;
         const float ll = length(dl);
         lampSum += wgt;
-        lampVis += wgt * (blocked(as, o, dl / ll, ll - 1.0, shadowMask) ? 0.0 : 1.0);
+        lampVis += wgt * visibility(as, o, dl / ll, ll - 1.0, bodyW);
     }
     const float lamp = lampSum > 1e-6 ? lampVis / lampSum : 1.0;
     float ao = 1.0;

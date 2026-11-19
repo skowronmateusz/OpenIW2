@@ -288,6 +288,8 @@ void Renderer::enhPrepare(SDL_GPUCommandBuffer* cmd, const Scene& scene, const C
         f.aoParams[2] = enh.ao ? enh.aoStrength : 0.0f;
         f.aoParams[3] = enh.contactShadows || rtShadowNow ? 1.0f : 0.0f; // the contact channel also carries the ray-traced sun shadow
     }
+    waterSunNow = game::waterSunShadowSource(sunLit, rtShadowNow && enh.rtShadows, shadowCascadesNow);
+    f.waterParams[0] = float(int(waterSunNow)), f.waterParams[1] = float(frameCounter % 4096u), f.waterParams[2] = game::kWaterShadowDarken;
     enhFragPending = f;
     SDL_PushGPUFragmentUniformData(cmd, 1, &f, sizeof f);
 }
@@ -710,6 +712,7 @@ void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Ca
             full[48 + k * 4 + 3] = dlights[size_t(k)].radius;
         }
         full[64] = game::kRtEffectLightSize;
+        full[66] = game::kPlayerBodyShadowFadeNear, full[67] = game::kPlayerBodyShadowFadeFar;
         full[65] = rtGINow ? game::kRtGiOcclusionRange : 0.0f; // global illumination: the occlusion reaches further
         if (rtShadowTex && rtLightTex && sceneRT.shadowPass(dev, cmd, floatzTex, rtShadowTex, rtLightTex, hw, hh, full)) {
             u.rt[0] = 1.0f;

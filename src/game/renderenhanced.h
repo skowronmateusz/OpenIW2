@@ -701,6 +701,24 @@ constexpr float kRtReflectionMaxAlpha = 0.45f, kRtReflectionRange = 6000.0f;
 // Ray-traced shadows of the moving objects: the sun's cone (tan of the half angle; wider than the real sun's 0.27 degrees, as the
 // soft edge of the baked shadows), the lamps' size for their soft edge (units) and the contact occlusion's ray length (units).
 constexpr float kRtSunConeTan = 0.012f, kRtLampSize = 6.0f, kRtContactRange = 40.0f;
+// Water (the water technique, drawn without the AO pass's sun channel): where it takes the moving objects' sun shadow from. The ray
+// traced shadows replace the shadow map when they are on, so the water traces its own ray there; otherwise it samples the same
+// cascades the opaque surfaces use. None without sun (or without a map to sample).
+enum class WaterSunShadow { None = 0, ShadowMap = 1, RayTraced = 2 };
+inline WaterSunShadow waterSunShadowSource(bool sunLit, bool rayTracedShadowsNow, int shadowMapCascades) {
+    if (!sunLit) return WaterSunShadow::None;
+    if (rayTracedShadowsNow) return WaterSunShadow::RayTraced;
+    return shadowMapCascades > 0 ? WaterSunShadow::ShadowMap : WaterSunShadow::None;
+}
+// How much of the water's colour a full moving-object shadow takes away (the glint of the sun goes entirely).
+constexpr float kWaterShadowDarken = 0.4f;
+// The player's shadow body does not shadow the view model or what is at the eye: its weight in a shadow ray rises smoothly from 0 at
+// kPlayerBodyShadowFadeNear to 1 at kPlayerBodyShadowFadeFar units from the eye (a hard cut at one distance showed as a straight edge).
+constexpr float kPlayerBodyShadowFadeNear = 24.0f, kPlayerBodyShadowFadeFar = 40.0f;
+inline float playerBodyShadowWeight(float distToEye) {
+    const float t = std::clamp((distToEye - kPlayerBodyShadowFadeNear) / (kPlayerBodyShadowFadeFar - kPlayerBodyShadowFadeNear), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
 // The effect lights' size for the soft edge of their ray-traced shadows (units; a muzzle flash or an explosion's core).
 constexpr float kRtEffectLightSize = 4.0f;
 // Objects outside the view that still go into the ray tracing scene (reflections, shadows): within this many units of the eye.

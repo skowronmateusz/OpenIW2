@@ -532,6 +532,27 @@ int main() {
         chk(f == 0 && r == 0, __LINE__);
     }
 
+    // Water's moving-object sun shadow: none without sun; ray traced when those shadows are on (they replace the map); else the map.
+    chk(waterSunShadowSource(false, true, 2) == WaterSunShadow::None && waterSunShadowSource(false, false, 2) == WaterSunShadow::None, __LINE__);
+    chk(waterSunShadowSource(true, true, 0) == WaterSunShadow::RayTraced && waterSunShadowSource(true, true, 2) == WaterSunShadow::RayTraced, __LINE__);
+    chk(waterSunShadowSource(true, false, 2) == WaterSunShadow::ShadowMap && waterSunShadowSource(true, false, 1) == WaterSunShadow::ShadowMap, __LINE__);
+    chk(waterSunShadowSource(true, false, 0) == WaterSunShadow::None, __LINE__);
+    chk(kWaterShadowDarken > 0.0f && kWaterShadowDarken < 1.0f, __LINE__);
+
+    // The player's shadow body in shadow rays: no weight at the eye, full from 40 units, monotonic and smooth between.
+    chk(playerBodyShadowWeight(0.0f) == 0.0f && playerBodyShadowWeight(kPlayerBodyShadowFadeNear) == 0.0f, __LINE__);
+    chk(playerBodyShadowWeight(kPlayerBodyShadowFadeFar) == 1.0f && playerBodyShadowWeight(500.0f) == 1.0f, __LINE__);
+    {
+        float prev = 0.0f;
+        bool mono = true;
+        for (float d = 20.0f; d <= 45.0f; d += 0.5f) {
+            const float wgt = playerBodyShadowWeight(d);
+            mono = mono && wgt >= prev && wgt - prev < 0.12f; // no jump: a step per half unit stays small
+            prev = wgt;
+        }
+        chk(mono, __LINE__);
+        chk(std::fabs(playerBodyShadowWeight(32.0f) - 0.5f) < 1e-4f, __LINE__);
+    }
     if (bad) std::printf("%d failures\n", bad);
     else std::printf("ok\n");
     return bad ? 1 : 0;

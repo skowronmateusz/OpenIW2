@@ -2903,6 +2903,7 @@ struct Renderer {
         float mipBias[4];      // x: log2 of the render scale (stage 5)
         float rtParams[4];     // stage 5 ray queries: x 1 = ray-traced reflections, y roughness cutoff (GGX alpha), z range
         float giParams[4];     // ray-traced global illumination: x strength (set once the frame's image exists)
+        float waterParams[4];  // water: x source of its moving-object sun shadow (game::WaterSunShadow), y frame, z darkening
     };
     std::vector<const game::MapLight*> bakedShadowLights; // this frame's baked lights with moving-caster shadows (atlas rows 4, 5)
     // Materials (stage 3): the sky cube with a mip chain for rough reflections, and this frame's history / depth for reflections.
@@ -3090,6 +3091,7 @@ struct Renderer {
     bool temporalHeld = false; // the previous frame reused the output: the next encode starts a new history
     bool rtWantsBeyondView() const { return metalCaps.rayTracing && enh.enabled && enh.rtBeyondView && (enh.rtReflections || enh.rtShadows); }
     bool rtReflNow = false;
+    game::WaterSunShadow waterSunNow = game::WaterSunShadow::None; // this frame: where the water takes its moving-object sun shadow from
     bool rtShadowNow = false;   // this frame: ray-traced shadows / contact occlusion of the moving objects (the AO image)
     // ray-traced shadows of the effect lights (with the shadows of moving objects and the light shadows switch)
     bool rtDlightsNow() const { return rtShadowNow && enh.rtLightShadows && enh.lightShadows && !dlights.empty(); }
@@ -4796,7 +4798,7 @@ struct Renderer {
             const WaterMat& wm = scene.waters[size_t(b.texture)];
             if (!wm.cube || !wm.normalMap) return;
             bindStream(0, indexBuf);
-            SDL_BindGPUGraphicsPipeline(pass, rtReflNow && waterPipelinesRT[wm.blend ? 1 : 0][b.cull] ? waterPipelinesRT[wm.blend ? 1 : 0][b.cull]
+            SDL_BindGPUGraphicsPipeline(pass, (rtReflNow || waterSunNow == game::WaterSunShadow::RayTraced) && waterPipelinesRT[wm.blend ? 1 : 0][b.cull] ? waterPipelinesRT[wm.blend ? 1 : 0][b.cull]
                                                                                                     : waterPipelines[wm.blend ? 1 : 0][b.cull]);
             VU wu = vu;
             wu.model = model;

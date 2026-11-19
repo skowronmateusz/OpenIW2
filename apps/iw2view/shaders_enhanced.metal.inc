@@ -52,6 +52,7 @@ struct EnhFragU {
     float4 mipBias;        // x: log2 of the render scale (stage 5), the material textures' mip bias
     float4 rtParams;       // stage 5 ray queries: x 1 = ray-traced reflections, y their roughness (GGX alpha) cutoff, z their range, w debug colours
     float4 giParams;       // ray-traced global illumination: x strength (0 = off; the image is texture t + 7)
+    float4 waterParams;    // water: x source of its moving-object sun shadow (0 none, 1 shadow map, 2 ray traced), y frame, z darkening
 };
 #define IW2_MIP , bias(eu.mipBias.x)
 // Fragment uniform slot 2: per draw (model items).
@@ -81,15 +82,9 @@ constant float2 kEnhPoisson[12] = {
 
 // Dynamic sun visibility of a world point from the shadow map of the moving casters (1 = lit). Normal offset against acne, a small
 // rotated Poisson disk of hardware-filtered compare taps, the last cascade fades out towards its edge.
-static float enh_sun_shadow(float3 wp, float3 n, constant EnhFragU& eu, depth2d<float> sm, sampler ss, int tapsOverride = 0) {
+static float enh_sun_shadow_c(float3 wp, float3 n, constant EnhFragU& eu, depth2d<float> sm, sampler ss, int tapsOverride, int c) {
     const int cascades = int(eu.shadowParams.x + 0.5);
-    if (cascades <= 0) return 1.0;
-    int c = 0;
-    float dist = distance(wp, eu.shadowSphere[0].xyz);
-    if (cascades > 1 && dist > eu.shadowSphere[0].w * 0.9) {
-        c = 1;
-        dist = distance(wp, eu.shadowSphere[1].xyz);
-    }
+    const float dist = distance(wp, eu.shadowSphere[c].xyz);
     const float radius = eu.shadowSphere[c].w;
     if (dist >= radius) return 1.0;
     const float texelWorld = 2.0 * radius * eu.shadowParams.y;
@@ -113,6 +108,52 @@ static float enh_sun_shadow(float3 wp, float3 n, constant EnhFragU& eu, depth2d<
     const float start = radius * 0.85;
     const float fade = (c == cascades - 1 && dist > start) ? saturate(1.0 - (dist - start) / (radius - start)) : 1.0;
     return mix(1.0, lit, fade * eu.shadowBias.y);
+}
+// The first cascade hands over to the second over the outer tenth of its radius (a blend, not a switch).
+static float enh_sun_shadow(float3 wp, float3 n, constant EnhFragU& eu, depth2d<float> sm, sampler ss, int tapsOverride = 0) {
+    const int cascades = int(eu.shadowParams.x + 0.5);
+    if (cascades <= 0) return 1.0;
+    if (cascades == 1) return enh_sun_shadow_c(wp, n, eu, sm, ss, tapsOverride, 0);
+    const float d0 = distance(wp, eu.shadowSphere[0].xyz) / eu.shadowSphere[0].w;
+    if (d0 <= 0.8) return enh_sun_shadow_c(wp, n, eu, sm, ss, tapsOverride, 0);
+    if (d0 >= 0.9) return enh_sun_shadow_c(wp, n, eu, sm, ss, tapsOverride, 1);
+    return mix(enh_sun_shadow_c(wp, n, eu, sm, ss, tapsOverride, 0), enh_sun_shadow_c(wp, n, eu, sm, ss, tapsOverride, 1), (d0 - 0.8) * 10.0);
+}
+
+// Sun visibility of a water surface point from the moving objects (docs/render-enhanced.md "Water shadows"): the shadow map's
+// cascades, or one ray a frame towards a point of the sun's cone (the TAA history smooths it) where the ray-traced shadows are on.
+static float enh_water_sun(float3 wp, float3 sun, float2 px, constant EnhFragU& eu, depth2d<float> sm, sampler ss ENH_RT_PARAM) {
+    const float mode = eu.waterParams.x;
+    if (mode < 0.5 || sun.z <= 0.0) return 1.0;
+    if (mode < 1.5) return enh_sun_shadow(wp, float3(0.0, 0.0, 1.0), eu, sm, ss);
+#ifdef IW2_ENH_RT
+    const float3 t1 = normalize(cross(sun, abs(sun.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0))), t2 = cross(sun, t1);
+    const uint2 g = uint2(px);
+    uint h = g.x * 1973u + g.y * 9277u + uint(eu.waterParams.y) * 26699u;
+    h = (h ^ (h >> 13)) * 0x5bd1e995u;
+    const float a = float((h ^ (h >> 15)) & 0xffffu) / 65535.0 * 6.2831853;
+    h = (h ^ (h >> 11)) * 0x27d4eb2du;
+    const float rr = sqrt(float((h ^ (h >> 15)) & 0xffffu) / 65535.0) * 0.012; // the sun's cone, as the opaque surfaces' (kRtSunConeTan)
+    metal::raytracing::ray r;
+    r.origin = wp + float3(0.0, 0.0, 1.0);
+    r.direction = normalize(sun + (t1 * cos(a) + t2 * sin(a)) * rr);
+    r.min_distance = 0.05;
+    r.max_distance = 3000.0;
+    // the moving objects (mask 2) block fully, the player's shadow body (8) with a weight rising with the distance from the eye
+    // (game::playerBodyShadowWeight: 24 to 40 units), as in the ray-traced shadows of the opaque surfaces
+    metal::raytracing::intersector<metal::raytracing::instancing> isect;
+    isect.accept_any_intersection(true);
+    isect.assume_geometry_type(metal::raytracing::geometry_type::triangle);
+    float vis = 1.0;
+    if (isect.intersect(r, rtScene, 2u).type != metal::raytracing::intersection_type::none) vis = 0.0;
+    else {
+        const float bodyW = smoothstep(24.0, 40.0, distance(wp, eu.eye.xyz));
+        if (bodyW > 0.0 && isect.intersect(r, rtScene, 8u).type != metal::raytracing::intersection_type::none) vis = 1.0 - bodyW;
+    }
+    return vis; // (full strength: the map's strength uniform is only set when the shadow map is rendered)
+#else
+    return 1.0;
+#endif
 }
 
 // Sun visibility from the cached world cascades (the world and static models): x = visibility, y = weight (0 outside the cascades,

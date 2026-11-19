@@ -342,6 +342,12 @@ fragment float4 fs_water(WaterOut in [[stage_in]], constant FragmentUniforms& u 
 #endif
     float3 diffuse = u.ambient.rgb * n.z; // waterColor.rgb
     float3 lit = mix(diffuse, env.rgb, env.a);
+#ifdef IW2_ENHANCED
+    // moving objects' sun shadow on the water: darkens it and takes the sun's glint away (docs/render-enhanced.md "Water shadows")
+    const float sunVis = enh_water_sun(in.eyeVector + eu.eye.xyz, u.sunDirection.xyz, in.position.xy, eu, shadowMap, shadowSampler ENH_RT_PASS);
+    lit *= mix(1.0 - eu.waterParams.z, 1.0, sunVis);
+    specularDot *= sunVis;
+#endif
     lit += pow(specularDot, 64.0) * u.sunColor.rgb;
     return float4(apply_fog(lit, length(in.eyeVector), u), in.color.a);
 }

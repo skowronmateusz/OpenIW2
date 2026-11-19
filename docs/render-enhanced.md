@@ -427,6 +427,12 @@ light pass samples at its pixel instead of the light shadow atlas (whose rows fo
 (M1, M2, or with the switch off) the atlas shadows stay. The light pass now takes its shadow parameters in its own uniform
 block: in fragment slot 1 they had overwritten the frame's enhanced uniforms for the scene draws between the light draws.
 
+The player's shadow body (its own instance mask) must not shadow the view model or what is at the eye. Its rays count with a
+weight that rises smoothly with the distance of the pixel from the eye, 0 up to `game::kPlayerBodyShadowFadeNear` and 1 from
+`game::kPlayerBodyShadowFadeFar` (`game::playerBodyShadowWeight`): a ray that meets only the body darkens by that weight. An
+earlier cut at one view depth left a straight edge across the player's shadow on flat ground. The other moving objects always
+count in full.
+
 Ray-traced occlusion of the static world was measured and left out: against the static world as well, the contact occlusion
 changes about half the pixels by at most 22 of 255, nearly all by 1 to 3, darkening corners the screen-space AO already darkens;
 the lightmaps carry the indirect light.
@@ -480,6 +486,23 @@ fraction of pixels that differ and their size in 8-bit levels):
 The effect is subtle by construction: the baked light is the largest part of any pixel. Next to a soldier, a vehicle or a gun it
 is a few levels to about 50 of 255 on the nearby surfaces and a gentle darkening further out; across the rest of the frame it is
 under 2 levels. With TAA off there is no history to take radiance from, so the term is off.
+
+## Water shadows
+
+The water technique is drawn after the AO image is made and has no baked sun term, so the moving objects' sun shadow did not
+reach it. It now takes it per pixel, with the same strength as the opaque surfaces (`game::waterSunShadowSource` decides where
+from; our own addition, the original water has no shadows):
+- ray-traced shadows on (`r_enhRTShadows`, a GPU with ray tracing): the water fragment traces one ray a frame towards a point
+  in the sun's cone (`game::kRtSunConeTan`) against the moving objects, the player's shadow body included with the weight above;
+  the water uses the ray query pipeline variant for this even when ray-traced reflections are off;
+- otherwise: the same sun shadow map cascades the opaque surfaces use (`r_enhSunShadows`), sampled with the water plane's
+  up normal; the player's shadow body is one of its casters.
+Where the sun is hidden the water's colour is darkened by `game::kWaterShadowDarken` (40 %) and the sun's glint is removed. Static
+shadows from the world are not applied to the water. With the sun shadows off (or no sun) the water is as before. Blended
+(translucent) world surfaces keep their previous handling: they have no screen-space terms.
+
+The sun shadow map's two cascades now hand over to each other by a blend over the outer tenth of the first one, instead of a
+switch.
 
 ## Cost
 
