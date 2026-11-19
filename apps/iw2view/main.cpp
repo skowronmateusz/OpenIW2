@@ -22,6 +22,7 @@
 #include "game/itempickup.h"
 #include "game/mpbots.h"
 #include "game/clienttime.h"
+#include "game/playershadowbody.h"
 #include "game/linkview.h"
 #include "game/screenfade.h"
 #include "video/roq.h"
@@ -3168,7 +3169,7 @@ struct Renderer {
                 for (const Batch& b : it.model->batches)
                     if (b.pass == Pass::Opaque && b.indexCount >= 3) ranges.push_back({b.firstIndex, b.indexCount});
                 sceneRT.addItem(it.model->vertices, it.model->vertexOffset, uint32_t(sizeof(GpuVertex)), it.model->indices, ranges,
-                                it.transform.data(), it.model, it.model->arenaVertices,
+                                it.transform.data(), it.model, it.model->arenaVertices || list == &shadowOnlyItems,
                                 list == &shadowOnlyItems ? metal::SceneRT::kMaskBody : metal::SceneRT::kMaskDynamic);
             }
         sceneRT.buildFrame(dev, cmd, active);
@@ -7170,38 +7171,32 @@ int main(int argc, char** argv) {
             s.skinKey = -1;
             poseViewWeapon(items, c, s, drawn);
         };
-        // r_enhPlayerShadow (our own design, docs/render-enhanced.md "Player shadow"): the player's shadow-only body, posed here at
-        // render time from the player's movement with the multiplayer anim tree and mp/playeranim.script (stance, idle / moving,
-        // the weapon's anim type and the aim), placed at the eye's ground point, and handed to the renderer's shadowOnlyItems:
-        // the sun cascades and the ray tracing see it, no view pass draws it.
+        // r_enhPlayerShadow (our own design, docs/render-enhanced.md "Player shadow"): the player's shadow-only body. game::PlayerShadowBody
+        // (src/game/playershadowbody.h) poses it from the player's state with the multiplayer anim tree and mp/playeranim.script, in
+        // render time; it is placed at the eye's ground point and handed to the renderer's shadowOnlyItems: the sun cascades and
+        // the ray tracing see it, no view pass draws it.
         struct ShadowBodyInput {
             Vec3 ground{};        // the origin under the eye
-            float yaw = 0;
+            float yaw = 0, pitch = 0;
             float vx = 0, vy = 0; // the horizontal velocity
             int viewHeightTarget = 60;
-            float dtS = 0;        // the render frame's time step
+            int64_t renderMs = 0; // the client render clock of this frame (cgNowMs)
+            bool excluded = false; // dead, spectating or in the killcam
         };
         struct ShadowBodyState {
             bool scriptLoaded = false;
             std::unique_ptr<game::PlayerAnimScript> script;
-            std::unique_ptr<game::AnimState> anim;
+            std::unique_ptr<game::PlayerShadowBody> body;
             const game::World* animWorld = nullptr;
-            const game::PaItem* legsItem = nullptr;
-            int legsNode = 0;
-            uint32_t seed = 0x2545f491u;
-            std::map<int, float> moveSpeed;
             std::map<std::string, std::string> mpAnimType; // weapon -> the multiplayer weapon file's playerAnimType
             const game::World* squadWorld = nullptr;       // single player: the squad's uniform, looked up once per level
             std::optional<game::PlayerBodyModels> squadModels;
         };
         static ShadowBodyState shadowBody;
-        auto addShadowBody = [&](const ShadowBodyInput& in) {
-            renderer.shadowOnlyItems.clear();
-            if (!world || !renderer.enh.enabled || !renderer.enh.playerShadow) return;
-            // prone: the animation lays the body forward of the origin, over the eye's view (left out, docs/render-enhanced.md)
-            if (in.viewHeightTarget <= 11) return;
-            if (world->playerLinked() || world->playerOnTurret() || (world->playerPmFlags() & 0x20000) || world->playerDeadWeaponless()) return;
+        // The body's state for this frame (the stepped animation), false when it is off: on a turret, in a vehicle, linked, dead.
+        auto updateShadowBody = [&](const ShadowBodyInput& in) -> bool {
             ShadowBodyState& b = shadowBody;
+            const bool off = !world || !renderer.enh.enabled || !renderer.enh.playerShadow;
             if (!b.scriptLoaded) {
                 b.scriptLoaded = true;
                 if (const auto bytes = vfs.read("mp/playeranim.script")) {
@@ -7209,21 +7204,30 @@ int main(int argc, char** argv) {
                     if (sc->parse(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()))) b.script = std::move(sc);
                 }
             }
-            game::AnimLibrary& lib = world->animLibrary();
-            const game::AnimTree* tree = lib.tree("multiplayer");
-            if (!b.script || !tree) return;
-            if (!b.anim || b.animWorld != world.get()) {
-                b.anim = std::make_unique<game::AnimState>(*tree, lib);
-                b.animWorld = world.get(), b.legsItem = nullptr, b.legsNode = 0;
+            if (!world || !b.script) return false;
+            if (!b.body || b.animWorld != world.get()) {
+                b.body = std::make_unique<game::PlayerShadowBody>(world->animLibrary(), *b.script);
+                b.animWorld = world.get();
             }
+            game::PlayerShadowInput pi;
+            if (world) {
+                pi.onTurret = world->playerOnTurret();
+                pi.inVehicle = (world->playerPmFlags() & 0x20000) != 0;
+                pi.linked = world->playerLinked();
+                pi.dead = world->playerDeadWeaponless();
+                pi.spectating = in.excluded;
+            }
+            pi.spectating |= off;
+            pi.renderMs = in.renderMs;
+            pi.viewHeightTarget = in.viewHeightTarget;
+            pi.yaw = in.yaw, pi.pitch = in.pitch, pi.vx = in.vx, pi.vy = in.vy;
             // the weapon's anim type: its multiplayer file's (single-player files say "none"), else its class
-            game::PaContext ctx;
-            const std::string weapon = pweapon.equipped() ? pweapon.name() : std::string();
-            if (!weapon.empty()) {
-                auto mt = b.mpAnimType.find(weapon);
+            if (pweapon.equipped()) {
+                pi.weapon = pweapon.name();
+                auto mt = b.mpAnimType.find(pi.weapon);
                 if (mt == b.mpAnimType.end()) {
                     std::string type;
-                    if (const auto f = vfs.read("weapons/mp/" + weapon + "_mp")) {
+                    if (const auto f = vfs.read("weapons/mp/" + pi.weapon + "_mp")) {
                         const std::string text(reinterpret_cast<const char*>(f->data()), f->size());
                         const std::string key = "\\playerAnimType\\";
                         if (const size_t at = text.find(key); at != std::string::npos) {
@@ -7231,43 +7235,19 @@ int main(int argc, char** argv) {
                             type = text.substr(from, text.find('\\', from) - from);
                         }
                     }
-                    mt = b.mpAnimType.emplace(weapon, type).first;
+                    mt = b.mpAnimType.emplace(pi.weapon, type).first;
                 }
-                ctx.weaponClass = lowerName(pweapon.field("weaponClass"));
-                ctx.playerAnimType = game::playerBodyAnimType(mt->second, ctx.weaponClass);
+                pi.mpAnimType = mt->second;
+                pi.weaponClass = pweapon.field("weaponClass");
             }
-            game::PaMovement mv;
-            mv.viewHeightTarget = in.viewHeightTarget;
-            mv.xySpeed = std::sqrt(in.vx * in.vx + in.vy * in.vy);
-            game::playerBodyMoves(in.vx, in.vy, in.yaw, mv.forwardMove, mv.rightMove);
-            mv.slow = pweapon.adsFrac() >= 0.5f;
-            ctx.moveType = game::paMoveType(mv);
-            ctx.strafing = game::paStrafing(mv);
-            ctx.weaponPosition = pweapon.adsFrac() >= 0.5f ? "ads" : "hip";
-            const int torso = tree->find("torso");
-            if (const game::PaItem* item = b.script->animation(ctx.moveType, ctx); item && item != b.legsItem && !item->commands.empty()) {
-                b.seed = b.seed * 1103515245u + 12345u;
-                const game::PaCommand& cmd = item->commands[size_t((b.seed >> 16) % item->commands.size())];
-                const float blend = b.legsItem ? (cmd.blendMs >= 0 ? float(cmd.blendMs) / 1000.0f : 0.2f) : 0.0f; // the first pose at once
-                for (const game::PaPart& part : cmd.parts) {
-                    const int n = tree->find(part.anim);
-                    if (n < 0) continue;
-                    game::AnimState::SetArgs a;
-                    a.blendTime = blend;
-                    a.knob = true;
-                    b.anim->set(n, a);
-                    if (part.body != game::PaBody::Torso) b.legsNode = n;
-                    if (part.body == game::PaBody::Both && torso >= 0) b.anim->clear(torso, blend);
-                }
-                b.legsItem = item;
-            }
-            // the legs play at the body's speed over the animation's own (docs/spec/mp-players.md "Animation rate from the movement")
-            if (b.legsNode > 0 && size_t(b.legsNode) < b.anim->nodeStates().size()) {
-                auto ms = b.moveSpeed.find(b.legsNode);
-                if (ms == b.moveSpeed.end()) ms = b.moveSpeed.emplace(b.legsNode, game::animNodeMoveSpeed(lib, tree, b.legsNode)).first;
-                b.anim->nodeStates()[size_t(b.legsNode)].rate = ms->second > 0 ? game::paMoveRate(mv.xySpeed / ms->second, ms->second, false) : 1.0f;
-            }
-            b.anim->update(in.dtS, [](const std::string&, const std::string&) {}, false);
+            pi.weaponState = pweapon.stateNumber(), pi.clip = pweapon.clip(), pi.adsFrac = pweapon.adsFrac();
+            return b.body->update(pi);
+        };
+        auto addShadowBody = [&](const ShadowBodyInput& in) {
+            renderer.shadowOnlyItems.clear();
+            if (!updateShadowBody(in)) return;
+            ShadowBodyState& b = shadowBody;
+            const std::string weapon = pweapon.equipped() ? pweapon.name() : std::string();
             // the models: the multiplayer character with the player's view hands
             std::string hands = pweapon.handModel();
             if (world->multiplayer() && world->player())
@@ -7289,7 +7269,7 @@ int main(int argc, char** argv) {
             Uploader up(dev, false);
             DrawItem base;
             base.transform = entityTransform(in.ground, {0, in.yaw, 0});
-            const assets::XPose pose = b.anim->pose(body->parts);
+            const assets::XPose pose = b.body->pose(body->parts);
             DrawItem it = base;
             it.model = skinModel(scene, dev, up, -3, models.body, *body, pose);
             if (it.model) renderer.shadowOnlyItems.push_back(it);
@@ -7298,7 +7278,7 @@ int main(int argc, char** argv) {
             for (const std::string& m : {models.head, models.hat}) {
                 const Scene::CpuModel* am = m.empty() ? nullptr : sceneCpuModel(scene, dev, vfs, m);
                 if (!am) continue;
-                const assets::XPose animated = b.anim->pose(am->parts);
+                const assets::XPose animated = b.body->pose(am->parts);
                 const assets::XPose ap = attachmentPose(bones, *am, "", &animated);
                 addBones(bones, *am, ap);
                 DrawItem ai = base;
@@ -11389,13 +11369,27 @@ int main(int argc, char** argv) {
             }
             auto shotItems = killcamView ? gatherKillcamItems(cam, 1.0f) : gatherItems(cam);
             shotItems.insert(shotItems.end(), shotVmItems.begin(), shotVmItems.end());
+            std::function<void()> shotBodyStep;
             if (!killcamView) { // r_enhPlayerShadow: the shadow-only body under the shot's eye, standing (crouched / prone with --stance)
                 ShadowBodyInput sb;
                 sb.viewHeightTarget = int(shotViewHeight);
                 sb.ground = {cam.pos.x, cam.pos.y, cam.pos.z - float(sb.viewHeightTarget)};
-                sb.yaw = cam.yaw;
-                sb.dtS = 0.5f; // one step: the chosen animation's weight reaches its goal
+                sb.yaw = cam.yaw, sb.pitch = cam.pitch;
+                // Debug: IW2_SHOT_BODY_MOVE=<forward>,<right> (units per second, default none) and IW2_SHOT_BODY_SECONDS (default 1): the
+                // body moves that way for that long, stepped at 60 Hz of render time before the shot, so the shot shows a walking pose.
+                if (const char* mvs = std::getenv("IW2_SHOT_BODY_MOVE")) {
+                    float fwd = 0, rgt = 0;
+                    std::sscanf(mvs, "%f,%f", &fwd, &rgt);
+                    const float yr = cam.yaw * float(M_PI) / 180.0f;
+                    sb.vx = fwd * std::cos(yr) + rgt * std::sin(yr), sb.vy = fwd * std::sin(yr) - rgt * std::cos(yr);
+                }
+                const float bodySeconds = std::getenv("IW2_SHOT_BODY_SECONDS") ? std::stof(std::getenv("IW2_SHOT_BODY_SECONDS")) : 1.0f;
+                const int64_t bodyEnd = cgNowMs() + int64_t(bodySeconds * 1000.0f);
+                for (int64_t t = cgNowMs(); t < bodyEnd; t += 16) sb.renderMs = t, (void)updateShadowBody(sb);
+                sb.renderMs = bodyEnd;
                 addShadowBody(sb);
+                // IW2_BENCH frames and the shot after them: the body goes on in render time (16 ms per frame), so the frames show it moving.
+                shotBodyStep = [&, sb]() mutable { sb.renderMs += 16, addShadowBody(sb); };
             }
             std::cout << "effect particles: " << fxSystem.count() << "\n";
             for (const auto& l : fxSystem.lights()) std::cout << "fx light " << l.origin[0] << "," << l.origin[1] << "," << l.origin[2] << " radius " << l.radius << " rgb " << l.rgb[0] << "," << l.rgb[1] << "," << l.rgb[2] << "\n"; // dynamic lights submitted this frame (not rendered yet)
@@ -11434,6 +11428,7 @@ int main(int argc, char** argv) {
                     if (std::getenv("IW2_BENCH_SKINLIST")) g_skinStats.byName = &byName;
                     if (const char* bt = std::getenv("IW2_BENCH_TURN")) cam.yaw += float(std::atof(bt)); // debug: turn the camera every bench frame
                     const uint64_t t0 = SDL_GetTicksNS();
+                    if (shotBodyStep) shotBodyStep();
                     auto benchItems = killcamView ? gatherKillcamItems(cam, 1.0f) : gatherItems(cam);
                     benchItems.insert(benchItems.end(), shotVmItems.begin(), shotVmItems.end());
                     const uint64_t t1 = SDL_GetTicksNS();
@@ -11455,6 +11450,7 @@ int main(int argc, char** argv) {
                 double gpuBoundMs = 0.0;
                 if (const char* bg = std::getenv("IW2_BENCH_GPU"); bg && std::atoi(bg) > 0) {
                     const int m = std::atoi(bg);
+                    if (shotBodyStep) shotBodyStep();
                     auto benchItems = killcamView ? gatherKillcamItems(cam, 1.0f) : gatherItems(cam);
                     benchItems.insert(benchItems.end(), shotVmItems.begin(), shotVmItems.end());
                     const uint64_t g0 = SDL_GetTicksNS();
@@ -13853,9 +13849,10 @@ int main(int argc, char** argv) {
             { // r_enhPlayerShadow: the shadow-only body at the eye's ground point (none in the killcam, dead or spectating)
                 ShadowBodyInput sb;
                 sb.ground = {cam.pos.x, cam.pos.y, cam.pos.z - ps.viewHeight};
-                sb.yaw = cam.yaw, sb.vx = ps.velocity[0], sb.vy = ps.velocity[1], sb.viewHeightTarget = ps.viewHeightTarget, sb.dtS = dt;
-                if (killcamView || ps.pmType >= 4 || playerDead) renderer.shadowOnlyItems.clear();
-                else addShadowBody(sb);
+                sb.yaw = cam.yaw, sb.pitch = cam.pitch, sb.vx = ps.velocity[0], sb.vy = ps.velocity[1], sb.viewHeightTarget = ps.viewHeightTarget;
+                sb.renderMs = cgNowMs();
+                sb.excluded = killcamView || ps.pmType >= 4 || playerDead;
+                addShadowBody(sb);
             }
             SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
             SDL_GPUTexture* swap = nullptr;

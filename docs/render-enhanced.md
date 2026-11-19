@@ -154,19 +154,28 @@ atlas never draw it.
 - Models: the multiplayer character that uses the player's view hands. Each `character/mp_*.gsc` sets the view hands, the
   body, the head and the helmet together (for example `mp_british_africa_paul.gsc:4-8`), so the hands select the
   character (`game::playerBodyForHands`). The weapon's world model is held at `tag_weapon_right`.
-- Pose: the multiplayer anim tree and `mp/playeranim.script`, stepped at render time. The inputs are the stance, the speed,
-  the move direction at the view yaw (`game::playerBodyMoves`), aiming, and the weapon's anim type. Single-player weapon files
-  say `none` for that type, so it comes from the multiplayer file of the same weapon (`<name>_mp`), else from the weapon
-  class (`game::playerBodyAnimType`). There are no events (jump, fire, reload), no lean and no ladder poses.
+- Pose: the multiplayer anim tree and `mp/playeranim.script`, driven by `game::PlayerShadowBody` (`src/game/playershadowbody.*`) the
+  way a third-person multiplayer player is (`docs/spec/mp-players.md`; it shares `game::playPaCommand` and the event rule with
+  the multiplayer driver). The caller gathers the player's state: the stance (view height target), the velocity, the view
+  angles, the weapon with its anim type, class, state and clip, and the aim fraction. Single-player weapon files
+  say `none` for the anim type, so it comes from the multiplayer file of the same weapon (`<name>_mp`), else from the weapon
+  class (`game::playerBodyAnimType`). The move type (idle, walk, run, back, crouched, prone, strafing) picks the legs animation
+  with the rate from the speed; the aim picks the aim idle. Events come from changes of the state: the weapon drop (the torso
+  pose is held while the weapon drops and rises), a reload, a melee swing, a shot (the clip falls), and the crouch / prone
+  transitions. The torso takes part of the view pitch on the spine and neck bones (our own rule). No jump, land, lean or ladder
+  poses, and no offhand throw.
+- Time: the animation steps by the change of the client render clock (`clientRenderTimeMs`) since the last frame (at most 100 ms),
+  so it is smooth at any frame rate; it does not read the 20 Hz world time or the frame's wall time.
 - Placement: the eye's ground point (the camera minus the view height), turned to the view yaw.
-- No body on a turret, in a vehicle, while linked, dead, spectating, in the killcam or prone (the prone animations lay the
-  body forward of its origin, so it would cover the view's ground in shadow).
+- No body on a turret, in a vehicle, while linked, dead, spectating or in the killcam. Prone has one: the body lies behind the
+  eye with the head under it.
 - The view weapon and hands are inside the body, so while it is on they take no shadow from the moving casters' sun map
   (the world cascades still shadow them).
-- Ray tracing: the body is its own instance (mask 8). Sun and lamp shadow rays see it, except from pixels within 40 units of
+- Ray tracing: the body is its own instance (mask 8), a deforming one: its bottom-level structure is refit from the new skin every
+  frame (a rigid one is built once, which showed the first pose for good). Sun and lamp shadow rays see it, except from pixels within 40 units of
   the eye (the view weapon and hands). Contact occlusion, the effect lights (a muzzle flash is inside the body) and
   reflections do not.
-- Open: the character choice for each campaign and the missing event poses.
+- Open: the character choice for each campaign, the offhand throw and jump poses, and the leg yaw against the torso.
 
 ## Temporal anti-aliasing
 

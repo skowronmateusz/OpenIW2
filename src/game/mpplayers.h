@@ -15,6 +15,7 @@ namespace iw2::game {
 
 class AnimLibrary;
 class AnimTree;
+class AnimState;
 
 struct MpPlayerInput {
     bool valid = false;   // filled this life (else the driver derives the movement from the entity velocity)
@@ -63,6 +64,15 @@ struct MpPlayerAnim {
     std::string weaponModel;          // world model drawn at tag_weapon_right ("" none)
     std::string deathAnim;            // chosen at the death, played by the body
 };
+
+// Plays one command of the player animation script on `anim` (a "multiplayer" tree state): each part on its node with the
+// command's blend time, a "both" part clearing the torso, a torso part holding it for the command's duration (or the
+// animation's length). `st` (null when the caller keeps no state) records the nodes and holds; `nowMs` is the caller's clock.
+// Returns the command's duration in ms. Shared by World::mpPlayPaCommand and the player shadow body (playershadowbody.h).
+int playPaCommand(AnimState& anim, AnimLibrary& lib, MpPlayerAnim* st, const PaCommand& cmd, bool restart, int64_t nowMs);
+// Whether an event's item may play now: an unforced one is refused while the legs or the torso it plays on are held for more
+// than 49 ms (docs/spec/mp-players.md "Events").
+bool paEventAllowed(const PaItem& item, const MpPlayerAnim& st, int64_t nowMs, bool forced);
 
 // Shared multiplayer animation data (loaded on first use).
 // The move speed of an animation tree node (units per second): its delta translation from start to end over its length; 0 for

@@ -119,13 +119,16 @@ int World::mpPlayCommand(Entity& e, const PaItem& item, bool restart) {
 
 int World::mpPlayPaCommand(Entity& e, const PaCommand& cmd, bool restart) {
     if (!e.anim) return -1;
-    const AnimTree& tree = e.anim->tree();
+    MpPlayerAnim* st = nullptr;
+    if (const int c = mpClientOf(e); c >= 0) st = &mp_->clients[size_t(c)].anim;
+    return playPaCommand(*e.anim, animLib_, st, cmd, restart, timeMs());
+}
+
+int playPaCommand(AnimState& anim, AnimLibrary& lib, MpPlayerAnim* st, const PaCommand& cmd, bool restart, int64_t now) {
+    const AnimTree& tree = anim.tree();
     const int torso = tree.find("torso");
     const float blend = cmd.blendMs >= 0 ? float(cmd.blendMs) / 1000.0f : kDefaultBlend;
     int duration = cmd.durationMs;
-    const int64_t now = timeMs();
-    MpPlayerAnim* st = nullptr;
-    if (const int c = mpClientOf(e); c >= 0) st = &mp_->clients[size_t(c)].anim;
     for (const PaPart& p : cmd.parts) {
         const int n = tree.find(p.anim);
         if (n < 0) continue; // a name the tree lacks plays nothing
@@ -133,18 +136,25 @@ int World::mpPlayPaCommand(Entity& e, const PaCommand& cmd, bool restart) {
         a.blendTime = blend;
         a.knob = true;
         a.restart = restart;
-        e.anim->set(n, a);
-        const int len = duration >= 0 ? duration : animLengthMs(animLib_, p.anim);
+        anim.set(n, a);
+        const int len = duration >= 0 ? duration : animLengthMs(lib, p.anim);
         if (p.body != PaBody::Torso && st) st->legsNode = n, st->legsTurretAnim = cmd.turretAnim;
         if (p.body == PaBody::Torso) {
             if (st) st->torsoHeldUntilMs = now + len, st->torsoActive = true, st->torsoNode = n;
         } else if (p.body == PaBody::Both && (!st || now >= st->torsoHeldUntilMs)) {
-            e.anim->clear(torso, blend);
+            anim.clear(torso, blend);
             if (st) st->torsoActive = false;
         }
         if (duration < 0) duration = len;
     }
     return duration;
+}
+
+bool paEventAllowed(const PaItem& item, const MpPlayerAnim& st, int64_t now, bool forced) {
+    bool legs = false, torsoPart = false;
+    for (const auto& c : item.commands)
+        for (const auto& p : c.parts) (p.body == PaBody::Torso ? torsoPart : legs) = true;
+    return forced || !((legs && now + 49 < st.legsHeldUntilMs) || (torsoPart && now + 49 < st.torsoHeldUntilMs));
 }
 
 Entity* World::mpTurretOf(int client) {
@@ -299,10 +309,10 @@ void World::mpPlayersFrame() {
         auto event = [&](const char* name, const PaContext& ec, bool forced) -> bool {
             const PaItem* it = script->event(name, ec);
             if (!it) return false;
-            bool legs = false, torsoPart = false;
+            bool legs = false;
             for (const auto& c : it->commands)
-                for (const auto& p : c.parts) (p.body == PaBody::Torso ? torsoPart : legs) = true;
-            if (!forced && ((legs && now + 49 < st.legsHeldUntilMs) || (torsoPart && now + 49 < st.torsoHeldUntilMs))) return false;
+                for (const auto& p : c.parts) legs |= p.body != PaBody::Torso;
+            if (!paEventAllowed(*it, st, now, forced)) return false;
             if (static const bool rt = std::getenv("IW2_REMOTE_TRACE") != nullptr; rt) // debug: the event's animations (docs/debug-flags.md)
                 for (const auto& c : it->commands)
                     for (const auto& p : c.parts)
