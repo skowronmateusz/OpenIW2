@@ -73,6 +73,10 @@ Generated from the collision world (docs/spec/collision.md), never stored in the
    a room barely taller than the box, as the goods wagons of mp_railyard with 86 units of headroom; then the crouched
    box, top 50), and where it rests without starting in solid on a walkable surface there is a node. Under a floor the scan goes on from the first free point (up to 8 floors per
    column, candidates closer than 16 units in height merged).
+   A node whose box rests higher than the floor under its middle (a rim) and has under 2 units to spare on both sides
+   of one axis (a slot as wide as the box, bridged by the box) is dropped. mp_matmata at about 4912 7696: the box
+   rested at 45 on the two lips of a crack whose floor is at 37; a bot that steps off the node by a hair slides into
+   the crack (see "Stuck watch", "Held in a crevice"). 33 nodes of mp_matmata.
 2. **Links.** Each node is tested against every node of the 8 neighbouring columns with a height difference between
    −190 and +36 units. The walk test moves the box in 12-unit steps: lift by `jump_stepSize` (18), move flat, drop
    onto the ground (at most 190 below, under the 200-unit fall damage height of docs/spec/pmove.md); when the flat
@@ -608,9 +612,9 @@ marked *), after = this page.
 Against the scripted player on mp_toujane (bots killed it / it killed bots): recruits 4 / 80 before and 3 / 88 after,
 regulars 15 / 78 and 13 / 101, veterans 34 / 51 and 28 / 63: the bots do not know of it before they see it. No bot was
 trapped in any run. The stuck events of mp_dawnville ctf (before 2, then 5 with the longest spell 36.5 s) were flag
-carriers behind escorts on the rubble ("Giving way"); none now. The one on mp_matmata sd is a bot that fell into a
-crevice at about 4913 7695 37, 8 units under a node, where it stands in the air on steep faces with no speed (pmove's
-slide stops it; it cannot jump) until the 20 s watch sends it elsewhere (TODO). The runs differ by a few percent from
+carriers behind escorts on the rubble ("Giving way"); none now. The one on mp_matmata sd was a bot that fell into a
+crevice at about 4913 7695 37, 8 units under a node (fixed since, see "Held in a crevice"; the table row is from before and
+was not measured again). The runs differ by a few percent from
 one version of the controller to the next: every change shifts the game's random numbers.
 
 ### Hit rates
@@ -700,6 +704,27 @@ twice is removed as a failed traversal is.
 
 Off the graph (no node within 32 units) for 3 s while not fighting, a bot drops its path, so the next plan starts from
 the nearest node in straight reach (`offGraphReplans`), long before the 20 s watch.
+
+#### Held in a crevice
+
+The crevice of mp_matmata at about 4913 7695 37 held a bot for the whole 20 s watch (a recorded run: stuck 24.8 s). Its
+box rests on the floor of a slot as wide as itself (the slot's two faces are slanted, one by 21 degrees) and starts inside
+the faces by the trace epsilon, so the 0.25-unit ground trace of pmove starts in solid and finds no ground
+(`PM_GroundTrace`, docs/spec/pmove.md), every walk direction is clipped to nothing against the faces, and a jump needs the
+ground. A bot reached the spot by a leap that landed on the rim (45) short of its target and walked on towards the
+target across the crack. The same box lifted by 0.03 units walks out in every direction, so this is a numerical trap of
+the box against the faces, not a wall.
+
+The graph generator drops the rim node over this crack ("Navigation graph"). The recovery (`World::mpBotUnwedge`) is for any
+spot of the kind: when the stuck watch's second finds a walking bot (not fighting, not on a traversal) without ground, not
+having moved a unit, it lifts the box to the first of 1, 2, 4, 8, 12, 18 and 24 units above where it stands in which the
+box is clear (nudged sideways by up to 2 units when the faces hold it at every height), gives it a jump's upward speed
+(270) and 150 units a second along the first of eight directions, the walk direction first, in which the box raised by a
+step gets 40 units, and plans the path again (`unwedges`, "UNWEDGE" with `IW2_BOT_STUCKDBG`). A run of mp_matmata sd with 14
+bots for 1800 s at four skills: 3 to 9 lifts per run at other spots of the rock fields, no stuck event, the
+longest still spell 8.7 to 15.8 s (it was 25 s). Those spots are not removed from the graph: TODO(spec) the nodes there.
+Test: `test_mpbotcombat crevice` (ctest `mpbotcrevice_matmata`): no node on the rim; a bot put into the crevice is held
+(no ground) and is 64 units away within 8 s, with a lift and no stuck event (2.3 s measured).
 
 ### Giving way
 

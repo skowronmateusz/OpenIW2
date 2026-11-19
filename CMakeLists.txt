@@ -1089,6 +1089,9 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   # Bots that want to walk do not stay on the spot (docs/spec/mp-bots.md "Stuck watch"): 8 bots for 600 game seconds.
   add_test(NAME mpbotstall_carentan COMMAND test_mpbotcombat stall-check mp_carentan)
   set_tests_properties(mpbotstall_carentan PROPERTIES ENVIRONMENT "${_botenv};IW2_BOT_SOAK_SECONDS=600" TIMEOUT 900)
+  # A crevice of mp_matmata: no node on its rim, and a bot held in it is lifted out (docs/spec/mp-bots.md "Stuck watch").
+  add_test(NAME mpbotcrevice_matmata COMMAND test_mpbotcombat crevice)
+  set_tests_properties(mpbotcrevice_matmata PROPERTIES ENVIRONMENT "${_botenv}" TIMEOUT 900)
   foreach(_map breakout brecourt burgundy carentan dawnville decoy downtown farmhouse harbor leningrad matmata railyard rhine toujane trainstation)
     add_test(NAME mpbotsoak_${_map} COMMAND test_mpbotcombat soak mp_${_map})
     set_tests_properties(mpbotsoak_${_map} PROPERTIES ENVIRONMENT "${_botenv}" TIMEOUT 1800)

@@ -229,7 +229,8 @@ and test_savestate, whose scripts print with `println` and set developer_script 
   frame cost and the most A* plans in a frame; `soak <map>` runs 8 bots for `IW2_BOT_SOAK_SECONDS` game seconds (default
   60; 300 for the five-minute check) and fails when a bot stood still for a minute (ctest `mpbotsoak_<map>` per map);
   `probe <map> x y z x2 y2 z2` prints box traces between two points at four heights. Env `IW2_BOT_STUCKDBG=1` prints
-  each stuck spell of a bot (position, stance, path nodes) to stderr.
+  each stuck spell of a bot (position, stance, path nodes) and every lift out of a crevice (`UNWEDGE`) to stderr; `crevice` is the
+  mp_matmata crevice scenario (ctest `mpbotcrevice_matmata`).
 - `test_navmaps` (ctest `navmaps`, needs `IW2_MAIN`): one line per MP map with the graph's nodes, links by kind
   (ladder, mantle, leap), brush entities and the spawn points on the graph per spawn class. Env `IW2_NAVMAPS=a,b` limits
   the maps; `IW2_NAVDIAG=1` also prints, for each spawn point off the graph, the unpruned graph around it (the node's

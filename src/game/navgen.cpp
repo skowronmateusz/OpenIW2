@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -152,6 +153,20 @@ int seedNode(const CollisionWorld& w, const NavGraph& g, const V& seed) {
     return g.nearest(s, 160.0f);
 }
 
+namespace {
+// A node on a rim (the box rests higher than the floor under its middle) in a slot with less than 2 units to spare on both
+// sides: the box bridges a crevice of its own width. A bot that steps off the node by a hair slides down into the crevice,
+// where pmove holds it without ground (the box touches two slanted faces and starts inside them by the trace epsilon), and
+// no jump helps (docs/spec/mp-bots.md "Navigation graph", "Stuck watch").
+bool navCrevice(const CollisionWorld& w, const V& node) {
+    auto solidAt = [&](float dx, float dy) {
+        const V p{node[0] + dx, node[1] + dy, node[2]};
+        return trace(w, p, p, kBoxMins, kBoxMaxs).startSolid;
+    };
+    return (solidAt(2, 0) && solidAt(-2, 0)) || (solidAt(0, 2) && solidAt(0, -2));
+}
+} // namespace
+
 NavGraph generateNavGraph(const CollisionWorld& w, const V& mins, const V& maxs, const std::vector<V>& seeds, const NavParams& p) {
     NavGraph g;
     g.cell = p.cell;
@@ -160,6 +175,7 @@ NavGraph generateNavGraph(const CollisionWorld& w, const V& mins, const V& maxs,
     const int ny = int(std::ceil((maxs[1] - g.gridOrigin[1]) / p.cell)) + 1;
     std::vector<V> nodes;
     std::vector<std::array<int, 2>> cellOf;
+    std::vector<char> perched; // the box rests on a rim, higher than the floor under its middle
     // 1. Floors of every column: point traces down from the top; each walkable hit (slope within minNormalZ) places the
     //    standing box on it when the box fits; below a hit the scan goes on from the first free point under the floor.
     for (int cy = 0; cy < ny; ++cy)
@@ -188,6 +204,7 @@ NavGraph generateNavGraph(const CollisionWorld& w, const V& mins, const V& maxs,
                             floors.push_back(fz);
                             nodes.push_back({x, y, fz});
                             cellOf.push_back({cx, cy});
+                            perched.push_back(fz - hz >= 2.0f);
                         }
                     }
                 }
@@ -195,6 +212,18 @@ NavGraph generateNavGraph(const CollisionWorld& w, const V& mins, const V& maxs,
                 for (int k = 0; k < 64 && z > mins[2] && pointSolid(w, {x, y, z}); ++k) z -= 8.0f;
             }
         }
+    // 1a. Nodes on a rim in a slot as wide as the box are dropped (navCrevice).
+    {
+        size_t out = 0;
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            if (perched[i] && navCrevice(w, nodes[i])) continue;
+            nodes[out] = nodes[i];
+            cellOf[out] = cellOf[i];
+            ++out;
+        }
+        nodes.resize(out);
+        cellOf.resize(out);
+    }
     // 2. Links to the nodes of the 8 neighbouring columns that pass the walk test (both directions tested separately:
     //    drops are one-way).
     std::unordered_map<int64_t, std::vector<int>> byCell;

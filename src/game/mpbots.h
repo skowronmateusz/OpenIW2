@@ -233,6 +233,7 @@ struct MpBotStats {
     int acquiredOutsideView = 0; // of those, outside the view the bot had then (its field of view at the current zoom)
     int retreats = 0;           // spells of falling back to cover when hurt
     int giveWays = 0;           // steps out of a team mate's way
+    int unwedges = 0;           // times the bot was lifted out of a spot pmove holds it without ground (docs/spec/mp-bots.md "Stuck watch")
     int heardCue[int(BotCue::Count)] = {}; // cues that made an enemy known, by kind
     int grenadeFlees = 0;       // runs from a live grenade that landed close by
 };

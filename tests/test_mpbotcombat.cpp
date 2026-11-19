@@ -9,7 +9,7 @@
 //   test_mpbotcombat behaviour       the humanlike behaviour scenarios on mp_toujane (ammunition, melee, pickups, turrets,
 //                                    perception, aim), each a bot against a client that stands where the test puts it;
 //                                    giving way on mp_dawnville, the loft gun of mp_farmhouse
-//   test_mpbotcombat giveway | hearing | turretloft   one of those scenarios (hearing: the more sounds of the fights)
+//   test_mpbotcombat giveway | crevice | hearing | turretloft   one of those scenarios (hearing: the more sounds of the fights)
 //   test_mpbotcombat stats <map> <gametype> <bots> <skill> <seconds> [scripted]   measurement run (docs/spec/mp-bots.md
 //                                    "Measurement"): bots against each other, with `scripted` also against a scripted player
 
@@ -1108,6 +1108,35 @@ void giveWayTest(iw2::fs::Vfs& vfs) {
         std::cout << "give way to a player pressing into the bot: steps aside " << g.w.mpBotStats(b)->giveWays << "\n";
         CHECK(g.w.mpBotStats(b)->giveWays >= 1);
     }
+}
+
+// 21a. A crevice of mp_matmata (docs/spec/mp-bots.md "Stuck watch", "Navigation graph"): a slot as wide as the box at about
+//     4912 7696, its floor 8 units under the rim a node stood on. The graph has no node on the rim now; a bot that gets into
+//     the slot anyway (it is put there: pmove holds it there without ground) is out of it within seconds, not after the 20 s
+//     watch, and a bot placed on the slot's floor really is held there (the test is about this spot).
+void creviceTest(iw2::fs::Vfs& vfs) {
+    Game g(vfs, "mp_matmata", "sd", 1, 2);
+    run(g.w, 60);
+    const NavGraph& nav = g.w.mpNav();
+    for (const V3& q : nav.nodes) CHECK(!(flat(q, V3{4912, 7696, 45}) < 12.0f && std::fabs(q[2] - 45.0f) < 16.0f));
+    const int c = g.bots[0];
+    g.w.mpBotSetCombat(c, false);
+    Entity* e = g.w.mpClientEntity(c);
+    const V3 slot{4913, 7695, 37};
+    e->obj->set("origin", Value(iw2::script::Vec3{slot[0], slot[1], slot[2]}));
+    const int far = nav.nearest(V3{4656, 7760, 3}, 64.0f, true);
+    CHECK(far >= 0);
+    if (far < 0) return;
+    g.w.mpBotSetGoal(c, nav.nodes[size_t(far)], 32.0f);
+    run(g.w, 3);
+    const auto* b = g.w.mpBot(c);
+    CHECK(b && flat(b->ps.origin, slot) < 4.0f && !b->ps.onGround); // held: a floor under it and no ground
+    int f = 0;
+    for (; f < 20 * 8 && flat(e->obj->get("origin").asVector(), slot) < 64.0f; ++f) g.w.frame();
+    std::cout << "crevice: out of the slot after " << f / 20.0f << " s, lifts " << g.w.mpBotStats(c)->unwedges << "\n";
+    CHECK(flat(e->obj->get("origin").asVector(), slot) >= 64.0f);
+    CHECK(g.w.mpBotStats(c)->unwedges >= 1);
+    CHECK(g.w.mpBotStats(c)->stuckEvents == 0);
 }
 
 // 21. A turret whose use place was off the graph (docs/spec/mp-bots.md "Turrets"): the machine gun in the loft of
@@ -2291,6 +2320,7 @@ int main(int argc, char** argv) {
         statsRun(vfs, argv[2], argv[3], std::atoi(argv[4]), std::atoi(argv[5]), std::atoi(argv[6]), argc > 7 && std::string(argv[7]) == "scripted");
     else if (mode == "behaviour") behaviourTests(vfs);
     else if (mode == "giveway") giveWayTest(vfs);
+    else if (mode == "crevice") creviceTest(vfs);
     else if (mode == "hearing") hearingTests(vfs);
     else if (mode == "turretloft") turretLoftTest(vfs);
     else if (mode == "weapons") weaponTests(vfs);

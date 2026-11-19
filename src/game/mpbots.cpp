@@ -27,7 +27,7 @@ namespace {
 
 constexpr float kDt = 0.05f; // one server frame
 constexpr float kDeg = 3.14159265358979f / 180.0f;
-constexpr uint32_t kNavGenVersion = 10; // part of the cache key: bump when the generator changes
+constexpr uint32_t kNavGenVersion = 11; // part of the cache key: bump when the generator changes
 
 const BotSkill kSkills[4] = {
     // name       react  turn  noise omega damp  lead  tol   notice sight  burst pause  aimLag memory hear  steps  grenade corners
@@ -1044,7 +1044,11 @@ void World::mpBotFrame(MpBot& b) {
         wantJump = false;
     }
     if (now - b.progressMs >= 1000) {
-        if (walking && !engage && dist2(b.progressPos, b.ps.origin) < 24.0f) {
+        if (walking && !engage && !traverse && dist2(b.progressPos, b.ps.origin) < 24.0f && mpBotUnwedge(b, *e, moveDir)) {
+            b.stuck = 0; // lifted out of a wedge: the path is planned again from where the bot lands
+            b.path.clear();
+            b.pathIdx = 0;
+        } else if (walking && !engage && dist2(b.progressPos, b.ps.origin) < 24.0f) {
             wantJump = true;
             // No way to a detour: it is given up at once (docs/spec/mp-bots.md "Detours").
             if (b.detour.kind != BotDetour::None && !objReached) mpBotDetourStuck(b);
@@ -1353,6 +1357,52 @@ void World::mpBotMeasure(MpBot& b, Entity& self, bool fighting) {
     if (!b.lastSlots.empty() && b.lastSlots != slots) ++b.stats.weaponPickups; // a weapon taken from the ground
     b.lastSlots = slots;
     b.lastRounds = rounds;
+}
+
+// A bot that wants to walk, has not moved for a second and has no ground under it while standing still is held by pmove
+// at a spot where its box rests on a floor but the ground trace finds none (the box touches two slanted faces of a
+// crevice and its start is inside them by the trace epsilon; a jump needs the ground, so none helps). The box is lifted
+// to the first free height within a step and thrown out along the first free direction (the way the path leads first),
+// which is what a player does by hand. Returns whether it did (docs/spec/mp-bots.md "Stuck watch").
+bool World::mpBotUnwedge(MpBot& b, Entity& e, const std::array<float, 2>& moveDir) {
+    // Held: no ground and not moved in the second the stuck watch looked at (a fall or a flight moves it).
+    if (b.ps.onGround || b.ps.onLadder || b.ps.mantling || b.ps.pmType != 0 || dist3(b.progressPos, b.ps.origin) > 1.0f) return false;
+    const uint32_t mask = multiplayerMoveParams().traceMask;
+    const Vec3 mins{-15, -15, 0}, maxs{15, 15, 70};
+    // The first free box above the spot, nudged sideways when the faces hold the box inside them at every height.
+    Vec3 out{};
+    bool freed = false;
+    for (const float dz : {1.0f, 2.0f, 4.0f, 8.0f, 12.0f, 18.0f, 24.0f}) {
+        for (const float r : {0.0f, 0.25f, 0.5f, 1.0f, 2.0f}) {
+            for (int k = 0; k < (r == 0.0f ? 1 : 8) && !freed; ++k) {
+                const float a = float(k) * 0.785398f;
+                const Vec3 at{b.ps.origin[0] + std::cos(a) * r, b.ps.origin[1] + std::sin(a) * r, b.ps.origin[2] + dz};
+                if (!collision_->trace(at, at, mins, maxs, mask, e.number).startSolid) out = at, freed = true;
+            }
+            if (freed) break;
+        }
+        if (freed) break;
+    }
+    if (!freed) return false;
+    // The directions: the walk direction first, then the other seven; the first where the box, raised by a step, gets 40 units.
+    const float base = std::atan2(moveDir[1], moveDir[0]);
+    std::array<float, 2> dir{0, 0};
+    for (int k = 0; k < 8; ++k) {
+        const float a = base + float(k) * 0.785398f;
+        const Vec3 from{out[0], out[1], out[2] + 18.0f};
+        const Vec3 to{from[0] + std::cos(a) * 40.0f, from[1] + std::sin(a) * 40.0f, from[2]};
+        const TraceResult t = collision_->trace(from, to, mins, maxs, mask, e.number);
+        if (!t.startSolid && t.fraction >= 1.0f) {
+            dir = {std::cos(a), std::sin(a)};
+            break;
+        }
+    }
+    if (dir[0] == 0 && dir[1] == 0) return false;
+    b.ps.origin = out;
+    b.ps.velocity = {dir[0] * 150.0f, dir[1] * 150.0f, 270.0f}; // a jump's speed (jump_height 39), flying out of the crevice
+    ++b.stats.unwedges;
+    if (std::getenv("IW2_BOT_STUCKDBG")) std::fprintf(stderr, "UNWEDGE bot %d at %.1f %.1f %.1f\n", b.client, b.ps.origin[0], b.ps.origin[1], b.ps.origin[2]);
+    return true;
 }
 
 // Measures how long a bot that wants to walk stays on the spot (docs/spec/mp-bots.md "Stuck watch").

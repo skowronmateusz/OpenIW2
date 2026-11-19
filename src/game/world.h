@@ -2103,6 +2103,7 @@ private:
     void registerChatBuiltins(); // sayAll / sayTeam / pingPlayer (src/game/mpchat.cpp)
     void mpBotsFrame();
     void mpBotFrame(MpBot& b); // one bot's controller step (src/game/mpbots.cpp)
+    bool mpBotUnwedge(MpBot& b, Entity& e, const std::array<float, 2>& moveDir);
     void mpBotMeasureStall(MpBot& b, bool wantsWalk, float step, const std::array<float, 2>& dir);
     bool mpBotGiveWay(MpBot& b, Entity& self, std::array<float, 2>& moveDir); // out of a team mate's way (src/game/mpbots.cpp)
     void mpBotMeasure(MpBot& b, Entity& self, bool fighting);
