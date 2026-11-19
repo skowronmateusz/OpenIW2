@@ -2584,6 +2584,7 @@ struct Renderer {
         float probeGrid[2][4]; // reflection probes: xyz grid origin, w 1 / cell size; xyz cells per axis, w 1 = probes present
         float mipBias[4];      // x: log2 of the render scale (stage 5)
         float rtParams[4];     // stage 5 ray queries: x 1 = ray-traced reflections, y roughness cutoff (GGX alpha), z range
+        float giParams[4];     // ray-traced global illumination: x strength (set once the frame's image exists)
     };
     std::vector<const game::MapLight*> bakedShadowLights; // this frame's baked lights with moving-caster shadows (atlas rows 4, 5)
     // Materials (stage 3): the sky cube with a mip chain for rough reflections, and this frame's history / depth for reflections.
@@ -2779,11 +2780,23 @@ struct Renderer {
     SDL_GPUTexture* rtLightTex = nullptr; // the effect lights' ray-traced visibility, one channel each (AO size)
     bool rtLightsReady = false;           // this frame's rtLightTex holds them
     uint32_t rtShadowW = 0, rtShadowH = 0;
+    // Ray-traced global illumination (docs/render-enhanced.md): the half-size image (radiance the moving objects bounce onto the
+    // visible surfaces, filtered and accumulated over the frames) that the scene shaders add to the baked light.
+    bool rtGINow = false;                       // this frame: on (ultra preset or r_enhRTGI, ray tracing, TAA history to take radiance from)
+    SDL_GPUTexture* giTex[2] = {nullptr, nullptr}; // the accumulated image (rgb light, a view depth), ping-pong
+    SDL_GPUTexture* giRaw = nullptr;            // this frame's rays' radiance (compute output)
+    SDL_GPUGraphicsPipeline* enhGiResolvePipe = nullptr;
+    uint32_t giW = 0, giH = 0;
+    int giCur = 0;                              // the image written last
+    bool giReady = false;                       // this frame's image exists (bound by enhBind)
+    uint64_t giLastFrame = ~0ull;               // the frame it was last made in (its history is valid for the next one)
+    uint64_t giScene = 0;
+    void enhRTGI(SDL_GPUCommandBuffer* cmd, uint32_t hw, uint32_t hh, const game::Mat4c& inv, const float zl[2], const float eye[3], const Mat4& vp);
     void prepareSceneRT(SDL_GPUCommandBuffer* cmd, const Scene& scene, const std::vector<DrawItem>& items) {
         if (!metalCaps.rayTracing || !enh.enabled) return;
         if (sceneRTFrame == frameCounter) return; // once a frame (the AO pass and the scene pass both ask)
         sceneRTFrame = frameCounter;
-        const bool active = rtReflNow || rtShadowNow;
+        const bool active = rtReflNow || rtShadowNow || rtGINow;
         if (active && sceneRTFor != scene.serial) {
             sceneRTFor = scene.serial;
             sceneRT.clearStatic();
@@ -2926,6 +2939,7 @@ struct Renderer {
         enhMfxMotionPipe = mk("fs_enh_mfx_motion", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT);
         enhAlphaMaskPipe = mk("fs_enh_alpha_mask", 1, 0, false, false, false, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
         enhMfxDepthPipe = mk("fs_enh_mfx_depth", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R32_FLOAT);
+        enhGiResolvePipe = mk("fs_enh_gi_resolve", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhVolumePipe = mk("fs_enh_volume", 3, 2, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhVolumeApplyPipe = mk("fs_enh_volume_apply", 1, 0, true, false, true, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhMotionBlurPipe = mk("fs_enh_motion_blur", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
@@ -3115,15 +3129,16 @@ struct Renderer {
     void enhBind(SDL_GPURenderPass* pass, SDL_GPUCommandBuffer* cmd, uint32_t shadowSlot, const DrawItem* it, const std::vector<DrawItem>& items,
                  bool noScreenSpace = false, int reflectClass = 0) {
         if (!enh.enabled) return;
-        const SDL_GPUTextureSamplerBinding sb[7] = {
+        const SDL_GPUTextureSamplerBinding sb[8] = {
             {shadowCascadesNow > 0 ? shadowTex : shadowDummy, shadowCmpSampler},
             {worldCascadesNow > 0 ? worldShadowArray : shadowDummyArray, shadowCmpSampler},
             {aoReady ? aoTex[0] : aoWhite, clampSampler},
             {envCube ? envCube : envDummy, clampSampler},
             {frameHist ? frameHist : aoWhite, clampSampler},
             {frameDepth ? frameDepth : aoWhite, pointClampSampler},
-            {lightShadowAtlas ? lightShadowAtlas : shadowDummy, shadowCmpSampler}};
-        SDL_BindGPUFragmentSamplers(pass, shadowSlot, sb, 7);
+            {lightShadowAtlas ? lightShadowAtlas : shadowDummy, shadowCmpSampler},
+            {giReady ? giTex[giCur] : aoWhite, clampSampler}}; // ray-traced global illumination (read only where its strength is set)
+        SDL_BindGPUFragmentSamplers(pass, shadowSlot, sb, 8);
         SDL_GPUBuffer* const storage[3] = {latticeBuf, probeIdxDummy, probeIdxBuf ? probeIdxBuf : probeIdxDummy};
         SDL_BindGPUFragmentStorageBuffers(pass, 0, storage, 3); // lattice, (static-model lighting, bound by its draw), probe index
         EnhDrawUC d{};
@@ -3177,7 +3192,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo fmain = fs;
         SDL_GPUShader* overlayFsh = nullptr; // enhanced: the HUD keeps the default fs_main (no shadow / lattice resources)
         if (enh.enabled) {
-            fmain.num_samplers = 11;       // + moving-caster shadows, world cascades, AO, environment cube, history, $floatz
+            fmain.num_samplers = 12;       // + moving-caster shadows, world cascades, AO, environment cube, history, $floatz, light atlas, global illumination
             fmain.num_uniform_buffers = 3; // + EnhFragU (slot 1) and EnhDrawU (slot 2)
             fmain.num_storage_buffers = 3; // the light-grid lattices, (static-model lighting), the reflection probe index
             SDL_GPUShaderCreateInfo plain = fs;
@@ -3221,7 +3236,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo sfsi = fs;
         sfsi.entrypoint = "fs_spec";
         sfsi.num_samplers = 8;
-        if (enh.enabled) sfsi.num_samplers = 15, sfsi.num_uniform_buffers = 3, sfsi.num_storage_buffers = 3;
+        if (enh.enabled) sfsi.num_samplers = 16, sfsi.num_uniform_buffers = 3, sfsi.num_storage_buffers = 3;
         SDL_GPUShaderCreateInfo dfsi = fs;
         dfsi.entrypoint = "fs_dlight";
         dfsi.num_samplers = 3;
@@ -3241,7 +3256,7 @@ struct Renderer {
         SDL_GPUShaderCreateInfo pfsi = fs;
         pfsi.entrypoint = "fs_probe";
         pfsi.num_samplers = 5;
-        if (enh.enabled) pfsi.num_samplers = 12, pfsi.num_uniform_buffers = 3, pfsi.num_storage_buffers = 3;
+        if (enh.enabled) pfsi.num_samplers = 13, pfsi.num_uniform_buffers = 3, pfsi.num_storage_buffers = 3;
         SDL_GPUShader* probeVsh = SDL_CreateGPUShader(dev, &pvsi);
         SDL_GPUShader* probeFsh = SDL_CreateGPUShader(dev, &pfsi);
         if (!probeVsh || !probeFsh) sdlFail("probe shaders");
@@ -3614,7 +3629,7 @@ struct Renderer {
             wfs.entrypoint = "fs_water";
             wfs.num_samplers = 2;
             wfs.num_uniform_buffers = 1;
-            if (enh.enabled) wfs.num_samplers = 9, wfs.num_uniform_buffers = 3, wfs.num_storage_buffers = 3; // after the default count
+            if (enh.enabled) wfs.num_samplers = 10, wfs.num_uniform_buffers = 3, wfs.num_storage_buffers = 3; // after the default count
             SDL_GPUShader* wv = SDL_CreateGPUShader(dev, &wvs);
             SDL_GPUShader* wf = SDL_CreateGPUShader(dev, &wfs);
             SDL_GPUShader* wfRT = nullptr; // stage 5: the water with ray-traced reflections
@@ -4015,6 +4030,8 @@ struct Renderer {
         rtShadowNow = enh.enabled && (enh.rtShadows || enh.rtContactAO || (enh.rtLightShadows && enh.lightShadows && !dlights.empty())) &&
                       metalCaps.rayTracing && !capturingProbes;
         rtLightsReady = false;
+        rtGINow = enh.enabled && enh.rtGI && metalCaps.rayTracing && taaOn && !capturingProbes; // (everywhere else the ultra preset is the high one)
+        giReady = false;
         ++frameCounter;
         frameItems = &items;
         if (taaOn) {
@@ -4235,7 +4252,7 @@ struct Renderer {
             stats.phase = 0;
             }
             if (enh.enabled) frameDepth = floatzTex; // screen-space reflections read it
-            if (enh.enabled && (enh.ao || enh.contactShadows || rtShadowNow)) enhAO(cmd, rw, rh, cam, scene);
+            if (enh.enabled && (enh.ao || enh.contactShadows || rtShadowNow || rtGINow)) enhAO(cmd, rw, rh, cam, scene);
         }
         prepareSceneRT(cmd, scene, items); // stage 5: the frame's ray query scene, before the scene passes
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &color, 1, &ds);
@@ -5809,6 +5826,7 @@ void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Ca
             full[48 + k * 4 + 3] = dlights[size_t(k)].radius;
         }
         full[64] = game::kRtEffectLightSize;
+        full[65] = rtGINow ? game::kRtGiOcclusionRange : 0.0f; // global illumination: the occlusion reaches further
         if (rtShadowTex && rtLightTex && sceneRT.shadowPass(dev, cmd, floatzTex, rtShadowTex, rtLightTex, hw, hh, full)) {
             u.rt[0] = 1.0f;
             rtLightsReady = rtLights;
@@ -5831,9 +5849,64 @@ void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Ca
     const float bu[4] = {1.0f / float(hw), 1.0f / float(hh), 0, 0};
     pass(enhAoBlurPipe, aoTex[0], aoTex[1], pointClampSampler, bu, sizeof bu);
     aoReady = true;
+    if (rtGINow) {
+        prepareSceneRT(cmd, scene, *frameItems);
+        enhRTGI(cmd, hw, hh, inv, zl.data(), eye, vp);
+    }
     // the frame's slot-1 uniforms with the frame size, pushed again now that the AO image exists
     enhFragPending.aoParams[0] = 1.0f / float(w), enhFragPending.aoParams[1] = 1.0f / float(h);
+    enhFragPending.giParams[0] = giReady ? game::kRtGiStrength : 0.0f;
     SDL_PushGPUFragmentUniformData(cmd, 1, &enhFragPending, sizeof enhFragPending);
+}
+
+// Ray-traced global illumination (docs/render-enhanced.md "Ray-traced global illumination"): one ray a frame per half-size pixel
+// against the moving objects, the radiance of a hit from the previous frame's image; a depth-aware filter and the accumulation over
+// the frames (reprojected by the camera's motion) make the image the scene shaders add to the baked light.
+void Renderer::enhRTGI(SDL_GPUCommandBuffer* cmd, uint32_t hw, uint32_t hh, const game::Mat4c& inv, const float zl[2], const float eye[3], const Mat4& vp) {
+    giReady = false;
+    SDL_GPUTexture* hist = taaHist[taaCur];
+    if (!enhGiResolvePipe || !hist || !taaHistValid || !taaPrevVPValid || taaW != outW || taaH != outH || !floatzTex) return;
+    if (!giTex[0] || giW != hw || giH != hh) {
+        for (SDL_GPUTexture** t : {&giTex[0], &giTex[1], &giRaw}) if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
+        SDL_GPUTextureCreateInfo ti{};
+        ti.type = SDL_GPU_TEXTURETYPE_2D, ti.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+        ti.width = hw, ti.height = hh, ti.layer_count_or_depth = 1, ti.num_levels = 1;
+        ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        giTex[0] = SDL_CreateGPUTexture(dev, &ti), giTex[1] = SDL_CreateGPUTexture(dev, &ti);
+        ti.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE;
+        giRaw = SDL_CreateGPUTexture(dev, &ti);
+        giW = hw, giH = hh, giLastFrame = ~0ull;
+    }
+    if (!giTex[0] || !giTex[1] || !giRaw) return;
+    const bool histValid = giLastFrame == frameCounter - 1 && giScene == sceneRTFor;
+    float u[64] = {};
+    std::memcpy(u, inv.data(), sizeof(float) * 16);
+    u[16] = zl[0], u[17] = zl[1], u[18] = 262144.0f * 2.0f * 1.7f, u[19] = float(aoFrame % 4096u);
+    u[20] = eye[0], u[21] = eye[1], u[22] = eye[2];
+    std::memcpy(u + 24, vp.data(), sizeof(float) * 16);
+    std::memcpy(u + 40, taaPrevVP.data(), sizeof(float) * 16);
+    u[56] = 1.0f / float(hw), u[57] = 1.0f / float(hh), u[58] = float(hw), u[59] = float(hh);
+    u[60] = game::kRtGiRange, u[61] = game::kRtGiRadianceCap, u[62] = 1.0f;
+    if (!sceneRT.giPass(dev, cmd, floatzTex, hist, giRaw, hw, hh, u)) return;
+    struct { float inv[16], prev[16], z[4], size[4], params[4]; } ru{};
+    std::memcpy(ru.inv, inv.data(), sizeof ru.inv);
+    std::memcpy(ru.prev, taaPrevVP.data(), sizeof ru.prev);
+    ru.z[0] = zl[0], ru.z[1] = zl[1];
+    ru.size[0] = 1.0f / float(hw), ru.size[1] = 1.0f / float(hh);
+    ru.params[0] = game::kRtGiBlend, ru.params[1] = histValid ? 1.0f : 0.0f;
+    const int dst = 1 - giCur;
+    SDL_GPUColorTargetInfo ct{};
+    ct.texture = giTex[dst], ct.load_op = SDL_GPU_LOADOP_DONT_CARE, ct.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(p, enhGiResolvePipe);
+    const SDL_GPUTextureSamplerBinding b[2] = {{giRaw, pointClampSampler}, {histValid ? giTex[giCur] : giRaw, clampSampler}};
+    SDL_BindGPUFragmentSamplers(p, 0, b, 2);
+    SDL_PushGPUFragmentUniformData(cmd, 0, &ru, sizeof ru);
+    SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(p);
+    giCur = dst, giLastFrame = frameCounter, giScene = sceneRTFor, giReady = true;
+    static bool logged = false;
+    if (!logged) logged = true, std::cout << "ray-traced global illumination: " << hw << "x" << hh << ", range " << game::kRtGiRange << " units\n";
 }
 
 // Point light shadows: per light (first kLightShadowMax), six perspective faces (game::cubeFace axes) into a 3 x 2 tile block of the

@@ -120,7 +120,7 @@ const std::vector<EnhancedRow>& enhancedRows() {
     using C = std::vector<std::pair<std::string, std::string>>;
     static const std::vector<EnhancedRow> rows = {
         {"iw2_enh_master", "@IW2_ENH_MASTER", "r_enhanced", EnhancedRow::Choices, C{{"@MENU_OFF", "0"}, {"@MENU_ON", "1"}}, true},
-        {"iw2_enh_preset", "@IW2_ENH_QUALITY", "r_enhPreset", EnhancedRow::Choices, C{{"@MENU_LOW", "0"}, {"@MENU_MEDIUM", "1"}, {"@MENU_HIGH", "2"}}, false},
+        {"iw2_enh_preset", "@IW2_ENH_QUALITY", "r_enhPreset", EnhancedRow::Choices, C{{"@MENU_LOW", "0"}, {"@MENU_MEDIUM", "1"}, {"@MENU_HIGH", "2"}, {"@IW2_ENH_ULTRA", "3"}}, false},
         {"iw2_enh_sun", "@IW2_ENH_SUN", "r_enhSunShadows", EnhancedRow::Choices,
          C{{"@IW2_ENH_PRESET", "-1"}, {"@MENU_OFF", "0"}, {"@MENU_LOW", "1"}, {"@MENU_MEDIUM", "2"}, {"@MENU_HIGH", "3"}}, false},
         {"iw2_enh_world", "@IW2_ENH_WORLD", "r_enhWorldShadows", EnhancedRow::Choices,
@@ -139,6 +139,7 @@ const std::vector<EnhancedRow>& enhancedRows() {
         {"iw2_enh_rtrefl", "@IW2_ENH_RTREFL", "r_enhRTReflections", EnhancedRow::Choices, C{{"@MENU_ON", "1"}, {"@MENU_OFF", "0"}}, false, EnhancedRow::RayTracing},
         {"iw2_enh_lights", "@IW2_ENH_LIGHTS", "r_enhLightShadows", EnhancedRow::PresetOnOff, {}, false},
         {"iw2_enh_rtlights", "@IW2_ENH_RTLIGHTS", "r_enhRTLightShadows", EnhancedRow::Choices, C{{"@MENU_ON", "1"}, {"@MENU_OFF", "0"}}, false, EnhancedRow::RayTracing},
+        {"iw2_enh_rtgi", "@IW2_ENH_RTGI", "r_enhRTGI", EnhancedRow::Choices, C{{"@IW2_ENH_PRESET", "-1"}, {"@MENU_OFF", "0"}, {"@MENU_ON", "1"}}, false, EnhancedRow::RayTracing},
         {"iw2_enh_rtbehind", "@IW2_ENH_RTBEHIND", "r_enhRTBeyondView", EnhancedRow::Choices, C{{"@MENU_ON", "1"}, {"@MENU_OFF", "0"}}, false, EnhancedRow::RayTracing},
         {"iw2_enh_lamps", "@IW2_ENH_LAMPS", "r_enhMapLightSpec", EnhancedRow::PresetOnOff, {}, false},
         {"iw2_enh_probes", "@IW2_ENH_PROBES", "r_enhProbes", EnhancedRow::PresetOnOff, {}, false},
@@ -184,6 +185,8 @@ std::vector<std::pair<std::string, std::string>> openIw2Strings(const std::strin
         {"IW2_ENH_RTSHADOW", "RT shadows of moving objects", "RT shadows of moving objects"},
         {"IW2_ENH_RTAO", "RT contact occlusion", "RT contact occlusion"},
         {"IW2_ENH_RTLIGHTS", "RT shadows of flashes", "RT shadows of flashes"},
+        {"IW2_ENH_ULTRA", "Ultra", "Ultra"},
+        {"IW2_ENH_RTGI", "RT global illumination", "RT global illumination"},
         {"IW2_ENH_RTBEHIND", "RT behind the camera", "RT behind the camera"},
         {"IW2_ENH_SCALE", "MetalFX render resolution", "MetalFX render resolution"},
         {"IW2_ENH_SCALE_NATIVE", "Native", "Native"},

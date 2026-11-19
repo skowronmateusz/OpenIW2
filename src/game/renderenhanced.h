@@ -71,7 +71,7 @@ inline float casterReachForBounds(const float towardsSun[3], const float centre[
 
 struct EnhancedSettings {
     bool enabled = false;    // r_enhanced (latched when the renderer starts)
-    int preset = 1;          // r_enhPreset: 0 low, 1 medium, 2 high
+    int preset = 1;          // r_enhPreset: 0 low, 1 medium, 2 high, 3 ultra (high plus ray-traced global illumination)
     bool tonemap = true;     // r_enhTonemap: highlight shoulder instead of the clip at 1
     bool bloom = true;       // r_enhBloom: bloom of the light above display white (the original glow chain stays)
     bool autoExposure = true; // r_enhAutoExposure
@@ -97,6 +97,7 @@ struct EnhancedSettings {
     bool playerShadow = true; // r_enhPlayerShadow: a shadow-only body of the player (sun shadows, ray tracing), never drawn in the view
     bool rtBeyondView = true; // r_enhRTBeyondView: objects behind the camera (within kRtBeyondViewRange) in the ray tracing (CPU skinning)
     bool rtContactAO = true; // r_enhRTContactAO: ray-traced contact occlusion of the moving objects (GPU family 9+)
+    bool rtGI = false;       // r_enhRTGI: ray-traced one-bounce indirect light of the moving objects (GPU family 9+; on in the ultra preset only)
     bool rtReflections = true; // r_enhRTReflections: ray-traced reflections on water and the reflective surfaces (GPU family 9+)
     float renderScale = 1.0f; // r_enhRenderScale: scene resolution as a fraction of the window, upscaled by MetalFX (0.5..1)
     float dof = 0.0f;        // r_enhDOF: depth of field while aiming down the sights (0 = off, 1 = default strength, up to 2)
@@ -120,9 +121,10 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     };
     float f = 0.0f;
     s.enabled = num("r_enhanced", f) && f != 0.0f;
-    if (num("r_enhPreset", f)) s.preset = std::clamp(int(f), 0, 2);
+    if (num("r_enhPreset", f)) s.preset = std::clamp(int(f), 0, 3);
     switch (s.preset) {
         case 0: s.sunShadows = 1, s.worldShadows = 0, s.bloom = true, s.autoExposure = false, s.gridPerPixel = true, s.ao = false, s.contactShadows = false, s.taa = false, s.ssr = false, s.lightShadows = false, s.volumetric = 0.0f, s.mapLightSpec = false, s.probes = false; break;
+        case 3: s.rtGI = true; [[fallthrough]]; // ultra = high + ray-traced global illumination (where the GPU has ray tracing)
         case 2: s.volumetric = 0.35f, s.sunShadows = 3, s.worldShadows = 2, s.bloom = true, s.autoExposure = true, s.gridPerPixel = true; break;
         default: break;
     }
@@ -155,6 +157,7 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhRTContactAO", f)) s.rtContactAO = f != 0.0f;
     if (num("r_enhRTLightShadows", f)) s.rtLightShadows = f != 0.0f;
     if (num("r_enhRTBeyondView", f)) s.rtBeyondView = f != 0.0f;
+    if (num("r_enhRTGI", f)) s.rtGI = f != 0.0f;
     if (num("r_enhPlayerShadow", f)) s.playerShadow = f != 0.0f;
     if (num("r_enhMotionDebug", f)) s.motionDebug = std::clamp(int(f), 0, 2);
     if (num("r_enhBloomIntensity", f)) s.bloomIntensity = std::clamp(f, 0.0f, 1.0f);
@@ -701,6 +704,49 @@ constexpr float kRtEffectLightSize = 4.0f;
 // Objects outside the view that still go into the ray tracing scene (reflections, shadows): within this many units of the eye.
 constexpr float kRtBeyondViewRange = 1500.0f;
 inline bool withinRtBeyondViewRange(float dx, float dy, float dz) { return dx * dx + dy * dy + dz * dz <= kRtBeyondViewRange * kRtBeyondViewRange; }
+
+// ---- ray-traced global illumination (docs/render-enhanced.md "Ray-traced global illumination") ----------------------------------------
+// One cosine-weighted ray a frame per half-size pixel against the moving objects; a hit sends back the previous frame's image at that
+// point. Rays are `kRtGiRange` units long (the hit's light fades over the outer half), the radiance of a hit is capped at
+// `kRtGiRadianceCap` (display encoding, 1 = white; highlights and the sun's glare must not become light sources), the accumulated
+// image takes `kRtGiBlend` of the new frame, and the scene shaders add it scaled by `kRtGiStrength`.
+constexpr float kRtGiRange = 300.0f, kRtGiRadianceCap = 1.5f, kRtGiBlend = 0.12f, kRtGiStrength = 1.0f, kRtGiOcclusionRange = 200.0f;
+
+// A cosine-weighted direction about the unit normal n from two uniform numbers in [0, 1) (the kernel's sampling): the density is
+// proportional to the cosine with the normal, so a ray's radiance is the irradiance divided by pi without a further weight.
+inline std::array<float, 3> cosineHemisphereDir(const float n[3], float u1, float u2) {
+    const float up[3] = {std::fabs(n[2]) < 0.9f ? 0.0f : 1.0f, 0.0f, std::fabs(n[2]) < 0.9f ? 1.0f : 0.0f};
+    float t1[3] = {n[1] * up[2] - n[2] * up[1], n[2] * up[0] - n[0] * up[2], n[0] * up[1] - n[1] * up[0]};
+    const float l = std::sqrt(t1[0] * t1[0] + t1[1] * t1[1] + t1[2] * t1[2]);
+    for (float& c : t1) c /= l;
+    const float t2[3] = {n[1] * t1[2] - n[2] * t1[1], n[2] * t1[0] - n[0] * t1[2], n[0] * t1[1] - n[1] * t1[0]};
+    const float a = 6.2831853f * u1, r = std::sqrt(u2), z = std::sqrt(1.0f - u2);
+    std::array<float, 3> d{};
+    for (int k = 0; k < 3; ++k) d[size_t(k)] = t1[k] * (std::cos(a) * r) + t2[k] * (std::sin(a) * r) + n[k] * z;
+    return d;
+}
+
+// How much of a hit's light counts at distance `dist` along a ray of length `range`: all of it up to half the range, then a smooth
+// (smoothstep) fall to nothing at the end, so a moving object entering the range does not pop.
+inline float giHitFade(float dist, float range) {
+    const float t = std::clamp((dist / range - 0.5f) / 0.5f, 0.0f, 1.0f);
+    return 1.0f - t * t * (3.0f - 2.0f * t);
+}
+
+// Whether the previous frame's accumulated value at a reprojected point is still the same surface: its view depth against the depth
+// the point has now (a moving object, a disocclusion and a new surface all differ).
+inline bool giHistoryAccepted(float historyDepth, float expectedDepth) {
+    return std::fabs(historyDepth - expectedDepth) < std::max(expectedDepth * 0.03f, 6.0f);
+}
+
+// The accumulation: the new frame's weight is 1 where the history was rejected, else `blend`.
+inline float giAccumulate(float previous, float current, bool historyAccepted, float blend) {
+    const float w = historyAccepted ? blend : 1.0f;
+    return previous + (current - previous) * w;
+}
+
+// Frames of the accumulation that matter (the weight of a frame n frames old is below 5 %): about 2.3 / blend for the exponential average.
+inline int giEffectiveFrames(float blend) { return blend > 0.0f ? int(std::ceil(std::log(0.05f) / std::log(1.0f - std::min(blend, 0.999f)))) : 0; }
 
 inline bool metalRayTracingAllowed(bool supportsRaytracing, bool apple9, bool forcedOff) {
     return supportsRaytracing && apple9 && !forcedOff;

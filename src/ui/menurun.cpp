@@ -74,7 +74,7 @@ std::string registeredDefault(const std::string& n) {
         // openiw2 enhanced rendering (docs/render-enhanced.md "Menu"): off; the per-feature rows -1 = as the preset
         {"r_enhanced", "0"}, {"r_enhPreset", "1"}, {"r_enhSunShadows", "-1"}, {"r_enhWorldShadows", "-1"}, {"r_enhAO", "-1"},
         {"r_enhContactShadows", "-1"}, {"r_enhTAA", "-1"}, {"r_enhGGX", "-1"}, {"r_enhSSR", "-1"}, {"r_enhLightShadows", "-1"},
-        {"r_enhMapLightSpec", "-1"}, {"r_enhProbes", "-1"}, {"r_enhMetalFX", "0"}, {"r_enhRenderScale", "1"}, {"r_enhRTReflections", "1"}, {"r_enhRTShadows", "1"}, {"r_enhRTContactAO", "1"}, {"r_enhRTLightShadows", "1"}, {"r_enhRTBeyondView", "1"}, {"r_enhPlayerShadow", "-1"}, {"r_enhVolumetric", "-1"}, {"r_enhBloom", "-1"}, {"r_enhAutoExposure", "-1"}, {"r_enhGrade", "0"},
+        {"r_enhMapLightSpec", "-1"}, {"r_enhProbes", "-1"}, {"r_enhMetalFX", "0"}, {"r_enhRenderScale", "1"}, {"r_enhRTReflections", "1"}, {"r_enhRTShadows", "1"}, {"r_enhRTContactAO", "1"}, {"r_enhRTLightShadows", "1"}, {"r_enhRTBeyondView", "1"}, {"r_enhPlayerShadow", "-1"}, {"r_enhRTGI", "-1"}, {"r_enhVolumetric", "-1"}, {"r_enhBloom", "-1"}, {"r_enhAutoExposure", "-1"}, {"r_enhGrade", "0"},
         {"r_enhMotionBlur", "0"}, {"r_enhDOF", "0"}, {"r_enhEdr", "1"},
         {"monkeytoy", "1"},         // 0x4037ba
         {"cl_freelook", "1"},       // 0x40e2e0

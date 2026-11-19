@@ -300,6 +300,46 @@ fragment float4 fs_enh_ao_blur(GlowVOut in [[stage_in]], constant float4& u [[bu
     return float4(sum.xy, c.z, sum.z);
 }
 
+// ---- ray-traced global illumination: the filter of the half-size, one-ray-a-frame radiance (docs/render-enhanced.md) ----
+struct GiResolveU {
+    float4x4 inv;   // inverse (jittered) view-projection of this frame
+    float4x4 prev;  // the previous frame's view-projection
+    float4 z;       // x, y: clip z = x * w + y
+    float4 size;    // 1 / w, 1 / h of this (half-size) image
+    float4 params;  // x: weight of the new frame, y: 1 = history valid
+};
+// A depth-aware 5 x 5 blur of the raw radiance (a = view depth), then the temporal accumulation: the previous result reprojected by
+// the camera's motion and blended in at 1 - params.x, rejected where its depth does not match (a moving surface, a disocclusion).
+fragment float4 fs_enh_gi_resolve(GlowVOut in [[stage_in]], constant GiResolveU& u [[buffer(0)]], texture2d<float> raw [[texture(0)]], sampler rs [[sampler(0)]],
+                                  texture2d<float> hist [[texture(1)]], sampler hs [[sampler(1)]]) {
+    const float4 c = raw.sample(rs, in.uv);
+    if (c.w > 5e4) return float4(0.0, 0.0, 0.0, c.w); // sky
+    float3 sum = 0.0;
+    float wsum = 0.0;
+    for (int y = -2; y <= 2; ++y)
+        for (int x = -2; x <= 2; ++x) {
+            const float4 t = raw.sample(rs, in.uv + float2(x, y) * u.size.xy);
+            if (t.w > 5e4) continue;
+            const float wgt = 1.0 / (1.0 + abs(t.w - c.w) / max(c.w * 0.02, 1.0) * 4.0);
+            sum += t.rgb * wgt;
+            wsum += wgt;
+        }
+    const float3 spatial = sum / max(wsum, 1e-4);
+    float blend = 1.0;
+    float3 prevRgb = spatial;
+    if (u.params.y > 0.5) {
+        const float cz = u.z.x * c.w + u.z.y;
+        const float4 p = u.inv * float4(float2(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0) * c.w, cz, c.w);
+        const float4 pc = u.prev * float4(p.xyz / p.w, 1.0);
+        const float2 puv = float2(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5);
+        if (pc.w > 1.0 && all(puv > 0.0) && all(puv < 1.0)) {
+            const float4 h = hist.sample(hs, puv);
+            if (abs(h.w - pc.w) < max(pc.w * 0.03, 6.0)) blend = u.params.x, prevRgb = h.rgb;
+        }
+    }
+    return float4(mix(prevRgb, spatial, blend), c.w);
+}
+
 // Debug view (r_enhMotionDebug 2): AO in red, contact shadow in green.
 fragment float4 fs_enh_ao_view(GlowVOut in [[stage_in]], texture2d<float> ao [[texture(0)]], sampler s [[sampler(0)]]) {
     const float2 a = ao.sample(s, in.uv).rg;

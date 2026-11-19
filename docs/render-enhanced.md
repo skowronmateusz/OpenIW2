@@ -16,7 +16,7 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | Cvar | Default | Meaning |
 |---|---|---|
 | `r_enhanced` | 0 | 1 = enhanced mode. Read when the renderer starts (like `r_aaSamples`), so it applies at the next start. |
-| `r_enhPreset` | 1 | Quality preset: 0 low, 1 medium, 2 high. Fills the per-feature settings below. |
+| `r_enhPreset` | 1 | Quality preset: 0 low, 1 medium, 2 high, 3 ultra (high plus ray-traced global illumination; on GPUs without hardware ray tracing it is the high preset). Fills the per-feature settings below. |
 | `r_enhSunShadows` | preset | Sun shadows of moving objects: 0 off, 1 low (1024², 4 taps), 2 medium (2048², 8 taps), 3 high (two 2048² cascades, 12 taps). |
 | `r_enhGridPerPixel` | 1 | Light-grid lattice per model instead of one sample per model. |
 | `r_enhTonemap` | 1 | Highlight shoulder instead of the clip at white. |
@@ -42,6 +42,7 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhRTShadows` | 1 | Ray-traced sun and lamp shadows of the moving objects, soft (GPU family 9 and later; see "Stage 5"). |
 | `r_enhRTContactAO` | 1 | Ray-traced contact occlusion of the moving objects (GPU family 9 and later). |
 | `r_enhRTLightShadows` | 1 | Ray-traced shadows of the effect lights (muzzle flashes, explosions), with `r_enhLightShadows` (GPU family 9 and later). |
+| `r_enhRTGI` | -1 | Ray-traced global illumination of the moving objects (GPU family 9 and later; -1 = as the preset: on in ultra only; see "Ray-traced global illumination"). |
 | `r_enhRTBeyondView` | 1 | Objects outside the view but within 1500 units in the ray tracing (reflections, shadows); costs their CPU skinning. |
 | `r_enhRTReflections` | 1 | Ray-traced reflections on water and the reflective surface classes (GPU family 9 and later: M3 and later; see "Stage 5"). |
 | `r_enhRenderScale` | 1 | With MetalFX: the scene's resolution as a fraction of the window (0.5..1; the page offers 1, 0.77, 0.67, 0.5), upscaled by MetalFX. |
@@ -61,7 +62,7 @@ every preset. Gameplay, the server and the network are not affected; it is rende
 Options > OpenIW2 > Enhanced graphics (an OpenIW2 page added in memory to the game's own menus, src/ui/iw2options.cpp). The mode is
 experimental and may cause visual glitches and bugs; a note at the top of the page says so.
 - the master row (`r_enhanced`, Off / On, applies at the next start) is always shown; every other row only while it is On;
-- Quality (`r_enhPreset`: Low / Medium / High);
+- Quality (`r_enhPreset`: Low / Medium / High / Ultra);
 - one row per feature cvar; the on/off features offer Preset / On / Off, where Preset is the value -1 and leaves the feature to the
   quality choice (`game::enhancedSettings` ignores negative per-feature values); Sun shafts Preset / Off / On / Strong; Colour
   grade Neutral / Period film; Motion blur, Depth of field and HDR output Off / On;
@@ -429,6 +430,56 @@ Ray-traced occlusion of the static world was measured and left out: against the 
 changes about half the pixels by at most 22 of 255, nearly all by 1 to 3, darkening corners the screen-space AO already darkens;
 the lightmaps carry the indirect light.
 
+### Ray-traced global illumination (ultra preset)
+
+Our own design; nothing here is taken from the shipped game. The lightmaps and the light grid already hold the static world's
+bounce light, so a ray-traced one-bounce term must not add that again. What the baked light cannot hold is what moves: the
+objects block the sky and the bounce around them, and they send their own lit colour onto their surroundings. Two terms, both
+only for the moving objects (instance mask `kMaskDynamic`), on GPUs with hardware ray tracing and with TAA on, in the ultra
+preset (`r_enhPreset 3` = high plus this) or with `r_enhRTGI 1`; everywhere else ultra is the high preset, unchanged:
+- Bounce (`metal::SceneRT::giPass`, our kernel `rt_gi`): at the AO's half size, from the surface point and a normal from
+  `$floatz` (the same texel-centre rule as the shadow pass), one cosine-weighted ray a frame (`game::cosineHemisphereDir`)
+  up to `game::kRtGiRange` (300 units) against the moving objects. A hit that is the visible surface on screen
+  (the hit's clip depth matches `$floatz` there, as the reflections check it) sends back the previous frame's resolved image at
+  its previous screen position (textured, lit, shadowed, with the effect lights; one frame late), capped at
+  `kRtGiRadianceCap`, faded over the outer half of the range (`game::giHitFade`). A cosine-weighted ray needs no further
+  weight: its radiance is the irradiance over pi. A miss, or a hit off screen, adds nothing.
+- Filter and accumulation (`fs_enh_gi_resolve`): a depth-aware 5 x 5 blur of the noisy rays, then the exponential accumulation of
+  the previous result reprojected by the camera's motion (`game::kRtGiBlend` = 0.12 of the new frame, about 24 frames,
+  `game::giEffectiveFrames`), rejected where its depth no longer matches (`game::giHistoryAccepted`: a moving surface, a
+  disocclusion) so no ghost follows an object. TAA or MetalFX smooths what is left. The image is RGBA16F (light in rgb, the view
+  depth in a), ping-pong.
+- The scene shaders add it to the baked light after the AO (`ENH_GI`; the surface colour multiplies it like any light), so
+  the soldier sitting on a sunlit crate takes the crate's colour on his shaded side, a sunlit gun lightens the sand in its
+  shadow. Not on the view model and blended surfaces (no screen-space terms there).
+- Indirect occlusion: the contact occlusion's two rays a frame (rt shadow pass) reach `game::kRtGiOcclusionRange` = 200 units
+  instead of 40, the occlusion fading out between 40 and 200 units, so the ambient light around a vehicle or a crowd darkens
+  softly beyond the contact range. It multiplies the baked light through the same AO image.
+- The radiance of a hit is the previous frame's image, which includes this term: the bounce of the bounce comes free, and
+  it does not run away (the mean of a ground area next to a gun: 90.3 / 90.4 / 90.5 / 90.5 of 255 after 8 / 16 / 60 / 200
+  frames, 90.0 without it).
+- Cost: see "Cost". Memory: two half-size RGBA16F images and one raw one.
+
+Measured and left out (the cuts are on `toujane_soldier`, `elalamein` flak 88, `duhoc` beach at 1280 x 720, against the high preset,
+fraction of pixels that differ and their size in 8-bit levels):
+- Rays against the static world too (bounce from sunlit ground and walls onto everything): 74 % of the pixels differ, a quarter
+  of them by 8 levels or more, the ground and walls come out about twice as bright. It counts the lightmaps' bounce twice; subtracting a
+  baked estimate is not possible, because the baked part of a pixel is not kept apart from the rest. Rays against the static world alone: 71 % of the pixels,
+  the same. Left out. The moving models keep the light grid's ambient, which already holds the ground's bounce.
+- Bounce of the effect lights (muzzle flash, explosions) onto the surroundings: the lit surfaces that matter are moving ones,
+  which the bounce term above already carries (the previous frame's image holds the flash's light on them). A lit static surface
+  would need its baked part separated from the flash's, as above, and a shadow ray per hit; a flash lasts about two frames
+  of the accumulation. Left out.
+- Only the bounce, or only the occlusion: the bounce alone changes 33 % of the pixels on `toujane_soldier`, by up to 51 levels (the soldier, the crate, the
+  wall beside him); the occlusion alone 57 %, but by at most 11 levels and nearly all by 1 or 2. Both stay, the bounce is the
+  visible part and the occlusion the soft grounding.
+- More than one ray a frame: the filter and the accumulation (about 600 samples per pixel after 24 frames) already leave less
+  noise than the TAA's own. Left out.
+
+The effect is subtle by construction: the baked light is the largest part of any pixel. Next to a soldier, a vehicle or a gun it
+is a few levels to about 50 of 255 on the nearby surfaces and a gentle darkening further out; across the rest of the frame it is
+under 2 levels. With TAA off there is no history to take radiance from, so the term is off.
+
 ## Cost
 
 GPU-bound frame time with `IW2_BENCH_GPU` (frames submitted back to back), 1920 × 1080, 4x MSAA, Apple M4 Pro (20-core GPU),
@@ -452,6 +503,11 @@ the duhoc_assault beach reference spot (docs/debug-flags.md `IW2_BENCH`), yaw 18
 | + map light specular (with GGX) | 2.81 | +0.12 over GGX |
 | preset medium / high | 5.66 / 6.59 | |
 | preset high without reflection probes | 6.87 | (the probes cost nothing measurable) |
+
+Ray-traced global illumination (ultra against high, duhoc beach, interleaved runs on a machine shared with other work, so the absolute
+values are higher than above; the high preset of this build against the build before it: +0.08 / +0.09 ms): yaw 180 +0.98 ms (min of 7 runs; the
+median +1.1), yaw 0 +0.74 ms. Between two consecutive frames of a still view the PSNR is the same as in the high preset (52.3 and 49.8 dB), so the
+term adds no flicker.
 
 A shadowed effect light (toujane, one light of radius 350): +0.18 ms. Depth of field while aiming (toujane, high preset): +0.29 ms. The reflection probes take about
 0.2 s when a map loads (64 probes) and 17 MB.

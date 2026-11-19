@@ -88,6 +88,12 @@ public:
     // metalnative.mm (RtShadowU).
     bool shadowPass(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* depth, SDL_GPUTexture* mask, SDL_GPUTexture* lights,
                     uint32_t w, uint32_t h, const float* u);
+    // Ray-traced global illumination (docs/render-enhanced.md "Ray-traced global illumination"): one cosine-weighted ray a frame per
+    // pixel of a depth image against the moving objects, the radiance of a hit taken from `history` (the previous frame's image);
+    // writes out (RGBA16F with compute write usage, w x h): the radiance in rgb, the pixel's view depth in a. u: 64 floats, see
+    // metalnative.mm (RtGiU).
+    bool giPass(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* depth, SDL_GPUTexture* history, SDL_GPUTexture* out,
+                uint32_t w, uint32_t h, const float* u);
     // Binds the frame's top level (or the placeholder) to an open render pass.
     void bind(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass);
     std::string describe() const;

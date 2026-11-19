@@ -143,7 +143,7 @@ struct RtShadowU {
     float4 size;    // 1 / w, 1 / h, w, h
     float4 flags;   // x 1 = sun, y contact occlusion ray length (0 = off), z lamp radius (soft)
     float4 dl[4];   // the effect lights (muzzle flashes, explosions): xyz, w radius (0: none); traced against the whole scene
-    float4 dlParams; // x: their size (soft edge)
+    float4 dlParams; // x: their size (soft edge), y: contact occlusion fades out over flags.y .. y units when above flags.y (global illumination)
 };
 static float rnd(uint2 p, uint k) {
     uint h = p.x * 1973u + p.y * 9277u + k * 26699u;
@@ -243,13 +243,25 @@ kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]]
     }
     const float lamp = lampSum > 1e-6 ? lampVis / lampSum : 1.0;
     float ao = 1.0;
-    if (u.flags.y > 0.0) { // two cosine-weighted rays a frame against the moving objects
+    if (u.flags.y > 0.0 || u.dlParams.y > 0.0) { // two cosine-weighted rays a frame against the moving objects
         const float3 t1 = normalize(cross(n, abs(n.z) < 0.9 ? float3(0, 0, 1) : float3(1, 0, 0))), t2 = cross(n, t1);
         float occ = 0.0;
         for (uint k = 0; k < 2u; ++k) {
             const float a = rnd(gid, frame * 4u + 20u + k * 2u) * 6.2831853, r2 = rnd(gid, frame * 4u + 21u + k * 2u);
             const float3 d = normalize(t1 * (cos(a) * sqrt(r2)) + t2 * (sin(a) * sqrt(r2)) + n * sqrt(1.0 - r2));
-            occ += blocked(as, o, d, u.flags.y) ? 0.5 : 0.0;
+            if (u.dlParams.y > u.flags.y) { // global illumination: the occlusion fades out over the longer range (flags.y .. dlParams.y)
+                ray r;
+                r.origin = o;
+                r.direction = d;
+                r.min_distance = 0.05;
+                r.max_distance = u.dlParams.y;
+                intersector<instancing> isect;
+                isect.assume_geometry_type(geometry_type::triangle);
+                const auto hit = isect.intersect(r, as, 2u);
+                if (hit.type != intersection_type::none) occ += 0.5 * (1.0 - smoothstep(u.flags.y, u.dlParams.y, hit.distance));
+            } else {
+                occ += blocked(as, o, d, u.flags.y) ? 0.5 : 0.0;
+            }
         }
         ao = 1.0 - occ * 0.8;
     }
@@ -267,8 +279,89 @@ kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]]
 }
 )MSL";
 
+// Our own kernel for ray-traced global illumination (docs/render-enhanced.md "Ray-traced global illumination").
+const char* kGiSource = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+using namespace raytracing;
+struct RtGiU {
+    float4x4 inv;     // inverse (jittered) view-projection
+    float4 z;         // x, y: clip z = x * w + y; z: $floatz sky threshold; w: frame index
+    float4 eye;       // xyz
+    float4x4 cur;     // this frame's (jittered) view-projection
+    float4x4 prev;    // the previous frame's: where a point was in the history image
+    float4 size;      // 1 / w, 1 / h, w, h (this image)
+    float4 params;    // x: ray length (units), y: radiance cap, z: 1 = history image valid
+};
+static float giRnd(uint2 p, uint k) {
+    uint h = p.x * 1973u + p.y * 9277u + k * 26699u;
+    h = (h ^ (h >> 13)) * 0x5bd1e995u;
+    h = (h ^ (h >> 15)) * 0x27d4eb2du;
+    return float((h ^ (h >> 13)) & 0xffffu) / 65535.0;
+}
+static float3 giPosAt(texture2d<float> fz, sampler ps, constant RtGiU& u, float2 uv, thread float& w) {
+    const float cz = fz.sample(ps, uv).r;
+    w = (cz - u.z.y) / u.z.x;
+    const float2 ndc = float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    const float4 wp = u.inv * float4(ndc * w, cz, w);
+    return wp.xyz / wp.w;
+}
+// One cosine-weighted ray a frame from the surface, against the moving objects (the static world's light is in the lightmaps): a
+// hit that is the visible surface on screen returns the previous frame's image there, the light that object sends back. Written
+// as x y z = that radiance (0 where nothing was hit), w = the pixel's view depth (for the filter).
+kernel void rt_gi(texture2d<float, access::sample> fz [[texture(0)]], texture2d<float, access::sample> hist [[texture(1)]],
+                  texture2d<float, access::write> out [[texture(2)]], constant RtGiU& u [[buffer(0)]],
+                  instance_acceleration_structure as [[buffer(1)]], uint2 gid [[thread_position_in_grid]]) {
+    if (gid.x >= uint(u.size.z) || gid.y >= uint(u.size.w)) return;
+    constexpr sampler ps(filter::nearest, address::clamp_to_edge);
+    constexpr sampler ls(filter::linear, address::clamp_to_edge);
+    // the centre of the first $floatz texel of the pixel's 2 x 2 block (see rt_dynamic_shadow)
+    const float2 fzSize = float2(fz.get_width(), fz.get_height());
+    const float2 uv = (float2(gid) * 2.0 + 0.5) / fzSize;
+    if (fz.sample(ps, uv).r >= u.z.z) { out.write(float4(0.0, 0.0, 0.0, 60000.0), gid); return; }
+    float w, wx, wy;
+    const float3 P = giPosAt(fz, ps, u, uv, w);
+    const float3 Px = giPosAt(fz, ps, u, uv + float2(2.0 / fzSize.x, 0.0), wx), Py = giPosAt(fz, ps, u, uv + float2(0.0, 2.0 / fzSize.y), wy);
+    float3 n = normalize(cross(Px - P, Py - P));
+    if (dot(n, u.eye.xyz - P) < 0.0) n = -n;
+    const float3 o = P + n * (1.0 + w * 0.002);
+    const uint frame = uint(u.z.w);
+    const float3 t1 = normalize(cross(n, abs(n.z) < 0.9 ? float3(0, 0, 1) : float3(1, 0, 0))), t2 = cross(n, t1);
+    const float a = giRnd(gid, frame * 2u + 90u) * 6.2831853, r2 = giRnd(gid, frame * 2u + 91u);
+    const float3 d = normalize(t1 * (cos(a) * sqrt(r2)) + t2 * (sin(a) * sqrt(r2)) + n * sqrt(1.0 - r2));
+    ray r;
+    r.origin = o;
+    r.direction = d;
+    r.min_distance = 0.05;
+    r.max_distance = u.params.x;
+    intersector<instancing> isect;
+    isect.assume_geometry_type(geometry_type::triangle);
+    const auto hit = isect.intersect(r, as, 2u); // the moving objects only
+    float3 L = 0.0;
+    if (hit.type != intersection_type::none && u.params.z > 0.5) {
+        const float3 H = o + d * hit.distance;
+        const float4 c = u.cur * float4(H, 1.0);
+        const float2 huv = float2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5);
+        if (c.w > 1.0 && all(huv >= 0.0) && all(huv <= 1.0)) {
+            float wh;
+            giPosAt(fz, ps, u, huv, wh);
+            if (abs(c.w - wh) < max(c.w * 0.03, 8.0)) { // the hit is the visible surface there
+                const float4 pc = u.prev * float4(H, 1.0);
+                const float2 puv = float2(pc.x / pc.w * 0.5 + 0.5, 0.5 - pc.y / pc.w * 0.5);
+                if (pc.w > 1.0 && all(puv >= 0.0) && all(puv <= 1.0)) {
+                    const float fade = 1.0 - smoothstep(0.5, 1.0, hit.distance / u.params.x);
+                    L = min(max(hist.sample(ls, puv).rgb, 0.0), u.params.y) * fade;
+                }
+            }
+        }
+    }
+    out.write(float4(L, w), gid);
+}
+)MSL";
+
 struct SceneRT::Impl {
     id<MTLComputePipelineState> shadowPipe = nil;
+    id<MTLComputePipelineState> giPipe = nil;
     id<MTLAccelerationStructure> world = nil;
     id<MTLAccelerationStructure> worldAlpha = nil; // the alpha-tested surfaces (non-opaque)
     id<MTLBuffer> worldVerts = nil, worldIdx = nil, alphaTable = nil;
@@ -635,6 +728,46 @@ bool SceneRT::shadowPass(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUT
     return true;
 #else
     (void)dev, (void)cmd, (void)depth, (void)mask, (void)lights, (void)w, (void)h, (void)u;
+    return false;
+#endif
+}
+
+bool SceneRT::giPass(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* depth, SDL_GPUTexture* history, SDL_GPUTexture* out,
+                     uint32_t w, uint32_t h, const float* u) {
+#ifdef SDL_GPU_OPENIW2_METAL_HANDLES
+    Impl& I = *impl_;
+    if (!I.frameTlas) return false;
+    id<MTLDevice> d = (__bridge id<MTLDevice>)SDL_GetGPUDeviceMetalDevice(dev);
+    id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)SDL_GetGPUCommandBufferMetalCommandBuffer(cmd);
+    id<MTLTexture> z = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, depth);
+    id<MTLTexture> hs = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, history);
+    id<MTLTexture> o = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, out);
+    if (!d || !cb || !z || !hs || !o) return false;
+    if (!I.giPipe) {
+        NSError* err = nil;
+        id<MTLLibrary> lib = [d newLibraryWithSource:[NSString stringWithUTF8String:kGiSource] options:nil error:&err];
+        id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"rt_gi"] : nil;
+        I.giPipe = fn ? [d newComputePipelineStateWithFunction:fn error:&err] : nil;
+        if (!I.giPipe) {
+            I.error = err ? err.localizedDescription.UTF8String : "no global illumination pipeline";
+            return false;
+        }
+    }
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:I.giPipe];
+    [enc setTexture:z atIndex:0];
+    [enc setTexture:hs atIndex:1];
+    [enc setTexture:o atIndex:2];
+    [enc setBytes:u length:sizeof(float) * 64 atIndex:0];
+    [enc setAccelerationStructure:I.frameTlas atBufferIndex:1];
+    [enc useResource:I.frameTlas usage:MTLResourceUsageRead];
+    for (id<MTLAccelerationStructure> b in I.frameBlases) [enc useResource:b usage:MTLResourceUsageRead];
+    const NSUInteger tw = I.giPipe.threadExecutionWidth, th = std::max<NSUInteger>(1, I.giPipe.maxTotalThreadsPerThreadgroup / tw);
+    [enc dispatchThreads:MTLSizeMake(w, h, 1) threadsPerThreadgroup:MTLSizeMake(tw, th, 1)];
+    [enc endEncoding];
+    return true;
+#else
+    (void)dev, (void)cmd, (void)depth, (void)history, (void)out, (void)w, (void)h, (void)u;
     return false;
 #endif
 }

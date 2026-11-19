@@ -205,7 +205,7 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
             sunE = min(sunE, mix(1.0, wv.x, wv.y)) * enh_sun_shadow(wpE, normalize(in.normal), eu, shadowMap, shadowSampler);
         }
         const float2 aoE = ENH_AO(in.position);
-        light = amb * aoE.x + sunE * aoE.y * ndl * u.sunColor.rgb;
+        light = (amb + ENH_GI(in.position)) * aoE.x + sunE * aoE.y * ndl * u.sunColor.rgb;
 #else
         const float3 amb = u.sunDirection.w > 0.5 ? probe_lighting(normalize(in.normal), u) : u.ambient.rgb;
         light = amb + u.ambient.w * ndl * u.sunColor.rgb;
@@ -224,9 +224,9 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
             light += (visS - in.lmUv.x) * ndlS * u.sunColor.rgb;
             const float2 aoS = ENH_AO(in.position); // AO on the baked probe part, the contact shadow on the sun part
             const float3 sunPart = min(light, float3(visS * ndlS) * u.sunColor.rgb);
-            light = (light - sunPart) * aoS.x + sunPart * aoS.y;
+            light = (light - sunPart) * aoS.x + sunPart * aoS.y + ENH_GI(in.position);
         } else {
-            light *= ENH_AO(in.position).x;
+            light = light * ENH_AO(in.position).x + ENH_GI(in.position);
         }
 #endif
     } else if (u.params.y > 0.5) {
@@ -243,7 +243,7 @@ fragment float4 fs_main(VertexOut in [[stage_in]],
             sunVis = min(sunVis, mix(1.0, wv.x, wv.y)) * enh_sun_shadow(wpW, normalize(in.normal), eu, shadowMap, shadowSampler);
         }
         const float2 aoW = ENH_AO(in.position);
-        lm *= aoW.x;
+        lm = lm * aoW.x + ENH_GI(in.position);
         sunVis *= aoW.y;
         if (eu.bsParams.x > 0.5) lm -= enh_baked_shadow_loss(in.eyeVec + eu.eye.xyz, normalize(in.normal), lm, ENH_BAKED_SHADOW);
         // (blended surfaces have no screen-space depth of their own: their reflection needs the ray tracing)
@@ -441,7 +441,7 @@ fragment float4 fs_spec(SpecVertexOut in [[stage_in]],
         vis = min(vis, mix(1.0, wv.x, wv.y)) * enh_sun_shadow(wpW, n, eu, shadowMap, shadowSampler);
     }
     const float2 aoW = ENH_AO(in.position);
-    lm *= aoW.x;
+    lm = lm * aoW.x + ENH_GI(in.position);
     vis *= aoW.y;
     if (eu.bsParams.x > 0.5) lm -= enh_baked_shadow_loss(in.eyeVec + eu.eye.xyz, n, lm, ENH_BAKED_SHADOW);
 #else
@@ -546,7 +546,7 @@ fragment float4 fs_probe(ProbeVertexOut in [[stage_in]],
         vis = min(vis, mix(1.0, wv.x, wv.y)) * enh_sun_shadow(wpE, n, eu, shadowMap, shadowSampler);
     }
     const float2 aoP = ENH_AO(in.position);
-    probe *= aoP.x;
+    probe = probe * aoP.x + ENH_GI(in.position);
     vis *= aoP.y;
 #endif
     const float3 sunDiffuse = vis * max(dot(u.sunDirection.xyz, n), 0.0) * u.sunColor.rgb;
@@ -659,7 +659,7 @@ fragment float4 fs_smodel(SModelOut in [[stage_in]],
         vis = mix(vis, wv.x, wv.y) * enh_sun_shadow(wpE, n, eu, shadowMap, shadowSampler);
     }
     const float2 aoS = ENH_AO(in.position);
-    probe *= aoS.x;
+    probe = probe * aoS.x + ENH_GI(in.position);
     vis *= aoS.y;
     if (eu.bsParams.x > 0.5) probe -= enh_baked_shadow_loss(wpE, n, probe, ENH_BAKED_SHADOW);
 #endif

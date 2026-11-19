@@ -281,6 +281,17 @@ void checkSet(bool multiplayer) {
         for (const EnhancedRow& r : enhancedRows()) CHECK(enhancedRowAvailable(r) == (r.needs != EnhancedRow::RayTracing));
         setEnhancedAvailability(true, true);
         CHECK(enhancedMenuSource().find("iw2_enh_rtrefl") != std::string::npos);
+        {   // the Ultra preset (3) is the Preset row's last choice; RT global illumination (needs ray tracing) leaves itself to the preset by default
+            const EnhancedRow *preset = nullptr, *gi = nullptr;
+            for (const EnhancedRow& r : enhancedRows()) {
+                if (std::string(r.cvar) == "r_enhPreset") preset = &r;
+                if (std::string(r.cvar) == "r_enhRTGI") gi = &r;
+            }
+            CHECK(preset && preset->choices.size() == 4 && preset->choices.back().second == "3" && preset->choices.back().first == "@IW2_ENH_ULTRA");
+            CHECK(gi && gi->needs == EnhancedRow::RayTracing && gi->choices.size() == 3 && gi->choices[0].second == "-1");
+            CHECK(registeredDefault("r_enhRTGI") == "-1" && isArchivedCvar("r_enhRTGI"));
+            CHECK(enhancedMenuSource().find("iw2_enh_rtgi") != std::string::npos);
+        }
         {   // every row shown: the page still ends where the shorter one does (above the bottom line)
             MenuLibrary all(vfs);
             all.parseSource(enhancedMenuSource(), "enhanced.menu");
@@ -321,7 +332,7 @@ int main() {
     CHECK(missionSvCheats(true, false) == "1" && missionSvCheats(false, false).empty() && missionSvCheats(true, true).empty());
     // Texts: English and Polish (Windows-1250) for every key the page uses.
     const auto en = openIw2Strings("english"), pl = openIw2Strings("polish");
-    CHECK(en.size() == pl.size() && en.size() == 47);
+    CHECK(en.size() == pl.size() && en.size() == 49);
     {   // every OpenIW2 string key the two pages use has a text (shipped MENU_* keys come from the game's own files)
         auto has = [&](const std::string& key) { for (const auto& [k, t] : en) if ("@" + k == key) return true; return false; };
         for (const EnhancedRow& r : enhancedRows()) {

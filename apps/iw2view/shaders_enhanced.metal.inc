@@ -51,6 +51,7 @@ struct EnhFragU {
     float4 probeGrid[2];   // reflection probes: xyz grid origin, w 1 / cell size; xyz cells per axis, w > 0.5: probes present
     float4 mipBias;        // x: log2 of the render scale (stage 5), the material textures' mip bias
     float4 rtParams;       // stage 5 ray queries: x 1 = ray-traced reflections, y their roughness (GGX alpha) cutoff, z their range, w debug colours
+    float4 giParams;       // ray-traced global illumination: x strength (0 = off; the image is texture t + 7)
 };
 #define IW2_MIP , bias(eu.mipBias.x)
 // Fragment uniform slot 2: per draw (model items).
@@ -67,6 +68,7 @@ struct EnhDrawU {
     texture2d<float> histTex [[texture(t + 4)]], sampler histSampler [[sampler(t + 4)]], \
     texture2d<float> depthTex [[texture(t + 5)]], sampler depthSampler [[sampler(t + 5)]], \
     depth2d<float> lightAtlas [[texture(t + 6)]], sampler lightAtlasSampler [[sampler(t + 6)]], \
+    texture2d<float> giTex [[texture(t + 7)]], sampler giSampler [[sampler(t + 7)]], \
     const device uchar* probeIdx [[buffer(5)]] ENH_RT_ARG
 #define ENH_BAKED_SHADOW eu, du, lightAtlas, lightAtlasSampler, aoTex, aoSampler, in.position
 #define ENH_WORLD_SHADOWS eu, worldShadow, worldSampler
@@ -153,6 +155,14 @@ static float2 enh_screen_ao(float4 fragPos, constant EnhFragU& eu, constant EnhD
     return float2(mix(1.0, a.x, eu.aoParams.z), eu.aoParams.w > 0.5 ? a.y : 1.0);
 }
 #define ENH_AO(pos) enh_screen_ao(pos, eu, du, aoTex, aoSampler)
+// Ray-traced global illumination (docs/render-enhanced.md): the light the moving objects bounce onto the surface, times the strength.
+// The caller adds it to the baked light, where the surface's own colour multiplies it like any light; zero where it is off and for
+// the surfaces without screen-space terms (view model, blended).
+static float3 enh_screen_gi(float4 fragPos, constant EnhFragU& eu, constant EnhDrawU& du, texture2d<float> giTex, sampler gs) {
+    if (eu.giParams.x <= 0.0 || du.origin.w > 0.5) return float3(0.0);
+    return giTex.sample(gs, fragPos.xy * eu.aoParams.xy).rgb * eu.giParams.x;
+}
+#define ENH_GI(pos) enh_screen_gi(pos, eu, du, giTex, giSampler)
 
 // ---- specular: GGX from the spec / gloss maps, environment and screen-space reflections (docs/render-enhanced.md "Materials") ----
 

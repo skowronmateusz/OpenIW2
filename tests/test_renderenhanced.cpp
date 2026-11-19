@@ -38,9 +38,30 @@ int main() {
         cv["r_enhSunShadows"] = "7";
         cv["r_enhExposureBias"] = "-5";
         s = enhancedSettings(get);
-        chk(s.preset == 2 && s.sunShadows == 3 && s.exposureBias == -2.0f, __LINE__);
+        chk(s.preset == 3 && s.sunShadows == 3 && s.exposureBias == -2.0f, __LINE__);
         cv["r_enhanced"] = "0";
         chk(!enhancedSettings(get).enabled, __LINE__);
+    }
+    // Preset 3 (ultra) is the high preset plus ray-traced global illumination; the other presets have it off, a set cvar overrides.
+    {
+        std::map<std::string, std::string> cv{{"r_enhanced", "1"}, {"r_enhPreset", "3"}};
+        auto get = [&](const char* n) { const auto it = cv.find(n); return it == cv.end() ? std::string() : it->second; };
+        EnhancedSettings u = enhancedSettings(get);
+        cv["r_enhPreset"] = "2";
+        const EnhancedSettings h = enhancedSettings(get);
+        chk(u.preset == 3 && u.rtGI && !h.rtGI && h.preset == 2, __LINE__);
+        chk(u.sunShadows == h.sunShadows && u.worldShadows == h.worldShadows && u.volumetric == h.volumetric && u.ao == h.ao && u.taa == h.taa &&
+                u.rtShadows == h.rtShadows && u.rtReflections == h.rtReflections && u.probes == h.probes, __LINE__); // ultra = high otherwise
+        cv["r_enhPreset"] = "3", cv["r_enhRTGI"] = "0";
+        chk(!enhancedSettings(get).rtGI, __LINE__);
+        cv["r_enhRTGI"] = "-1"; // the menu's "Preset"
+        chk(enhancedSettings(get).rtGI, __LINE__);
+        cv["r_enhPreset"] = "1", cv["r_enhRTGI"] = "1";
+        chk(enhancedSettings(get).rtGI, __LINE__);
+        cv["r_enhPreset"] = "7", cv.erase("r_enhRTGI");
+        chk(enhancedSettings(get).preset == 3, __LINE__); // clamped
+        cv["r_enhPreset"] = "0";
+        chk(!enhancedSettings(get).rtGI, __LINE__);
     }
     // The menu's "Preset" value -1 leaves a feature to the preset.
     {
@@ -48,6 +69,48 @@ int main() {
         auto get = [&](const char* n) { const auto it = cv.find(n); return it == cv.end() ? std::string() : it->second; };
         const EnhancedSettings s = enhancedSettings(get);
         chk(s.sunShadows == 1 && !s.taa && s.ao, __LINE__);
+    }
+    // Ray-traced global illumination: the sampling, the hit fade, the history check and the accumulation.
+    {
+        const float n[3] = {0.0f, 0.0f, 1.0f};
+        double sumCos = 0.0, sumCos2 = 0.0;
+        bool unit = true, hemi = true;
+        const int N = 64;
+        for (int i = 0; i < N; ++i)
+            for (int j = 0; j < N; ++j) {
+                const auto d = cosineHemisphereDir(n, (float(i) + 0.5f) / N, (float(j) + 0.5f) / N);
+                unit = unit && near(d[0] * d[0] + d[1] * d[1] + d[2] * d[2], 1.0f, 1e-3f);
+                hemi = hemi && d[2] >= 0.0f;
+                sumCos += d[2], sumCos2 += d[2] * d[2];
+            }
+        chk(unit && hemi, __LINE__);
+        chk(std::fabs(sumCos / (N * N) - 2.0 / 3.0) < 0.01 && std::fabs(sumCos2 / (N * N) - 0.5) < 0.01, __LINE__); // E[cos] = 2/3, E[cos^2] = 1/2
+        const float tilted[3] = {0.6f, 0.0f, 0.8f}; // any normal: still unit and in its hemisphere
+        bool ok = true;
+        for (int i = 0; i < 16; ++i) {
+            const auto d = cosineHemisphereDir(tilted, (float(i) + 0.5f) / 16, 0.37f);
+            ok = ok && near(d[0] * d[0] + d[1] * d[1] + d[2] * d[2], 1.0f, 1e-3f) && d[0] * tilted[0] + d[2] * tilted[2] >= -1e-4f;
+        }
+        const float polar[3] = {0.0f, 0.0f, -1.0f};
+        const auto dp = cosineHemisphereDir(polar, 0.3f, 0.5f);
+        chk(ok && dp[2] <= 0.0f, __LINE__);
+        chk(giHitFade(0.0f, kRtGiRange) == 1.0f && giHitFade(kRtGiRange * 0.5f, kRtGiRange) == 1.0f && giHitFade(kRtGiRange, kRtGiRange) == 0.0f, __LINE__);
+        chk(near(giHitFade(kRtGiRange * 0.75f, kRtGiRange), 0.5f, 1e-4f) && giHitFade(kRtGiRange * 2.0f, kRtGiRange) == 0.0f, __LINE__);
+        float last = 1.0f;
+        bool mono = true;
+        for (int i = 0; i <= 20; ++i) {
+            const float f = giHitFade(kRtGiRange * float(i) / 20.0f, kRtGiRange);
+            mono = mono && f <= last + 1e-6f;
+            last = f;
+        }
+        chk(mono, __LINE__);
+        chk(giHistoryAccepted(1000.0f, 1010.0f) && !giHistoryAccepted(1000.0f, 1100.0f) && giHistoryAccepted(10.0f, 14.0f) && !giHistoryAccepted(10.0f, 17.0f), __LINE__);
+        chk(near(giAccumulate(1.0f, 0.0f, true, 0.25f), 0.75f) && giAccumulate(1.0f, 0.0f, false, 0.25f) == 0.0f, __LINE__);
+        float v = 0.0f; // a constant input converges to it, geometrically
+        for (int i = 0; i < 60; ++i) v = giAccumulate(v, 1.0f, true, kRtGiBlend);
+        chk(v > 0.999f && giAccumulate(0.0f, 1.0f, true, kRtGiBlend) == kRtGiBlend, __LINE__);
+        chk(giEffectiveFrames(0.5f) == 5 && giEffectiveFrames(kRtGiBlend) > 15 && giEffectiveFrames(kRtGiBlend) < 40 && giEffectiveFrames(0.0f) == 0, __LINE__);
+        chk(kRtGiRange > 0.0f && kRtGiRadianceCap > 1.0f && kRtGiStrength > 0.0f && kRtGiStrength <= 1.0f && kRtGiBlend > 0.0f && kRtGiBlend < 1.0f, __LINE__);
     }
     // Shadow quality levels.
     chk(sunShadowQuality(0).resolution == 0, __LINE__);
