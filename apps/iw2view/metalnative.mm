@@ -37,6 +37,7 @@ struct TemporalScaler::Impl {
     id<MTLFXTemporalScaler> scaler = nil;
     unsigned inW = 0, inH = 0, outW = 0, outH = 0;
     MTLPixelFormat color = MTLPixelFormatInvalid, depth = MTLPixelFormatInvalid, motion = MTLPixelFormatInvalid, out = MTLPixelFormatInvalid;
+    bool react = false; // made with a reactive mask
     bool failed = false;
 };
 #else
@@ -47,7 +48,7 @@ TemporalScaler::TemporalScaler() : impl_(new Impl) {}
 TemporalScaler::~TemporalScaler() { delete impl_; }
 
 bool TemporalScaler::encode(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* color, SDL_GPUTexture* depth,
-                            SDL_GPUTexture* motion, SDL_GPUTexture* output, unsigned inW, unsigned inH, unsigned outW, unsigned outH,
+                            SDL_GPUTexture* motion, SDL_GPUTexture* reactive, SDL_GPUTexture* output, unsigned inW, unsigned inH, unsigned outW, unsigned outH,
                             float jitterNdcX, float jitterNdcY, bool reset) {
 #ifdef SDL_GPU_OPENIW2_METAL_HANDLES
     if (@available(macOS 13.0, *)) {
@@ -57,10 +58,13 @@ bool TemporalScaler::encode(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_G
         id<MTLTexture> z = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, depth);
         id<MTLTexture> m = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, motion);
         id<MTLTexture> o = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, output);
+        id<MTLTexture> r = reactive ? (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, reactive) : nil;
+        bool react = r != nil;
+        if (@available(macOS 14.4, *)) {} else react = false;
         if (!d || !cb || !c || !z || !m || !o) return false;
         Impl& I = *impl_;
         if (!I.scaler || I.inW != inW || I.inH != inH || I.outW != outW || I.outH != outH || I.color != c.pixelFormat ||
-            I.depth != z.pixelFormat || I.motion != m.pixelFormat || I.out != o.pixelFormat) {
+            I.depth != z.pixelFormat || I.motion != m.pixelFormat || I.out != o.pixelFormat || I.react != react) {
             MTLFXTemporalScalerDescriptor* desc = [MTLFXTemporalScalerDescriptor new];
             desc.colorTextureFormat = c.pixelFormat;
             desc.depthTextureFormat = z.pixelFormat;
@@ -69,9 +73,11 @@ bool TemporalScaler::encode(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_G
             desc.inputWidth = inW, desc.inputHeight = inH, desc.outputWidth = outW, desc.outputHeight = outH;
             desc.autoExposureEnabled = YES;
             desc.inputContentPropertiesEnabled = NO;
+            if (@available(macOS 14.4, *))
+                if (react) desc.reactiveMaskTextureEnabled = YES, desc.reactiveMaskTextureFormat = r.pixelFormat; // a moving shadow (fs_enh_mfx_reactive)
             I.scaler = [desc newTemporalScalerWithDevice:d];
             I.inW = inW, I.inH = inH, I.outW = outW, I.outH = outH;
-            I.color = c.pixelFormat, I.depth = z.pixelFormat, I.motion = m.pixelFormat, I.out = o.pixelFormat;
+            I.color = c.pixelFormat, I.depth = z.pixelFormat, I.motion = m.pixelFormat, I.out = o.pixelFormat, I.react = react;
             I.failed = I.scaler == nil;
             reset = true;
         }
@@ -80,6 +86,8 @@ bool TemporalScaler::encode(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_G
         I.scaler.depthTexture = z;
         I.scaler.motionTexture = m;
         I.scaler.outputTexture = o;
+        if (@available(macOS 14.4, *))
+            if (I.react) I.scaler.reactiveMaskTexture = r;
         // MetalFX takes the jitter and the motion in input pixels, y down (game::metalFxJitterPixels, game::metalFxMotionScale);
         // the signs were checked with a static camera and a pan (docs/render-enhanced.md "Stage 5").
         const auto j = game::metalFxJitterPixels(jitterNdcX, jitterNdcY, inW, inH);
@@ -94,7 +102,7 @@ bool TemporalScaler::encode(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_G
         return true;
     }
 #else
-    (void)dev, (void)cmd, (void)color, (void)depth, (void)motion, (void)output, (void)inW, (void)inH, (void)outW, (void)outH;
+    (void)dev, (void)cmd, (void)color, (void)depth, (void)motion, (void)reactive, (void)output, (void)inW, (void)inH, (void)outW, (void)outH;
     (void)jitterNdcX, (void)jitterNdcY, (void)reset;
 #endif
     return false;
@@ -197,6 +205,14 @@ static bool blockedAny(instance_acceleration_structure as, float3 o, float3 d, f
             q.commit_triangle_intersection();
     return q.get_committed_intersection_type() != intersection_type::none;
 }
+// A normal from two tangents, or towards the eye where they are parallel or zero (a depth edge, geometry right at the camera):
+// normalize of a zero vector is NaN, which the shadow, AO and lighting would carry into the picture and the temporal history.
+static float3 rtSafeNormal(float3 v, float3 toEye) {
+    const float l2 = dot(v, v);
+    if (l2 > 1e-12 && isfinite(l2)) return v * rsqrt(l2);
+    const float e2 = dot(toEye, toEye);
+    return e2 > 1e-12 ? toEye * rsqrt(e2) : float3(0.0, 0.0, 1.0);
+}
 // 1 = open: the moving objects block fully, the player's body (instance mask 8) with the weight bodyW.
 static float visibility(instance_acceleration_structure as, float3 o, float3 d, float len, float bodyW) {
     if (blocked(as, o, d, len, 2u)) return 0.0;
@@ -217,7 +233,7 @@ kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]]
     float w, wx, wy;
     const float3 P = posAt(fz, ps, u, uv, w);
     const float3 Px = posAt(fz, ps, u, uv + float2(2.0 / fzSize.x, 0.0), wx), Py = posAt(fz, ps, u, uv + float2(0.0, 2.0 / fzSize.y), wy);
-    float3 n = normalize(cross(Px - P, Py - P));
+    float3 n = rtSafeNormal(cross(Px - P, Py - P), u.eye.xyz - P);
     if (dot(n, u.eye.xyz - P) < 0.0) n = -n;
     const float3 o = P + n * (1.0 + w * 0.002);
     const uint frame = uint(u.z.w);
@@ -329,7 +345,7 @@ kernel void rt_gi(texture2d<float, access::sample> fz [[texture(0)]], texture2d<
     float w, wx, wy;
     const float3 P = giPosAt(fz, ps, u, uv, w);
     const float3 Px = giPosAt(fz, ps, u, uv + float2(2.0 / fzSize.x, 0.0), wx), Py = giPosAt(fz, ps, u, uv + float2(0.0, 2.0 / fzSize.y), wy);
-    float3 n = normalize(cross(Px - P, Py - P));
+    float3 n = rtSafeNormal(cross(Px - P, Py - P), u.eye.xyz - P);
     if (dot(n, u.eye.xyz - P) < 0.0) n = -n;
     const float3 o = P + n * (1.0 + w * 0.002);
     const uint frame = uint(u.z.w);

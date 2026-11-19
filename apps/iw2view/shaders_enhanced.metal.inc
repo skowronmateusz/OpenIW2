@@ -189,9 +189,21 @@ static float2 enh_world_sun(float3 wp, float3 n, constant EnhFragU& eu, depth2d_
     return float2(lit, weight);
 }
 
+// A blended surface counts as lying on the opaque one when the view depths differ by less than this fraction or these units.
+constant float kEnhOnOpaqueRel = 0.01, kEnhOnOpaqueAbs = 2.0;
+// A blended surface (du.origin.w 2: a decal, a terrain blend layer) that lies on the opaque surface behind it: its view depth
+// (Metal's fragment position w is 1 / w) matches the one the AO image was made from (its z), so the AO image's factors hold for it
+// too. Over a still opaque surface an alpha blend of a shadowed layer and a shadowed base stays shadowed once (no double darkening).
+static bool enh_screen_terms(float4 fragPos, constant EnhFragU& eu, constant EnhDrawU& du, texture2d<float> aoTex, sampler as) {
+    if (du.origin.w < 0.5) return true;
+    if (du.origin.w < 1.5) return false;
+    const float w = 1.0 / max(fragPos.w, 1e-6), aw = aoTex.sample(as, fragPos.xy * eu.aoParams.xy).b;
+    // (plus the depth's own change over a half-size AO pixel, so a slope seen at a grazing angle still counts)
+    return abs(aw - w) < max(max(w * kEnhOnOpaqueRel, kEnhOnOpaqueAbs), 3.0 * fwidth(w));
+}
 // Screen-space ambient occlusion and contact shadow at a fragment: x = factor on the baked / probe light, y = factor on the sun.
 static float2 enh_screen_ao(float4 fragPos, constant EnhFragU& eu, constant EnhDrawU& du, texture2d<float> aoTex, sampler as) {
-    if (du.origin.w > 0.5 || (eu.aoParams.z <= 0.0 && eu.aoParams.w < 0.5)) return float2(1.0);
+    if ((eu.aoParams.z <= 0.0 && eu.aoParams.w < 0.5) || !enh_screen_terms(fragPos, eu, du, aoTex, as)) return float2(1.0);
     const float2 a = aoTex.sample(as, fragPos.xy * eu.aoParams.xy).rg;
     return float2(mix(1.0, a.x, eu.aoParams.z), eu.aoParams.w > 0.5 ? a.y : 1.0);
 }
@@ -424,7 +436,7 @@ static float3 enh_baked_shadow_loss(float3 wp, float3 n, float3 baked, constant 
     const int count = int(eu.bsParams.x + 0.5);
     // stage 5: the lamps' visibility traced against the moving objects (the AO image's alpha, weighted by each lamp's light)
     const bool traced = eu.bsParams.z > 0.5;
-    const float tracedVis = traced && du.origin.w < 0.5 ? aoTex.sample(as, fragPos.xy * eu.aoParams.xy).a : 1.0;
+    const float tracedVis = traced && enh_screen_terms(fragPos, eu, du, aoTex, as) ? aoTex.sample(as, fragPos.xy * eu.aoParams.xy).a : 1.0;
     for (int i = 0; i < count; ++i) {
         const float3 d = eu.bsPos[i].xyz - wp;
         const float dist = length(d);

@@ -192,6 +192,43 @@ atlas never draw it.
   restarts after a map change or a resize. A light unsharp mask in the tone pass offsets the softening.
 - Limitations: blended effects have no motion vectors of their own (the clip keeps their ghosting short); MSAA stays on.
 
+### Blended surfaces and the moving shadows
+
+The AO image (AO, contact shadows and, with ray tracing, the moving objects' sun and lamp shadows) is made from the opaque depth
+in `$floatz`, so blended surfaces used to skip it. But many world surfaces are blended layers lying on the ground: tyre tracks,
+sand and terrain blends, road decals. They painted the unshadowed ground colour over the shadowed base, so the player's and the
+actors' shadows faded or broke off with a straight edge where such a layer starts. Now an alpha or additive blend takes the AO
+image's factors where its view depth (Metal's fragment w) matches the AO image's depth to 1 %, 2 units or three times its own change from pixel to pixel (a slope seen at a grazing angle): it lies on the opaque
+surface, and an alpha blend of a shadowed layer over a shadowed base is shadowed once. A multiplying blend never takes them (it
+darkens a base that has them), nor do sprites, the view model and blended entity models (`game::blendScreenTerms`). The shadow
+maps (no ray tracing) were already evaluated per fragment for blended world surfaces.
+
+### Non-finite values
+
+A NaN or infinite pixel that reaches the temporal history (ours or MetalFX's) spreads to its neighbours frame by frame: black
+blocks that grow, and with MetalFX on macOS 27 its Neural Engine inference can fail and abort the program. So:
+
+- The normals the AO pass and the ray-traced passes rebuild from `$floatz` fall back to the direction to the eye where the two
+  tangents are parallel or zero (a depth edge, geometry right at the camera); normalize of a zero vector is NaN.
+- The TAA resolve and MetalFX's inputs take finite values only: colour NaN / infinities become 0 and the HDR range is limited to
+  30000 (MetalFX gets a sanitised copy of the scene), motion is limited to the screen, a non-finite depth is the far plane.
+- The non-finite guard counts the non-finite pixels of every resolved image on the GPU (a 32 x 32 grid of tile counts), reads the
+  count back three frames later without waiting, and resets the TAA / MetalFX history when there is one.
+
+`IW2_ENH_NANCHECK` and `IW2_ENH_INJECT_NAN` (docs/debug-flags.md) show and test it (tests/iw2view_nan.sh).
+
+### Moving shadows in the temporal filter
+
+A moving object's shadow moves over ground that stands still. The ground's motion vectors then fetch the history from where the
+shadow was, and on a textured ground (sand, gravel) the variance box is wide enough to keep that old shadow: the shadow trails
+behind the player or an actor for several frames. So the resolve compares the AO image's contact channel, which carries the
+moving objects' ray-traced sun shadow and the contact shadows, with the last frame's at the reprojected position (the AO
+image of the frame before is kept in a copy). Where it changed by more than `game::kTaaShadowChangeStart` the history weight
+falls smoothly from 90 % to `game::kTaaShadowHistoryWeight` at a change of `game::kTaaShadowChangeFull`
+(`game::taaShadowHistoryWeight`). MetalFX gets the same signal as its reactive mask (macOS 14.4 and later). Without ray-traced
+shadows (shadow maps) the moving shadows are not in that channel and the filter is as before. The cost: one half-size copy and
+two taps per pixel. `IW2_BENCH_STEP` (docs/debug-flags.md) moves the camera and the body in a bench, to see it.
+
 ## Materials: GGX specular and reflections
 
 - Sun specular: on surfaces whose technique set has a specular map (world lmap_s surfaces and the light-probe model techniques)

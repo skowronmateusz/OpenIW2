@@ -553,6 +553,25 @@ int main() {
         chk(mono, __LINE__);
         chk(std::fabs(playerBodyShadowWeight(32.0f) - 0.5f) < 1e-4f, __LINE__);
     }
+    // Non-finite guard: garbage cells (NaN, infinity, negative, huge) count 0, real counts add up; any pixel resets.
+    {
+        const float cells[6] = {2.0f, std::nanf(""), INFINITY, -3.0f, 1e9f, 5.0f};
+        chk(nanGuardSum(cells, 6) == 7.0f && nanGuardResets(1.0f) && !nanGuardResets(0.0f), __LINE__);
+    }
+    // Blended surfaces and the moving shadows: opaque takes the screen terms, alpha / additive blends on the opaque surface, multiply never.
+    chk(blendScreenTerms(false, false) == ScreenTerms::Take && blendScreenTerms(true, false) == ScreenTerms::OnOpaque, __LINE__);
+    chk(blendScreenTerms(true, true) == ScreenTerms::Never && int(ScreenTerms::OnOpaque) == 2 && int(ScreenTerms::Never) == 1, __LINE__);
+    // Moving shadows in the temporal filter: no change keeps the usual 90 % history, a full change falls to the low weight,
+    // monotonic in between.
+    {
+        chk(taaShadowHistoryWeight(0.0f) == 0.9f && taaShadowHistoryWeight(kTaaShadowChangeStart) == 0.9f, __LINE__);
+        chk(std::fabs(taaShadowHistoryWeight(kTaaShadowChangeFull) - kTaaShadowHistoryWeight) < 1e-6f, __LINE__);
+        chk(std::fabs(taaShadowHistoryWeight(1.0f) - kTaaShadowHistoryWeight) < 1e-6f, __LINE__);
+        chk(kTaaShadowHistoryWeight < 0.9f && kTaaShadowChangeStart < kTaaShadowChangeFull, __LINE__);
+        bool mono = true;
+        for (float c = 0.0f; c < 0.5f; c += 0.01f) mono = mono && taaShadowHistoryWeight(c + 0.01f) <= taaShadowHistoryWeight(c);
+        chk(mono, __LINE__);
+    }
     if (bad) std::printf("%d failures\n", bad);
     else std::printf("ok\n");
     return bad ? 1 : 0;

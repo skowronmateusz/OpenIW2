@@ -701,6 +701,32 @@ constexpr float kRtReflectionMaxAlpha = 0.45f, kRtReflectionRange = 6000.0f;
 // Ray-traced shadows of the moving objects: the sun's cone (tan of the half angle; wider than the real sun's 0.27 degrees, as the
 // soft edge of the baked shadows), the lamps' size for their soft edge (units) and the contact occlusion's ray length (units).
 constexpr float kRtSunConeTan = 0.012f, kRtLampSize = 6.0f, kRtContactRange = 40.0f;
+// Moving shadows in the temporal filter (TAA and MetalFX's reactive mask, docs/render-enhanced.md): where the AO image's contact
+// channel (the moving objects' ray-traced sun shadow, contact shadows) changed by kTaaShadowChangeStart .. kTaaShadowChangeFull since
+// the last frame at the reprojected position, the history weight falls from the usual 0.9 to kTaaShadowHistoryWeight: the ground
+// under a moving shadow is still, so its motion vectors and the colour clamp of a textured ground would keep the old shadow
+// (a shadow trailing behind the player).
+// The screen-space terms (AO, contact shadows and the moving objects' ray-traced shadows, made from the opaque depth) for a surface
+// (docs/render-enhanced.md "Blended surfaces and the moving shadows"): an opaque surface takes them; an alpha or additive blend only
+// where it lies on the opaque surface behind it (a decal, a terrain blend layer: the shader compares the depths), so the layer does
+// not paint unshadowed ground over the shadowed base; a multiplying blend never, since it darkens a base that has them already.
+enum class ScreenTerms { Take = 0, Never = 1, OnOpaque = 2 };
+inline ScreenTerms blendScreenTerms(bool blended, bool multiplies) {
+    return !blended ? ScreenTerms::Take : multiplies ? ScreenTerms::Never : ScreenTerms::OnOpaque;
+}
+// Non-finite values (docs/render-enhanced.md): the guard's per-tile counts summed; garbage in a slot (NaN, negative) counts as 0
+// so a read of a buffer still being written never resets the history by itself; any non-finite pixel resets it.
+inline float nanGuardSum(const float* cells, size_t n) {
+    float s = 0.0f;
+    for (size_t i = 0; i < n; ++i) if (std::isfinite(cells[i]) && cells[i] > 0.0f && cells[i] < 1e7f) s += cells[i];
+    return s;
+}
+inline bool nanGuardResets(float count) { return count >= 0.5f; }
+constexpr float kTaaShadowChangeStart = 0.08f, kTaaShadowChangeFull = 0.3f, kTaaShadowHistoryWeight = 0.2f;
+inline float taaShadowHistoryWeight(float change) {
+    const float t = std::clamp((change - kTaaShadowChangeStart) / (kTaaShadowChangeFull - kTaaShadowChangeStart), 0.0f, 1.0f);
+    return 0.9f + (kTaaShadowHistoryWeight - 0.9f) * (t * t * (3.0f - 2.0f * t));
+}
 // Water (the water technique, drawn without the AO pass's sun channel): where it takes the moving objects' sun shadow from. The ray
 // traced shadows replace the shadow map when they are on, so the water traces its own ray there; otherwise it samples the same
 // cascades the opaque surfaces use. None without sun (or without a map to sample).

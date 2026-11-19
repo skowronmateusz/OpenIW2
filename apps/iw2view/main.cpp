@@ -407,6 +407,10 @@ struct GpuVertex {
 static_assert(sizeof(GpuVertex) == 88);
 
 enum class Pass { Opaque, AlphaTest, Blend, Additive, Multiply, Sky, Skip, Water, Objective };
+// The enhanced mode's screen-space terms (AO, contact and the moving objects' ray-traced shadows, from the opaque depth) for a pass:
+// 0 opaque surfaces take them, 2 alpha and additive blends where they lie on the opaque surface (decals, terrain blend layers),
+// 1 never (a multiplying blend darkens the surface under it, which has them already).
+inline int enhScreenMode(Pass p) { return int(game::blendScreenTerms(p == Pass::Blend || p == Pass::Additive || p == Pass::Multiply, p == Pass::Multiply)); }
 // Grouping of world surfaces into batches; the last six fields are the draw-list fields of Batch.
 using BatchKey = std::tuple<int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int, int>; // last: static model probeLit
 
@@ -3072,6 +3076,26 @@ struct Renderer {
     metal::Caps metalCaps;
     metal::TemporalScaler metalFx;
     SDL_GPUGraphicsPipeline* enhMfxMotionPipe = nullptr;
+    SDL_GPUGraphicsPipeline* enhMfxReactivePipe = nullptr; // MetalFX's reactive mask: the moving objects' shadow change
+    SDL_GPUTexture* mfxReactive = nullptr;
+    SDL_GPUTexture* mfxColor = nullptr; // the scene with non-finite values removed (fs_enh_finite_copy), MetalFX's colour input
+    SDL_GPUGraphicsPipeline* enhFiniteCopyPipe = nullptr;
+    // The non-finite guard (docs/render-enhanced.md "Non-finite values"): the resolved image's non-finite pixels counted on the GPU
+    // into a 32 x 32 image each frame, read back kNanLag frames later (no wait); a count resets the TAA / MetalFX history.
+    static constexpr uint32_t kNanSlots = 4, kNanLag = 3, kNanGrid = 32;
+    SDL_GPUGraphicsPipeline* enhNanCountPipe = nullptr;
+    SDL_GPUGraphicsPipeline* enhNanInjectPipe = nullptr;
+    SDL_GPUTexture* nanTex = nullptr;
+    SDL_GPUTransferBuffer* nanTb[kNanSlots] = {};
+    uint64_t nanSeq = 0;
+    uint64_t nanResets = 0;
+    float nanLastCount = 0; // the latest count read back
+    bool nanInputMode = false; // IW2_ENH_NANCHECK=2: the guard counts the resolve's input and only reports
+    void enhNanGuard(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* img, uint32_t w, uint32_t h);
+    float enhNanSlot(uint32_t slot);
+    uint32_t mfxColorW = 0, mfxColorH = 0;
+    float enhNanCountNow(); // the newest slot (after a fenced frame: a shot or a bench frame)
+    void enhNanInject(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* img, uint32_t w, uint32_t h, bool history);
     SDL_GPUGraphicsPipeline* enhAlphaMaskPipe = nullptr;
     SDL_GPUTexture* rtAlphaMasks = nullptr; // stage 5: the alpha-tested materials' alpha, one 64 x 64 layer each
     SDL_GPUGraphicsPipeline* enhMfxDepthPipe = nullptr;
@@ -3188,6 +3212,10 @@ struct Renderer {
     uint32_t aoW = 0, aoH = 0;
     SDL_GPUTexture* aoWhite = nullptr;              // 1 x 1 (1, 1) while AO is off or not built
     bool aoReady = false;
+    // The last frame's AO image (its contact channel: the moving objects' shadow) for the temporal filter (enh_shadow_change).
+    SDL_GPUTexture* aoPrevTex = nullptr;
+    bool aoPrevValid = false;
+    uint32_t aoLastFrame = ~0u; // taaFrame of the last AO pass
     uint32_t aoFrame = 0;
     void enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Camera& cam, const Scene& scene);
     // Cached world sun cascades (docs/render-enhanced.md "World sun shadows"): one depth texture each, re-rendered when the snapped
@@ -3256,10 +3284,14 @@ struct Renderer {
         enhAoPipe = mk("fs_enh_ao", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhAoBlurPipe = mk("fs_enh_ao_blur", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhAoViewPipe = mk("fs_enh_ao_view", 1, 0, false, true);
-        enhTaaPipe = mk("fs_enh_taa", 4, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhTaaPipe = mk("fs_enh_taa", 6, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhMfxMotionPipe = mk("fs_enh_mfx_motion", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT);
         enhAlphaMaskPipe = mk("fs_enh_alpha_mask", 1, 0, false, false, false, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
         enhMfxDepthPipe = mk("fs_enh_mfx_depth", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R32_FLOAT);
+        enhFiniteCopyPipe = mk("fs_enh_finite_copy", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhNanCountPipe = mk("fs_enh_nan_count", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R32_FLOAT);
+        enhNanInjectPipe = mk("fs_enh_nan_inject", 0, 0, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
+        enhMfxReactivePipe = mk("fs_enh_mfx_reactive", 4, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
         enhGiResolvePipe = mk("fs_enh_gi_resolve", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhVolumePipe = mk("fs_enh_volume", 3, 2, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhVolumeApplyPipe = mk("fs_enh_volume_apply", 1, 0, true, false, true, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
@@ -3448,7 +3480,7 @@ struct Renderer {
 
     // Binds the enhanced resources of fs_main / fs_spec (shadow map at `shadowSlot`, the lattice buffer) and pushes the draw's lattice.
     void enhBind(SDL_GPURenderPass* pass, SDL_GPUCommandBuffer* cmd, uint32_t shadowSlot, const DrawItem* it, const std::vector<DrawItem>& items,
-                 bool noScreenSpace = false, int reflectClass = 0) {
+                 int noScreenSpace = 0, int reflectClass = 0) { // noScreenSpace: enhScreenMode
         if (!enh.enabled) return;
         const SDL_GPUTextureSamplerBinding sb[8] = {
             {shadowCascadesNow > 0 ? shadowTex : shadowDummy, shadowCmpSampler},
@@ -3467,8 +3499,10 @@ struct Renderer {
         if (it && it->effects) d.step[3] = 1.0f; // sprites and clouds take no dynamic sun shadow
         // r_enhPlayerShadow: the view weapon and hands sit inside the player's body, so they skip the moving casters' map
         if (it && it->depthMax < 1.0f && !shadowOnlyItems.empty()) d.step[3] = 1.0f;
-        // AO / contact shadows come from the opaque depth: not for blended surfaces, sprites or the view model
-        if (noScreenSpace || (it && (it->effects || it->depthMax < 1.0f))) d.origin[3] = 1.0f;
+        // AO / contact shadows (and the moving objects' ray-traced shadows in them) come from the opaque depth: a blended surface
+        // takes them where it lies on the opaque one (2, enhScreenMode); not a multiplying blend, sprites or the view model (1)
+        d.origin[3] = float(noScreenSpace);
+        if (it && (it->effects || it->depthMax < 1.0f)) d.origin[3] = 1.0f;
         if (!it) d.origin[0] = float(reflectClass); // world draws: the reflective surface class (EnhDrawU.origin.x)
         SDL_PushGPUFragmentUniformData(cmd, 2, &d, sizeof d);
     }
@@ -4725,7 +4759,7 @@ struct Renderer {
                     {scene.specularity, clampSampler},
                     detailBinding(b.detail)};
                 SDL_BindGPUFragmentSamplers(pass, 0, tex, 5);
-                enhBind(pass, cmd, 5, &it, items, p == Pass::Blend || p == Pass::Additive || p == Pass::Multiply);
+                enhBind(pass, cmd, 5, &it, items, enhScreenMode(p));
                 FragmentUniforms fu = {
                     {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
                     {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, specColorScaleDvar()},
@@ -4747,7 +4781,7 @@ struct Renderer {
             SDL_GPUTextureSamplerBinding tex[4] = {
                 {scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {elm.coeffs, clampSampler}, {elm.sun, clampSampler}, detailBinding(b.detail)};
             SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
-            enhBind(pass, cmd, 4, &it, items, p == Pass::Blend || p == Pass::Additive || p == Pass::Multiply);
+            enhBind(pass, cmd, 4, &it, items, enhScreenMode(p));
             FragmentUniforms fu = {
                 {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, it.hasProbe ? 1.0f : 0.0f},
                 {scene.sunColor.x, scene.sunColor.y, scene.sunColor.z, 0},
@@ -4848,7 +4882,7 @@ struct Renderer {
                         detailBinding(b.detail)};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 5);
                     if (enh.enabled) {
-                        enhBind(pass, cmd, 5, nullptr, items, p == Pass::Blend || p == Pass::Additive || p == Pass::Multiply);
+                        enhBind(pass, cmd, 5, nullptr, items, enhScreenMode(p));
                         SDL_BindGPUFragmentStorageBuffers(pass, 1, &scene.smodelLightBuf, 1);
                     } else {
                         SDL_GPUBuffer* const sb = scene.smodelLightBuf;
@@ -4882,7 +4916,7 @@ struct Renderer {
                                                            {scene.textures[b.detail >= 0 ? size_t(scene.details[size_t(b.detail)].tex) : 0],
                                                             matSampler(b.detail >= 0 ? scene.details[size_t(b.detail)].state : uint8_t(0))}};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 8);
-                    enhBind(pass, cmd, 8, nullptr, items, p == Pass::Blend,
+                    enhBind(pass, cmd, 8, nullptr, items, enhScreenMode(p),
                             size_t(b.texture) < scene.texReflect.size() ? scene.texReflect[size_t(b.texture)] : 0);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, specColorScale},
@@ -4903,7 +4937,7 @@ struct Renderer {
                     SDL_GPUTextureSamplerBinding tex[4] = {
                         {scene.textures[size_t(b.texture)], matSampler(b.colorState)}, {lm.coeffs, clampSampler}, {lm.sun, clampSampler}, detailBinding(b.detail)};
                     SDL_BindGPUFragmentSamplers(pass, 0, tex, 4);
-                    enhBind(pass, cmd, 4, nullptr, items, p == Pass::Blend || p == Pass::Additive || p == Pass::Multiply,
+                    enhBind(pass, cmd, 4, nullptr, items, enhScreenMode(p),
                             size_t(b.texture) < scene.texReflect.size() ? scene.texReflect[size_t(b.texture)] : 0);
                     FragmentUniforms fu = {
                         {scene.sunDirection.x, scene.sunDirection.y, scene.sunDirection.z, 0},
@@ -11389,7 +11423,7 @@ int main(int argc, char** argv) {
                 sb.renderMs = bodyEnd;
                 addShadowBody(sb);
                 // IW2_BENCH frames and the shot after them: the body goes on in render time (16 ms per frame), so the frames show it moving.
-                shotBodyStep = [&, sb]() mutable { sb.renderMs += 16, addShadowBody(sb); };
+                shotBodyStep = [&, sb]() mutable { sb.renderMs += 16, sb.ground = {cam.pos.x, cam.pos.y, cam.pos.z - float(sb.viewHeightTarget)}, sb.yaw = cam.yaw, addShadowBody(sb); };
             }
             std::cout << "effect particles: " << fxSystem.count() << "\n";
             for (const auto& l : fxSystem.lights()) std::cout << "fx light " << l.origin[0] << "," << l.origin[1] << "," << l.origin[2] << " radius " << l.radius << " rgb " << l.rgb[0] << "," << l.rgb[1] << "," << l.rgb[2] << "\n"; // dynamic lights submitted this frame (not rendered yet)
@@ -11427,6 +11461,11 @@ int main(int argc, char** argv) {
                     g_skinStats = {};
                     if (std::getenv("IW2_BENCH_SKINLIST")) g_skinStats.byName = &byName;
                     if (const char* bt = std::getenv("IW2_BENCH_TURN")) cam.yaw += float(std::atof(bt)); // debug: turn the camera every bench frame
+                    if (const char* bs = std::getenv("IW2_BENCH_STEP")) { // debug: move the camera (and the shadow body under it) every bench frame
+                        float d[3] = {0, 0, 0};
+                        std::sscanf(bs, "%f,%f,%f", &d[0], &d[1], &d[2]);
+                        cam.pos.x += d[0], cam.pos.y += d[1], cam.pos.z += d[2];
+                    }
                     const uint64_t t0 = SDL_GetTicksNS();
                     if (shotBodyStep) shotBodyStep();
                     auto benchItems = killcamView ? gatherKillcamItems(cam, 1.0f) : gatherItems(cam);
@@ -11488,6 +11527,8 @@ int main(int argc, char** argv) {
                                 renderer.enhStats.cascadeRenders);
             }
             screenshot(dev, renderer, scene, cam, width, height, shot, shotItems, std::getenv("IW2_NO_HUD") ? std::vector<Quad2D>{} : buildHud(width, height, cam), forcedBlur); // IW2_NO_HUD: debug, no script HUD / fade
+            if (std::getenv("IW2_ENH_NANCHECK")) // the non-finite guard's count of the shot's own frame (it was waited for)
+                std::cout << "nan check final: " << renderer.enhNanCountNow() << " non-finite pixels, " << renderer.nanResets << " history resets\n";
             Uploader::releasePool(dev);
             SDL_DestroyGPUDevice(dev);
             SDL_Quit();

@@ -1060,6 +1060,10 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   # and IW2_HOME pick one. Starts iw2view (a window) four times.
   add_test(NAME iw2viewhome_e2e COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2view_home.sh $<TARGET_FILE:iw2view> ${IW2_TEST_MAIN} elalamein)
   set_tests_properties(iw2viewhome_e2e PROPERTIES PASS_REGULAR_EXPRESSION "iw2view home: ok" TIMEOUT 300)
+  # The enhanced temporal filter never keeps a non-finite pixel (docs/render-enhanced.md "Non-finite values"): NaN injected into
+  # the resolve's input or history, with our TAA and MetalFX where the build has it.
+  add_test(NAME iw2viewnan_e2e COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2view_nan.sh $<TARGET_FILE:iw2view> ${IW2_TEST_MAIN} elalamein)
+  set_tests_properties(iw2viewnan_e2e PROPERTIES PASS_REGULAR_EXPRESSION "iw2view nan: ok" TIMEOUT 300)
   # The server's session log (docs/logging.md); the log folder is a temp folder, never the real one.
   add_test(NAME iw2server_log COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2server_log.sh $<TARGET_FILE:iw2server>
     $<TARGET_FILE:iw2netclient> $<TARGET_FILE:iw2netinfo> ${IW2_TEST_MAIN})

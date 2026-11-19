@@ -509,12 +509,23 @@ void Renderer::enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_t rh
     const Vec3 fw = cam.forward();
     const float eye[3] = {cam.pos.x, cam.pos.y, cam.pos.z}, fwd[3] = {fw.x, fw.y, fw.z};
     const auto zl = game::clipDepthLine(cur, eye, fwd);
-    struct { float inv[16], prev[16], z[4], size[4]; } u{};
+    struct { float inv[16], prev[16], z[4], size[4], react[4]; } u{};
     std::memcpy(u.inv, inv.data(), sizeof u.inv);
     std::memcpy(u.prev, (taaPrevVPValid ? taaPrevVP : vp).data(), sizeof u.prev);
     u.z[0] = zl[0], u.z[1] = zl[1], u.z[2] = 262144.0f * 2.0f * 1.7f, u.z[3] = taaHistValid && taaPrevVPValid ? 1.0f : 0.0f;
     u.size[0] = 1.0f / float(rw), u.size[1] = 1.0f / float(rh), u.size[2] = cam.jitterX, u.size[3] = cam.jitterY;
-    if (enh.metalFx && metalCaps.metalFx && enhMetalFxResolve(cmd, rw, rh, w, h, cam, &u, sizeof u)) return;
+    const bool shadowReact = aoReady && aoPrevValid; // the moving objects' shadow change (docs/render-enhanced.md "Moving shadows in the temporal filter")
+    u.react[0] = shadowReact ? 1.0f : 0.0f;
+    u.react[1] = game::kTaaShadowChangeStart, u.react[2] = game::kTaaShadowChangeFull, u.react[3] = game::kTaaShadowHistoryWeight;
+    enhNanInject(cmd, sceneTex, rw, rh, false); // IW2_ENH_INJECT_NAN: into the resolve's input
+    if (const char* nc = std::getenv("IW2_ENH_NANCHECK"); nc && std::atoi(nc) == 2) { // debug: count the input instead (report only)
+        nanInputMode = true;
+        enhNanGuard(cmd, sceneTex, rw, rh);
+    }
+    if (enh.metalFx && metalCaps.metalFx && enhMetalFxResolve(cmd, rw, rh, w, h, cam, &u, sizeof u)) {
+        enhNanGuard(cmd, taaHist[taaCur], w, h);
+        return;
+    }
     if (scaledActive) { // MetalFX failed with a render scale: stretch the scene to the output size, no anti-aliasing this frame
         SDL_GPUBlitInfo bi{};
         bi.source.texture = sceneTex, bi.source.w = rw, bi.source.h = rh;
@@ -531,9 +542,10 @@ void Renderer::enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_t rh
     ct.store_op = SDL_GPU_STOREOP_STORE;
     SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
     SDL_BindGPUGraphicsPipeline(p, enhTaaPipe);
-    const SDL_GPUTextureSamplerBinding tb[4] = {{sceneTex, pointClampSampler}, {taaHist[taaCur], clampSampler}, {velocityTex, pointClampSampler},
-                                                {floatzTex, pointClampSampler}};
-    SDL_BindGPUFragmentSamplers(p, 0, tb, 4);
+    const SDL_GPUTextureSamplerBinding tb[6] = {{sceneTex, pointClampSampler}, {taaHist[taaCur], clampSampler}, {velocityTex, pointClampSampler},
+                                                {floatzTex, pointClampSampler}, {shadowReact ? aoTex[0] : aoWhite, clampSampler},
+                                                {shadowReact ? aoPrevTex : aoWhite, clampSampler}};
+    SDL_BindGPUFragmentSamplers(p, 0, tb, 6);
     SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof u);
     SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
     SDL_EndGPURenderPass(p);
@@ -545,14 +557,96 @@ void Renderer::enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_t rh
     SDL_EndGPUCopyPass(cp);
     taaCur = 1 - taaCur;
     taaHistValid = true;
+    enhNanGuard(cmd, taaHist[taaCur], w, h);
 }
+
+// IW2_ENH_INJECT_NAN=x,y,w,h,frames[,history] (docs/debug-flags.md): NaN into that rectangle of the resolve's input (or, with
+// history = 1, of the history after the resolve) for the first `frames` TAA frames: the test of the sanitising and the guard.
+void Renderer::enhNanInject(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* img, uint32_t w, uint32_t h, bool history) {
+    static const char* spec = std::getenv("IW2_ENH_INJECT_NAN");
+    if (!spec || !enhNanInjectPipe || !img) return;
+    int r[6] = {0, 0, 0, 0, 0, 0};
+    std::sscanf(spec, "%d,%d,%d,%d,%d,%d", &r[0], &r[1], &r[2], &r[3], &r[4], &r[5]);
+    if ((r[5] != 0) != history || taaFrame >= uint32_t(std::max(r[4], 0)) || r[2] <= 0 || r[3] <= 0) return;
+    SDL_GPUColorTargetInfo ct{};
+    ct.texture = img, ct.load_op = SDL_GPU_LOADOP_LOAD, ct.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(p, enhNanInjectPipe);
+    const SDL_Rect sc{std::min(r[0], int(w) - 1), std::min(r[1], int(h) - 1), r[2], r[3]};
+    SDL_SetGPUScissor(p, &sc);
+    SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(p);
+    std::cout << "nan inject: " << (history ? "history" : "input") << " frame " << taaFrame << "\n";
+}
+
+// The non-finite guard (docs/render-enhanced.md "Non-finite values"): the count of kNanLag frames ago is read without waiting (it
+// is long done); a count above 0 drops the TAA / MetalFX history, which a non-finite pixel would otherwise spread. Then this
+// frame's count is made on the GPU and its download queued.
+void Renderer::enhNanGuard(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* img, uint32_t w, uint32_t h) {
+    if (!enhNanCountPipe || !img || (nanInputMode && img != sceneTex)) return;
+    enhNanInject(cmd, img, w, h, true); // IW2_ENH_INJECT_NAN with history = 1
+    static const bool report = std::getenv("IW2_ENH_NANCHECK") != nullptr;
+    if (nanSeq >= kNanLag && nanTb[(nanSeq - kNanLag) % kNanSlots]) {
+        const float n = enhNanSlot((nanSeq - kNanLag) % kNanSlots);
+        nanLastCount = n;
+        if (nanInputMode) {
+            if (n > 0.0f) std::cout << "nan input: " << n << " non-finite pixels before the resolve\n";
+        } else if (game::nanGuardResets(n)) {
+            taaHistValid = false; // our TAA and MetalFX (reset) start afresh
+            ++nanResets;
+            std::cout << "nan guard: " << n << " non-finite pixels, history reset (" << nanResets << ")\n";
+        } else if (report && nanSeq % 60 == 0) {
+            std::cout << "nan check: 0\n";
+        }
+    }
+    if (!nanTex) {
+        SDL_GPUTextureCreateInfo ti{};
+        ti.type = SDL_GPU_TEXTURETYPE_2D, ti.format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+        ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        ti.width = ti.height = kNanGrid, ti.layer_count_or_depth = 1, ti.num_levels = 1;
+        nanTex = SDL_CreateGPUTexture(dev, &ti);
+        SDL_GPUTransferBufferCreateInfo bi{};
+        bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, bi.size = kNanGrid * kNanGrid * 4;
+        for (auto& t : nanTb) t = SDL_CreateGPUTransferBuffer(dev, &bi);
+        if (!nanTex) return;
+    }
+    SDL_GPUColorTargetInfo ct{};
+    ct.texture = nanTex, ct.load_op = SDL_GPU_LOADOP_DONT_CARE, ct.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(p, enhNanCountPipe);
+    const SDL_GPUTextureSamplerBinding tb{img, pointClampSampler};
+    SDL_BindGPUFragmentSamplers(p, 0, &tb, 1);
+    const float nu[4] = {float(w), float(h), float((w + kNanGrid - 1) / kNanGrid), float((h + kNanGrid - 1) / kNanGrid)};
+    SDL_PushGPUFragmentUniformData(cmd, 0, nu, sizeof nu);
+    SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(p);
+    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureRegion region{};
+    region.texture = nanTex, region.w = kNanGrid, region.h = kNanGrid, region.d = 1;
+    SDL_GPUTextureTransferInfo dst{};
+    dst.transfer_buffer = nanTb[nanSeq % kNanSlots];
+    SDL_DownloadFromGPUTexture(cp, &region, &dst);
+    SDL_EndGPUCopyPass(cp);
+    ++nanSeq;
+}
+
+float Renderer::enhNanSlot(uint32_t slot) {
+    if (!nanTb[slot]) return 0.0f;
+    const auto* v = static_cast<const float*>(SDL_MapGPUTransferBuffer(dev, nanTb[slot], false));
+    if (!v) return 0.0f;
+    std::vector<float> cells(v, v + kNanGrid * kNanGrid);
+    SDL_UnmapGPUTransferBuffer(dev, nanTb[slot]);
+    return game::nanGuardSum(cells.data(), cells.size());
+}
+
+float Renderer::enhNanCountNow() { return nanSeq > 0 ? enhNanSlot(uint32_t((nanSeq - 1) % kNanSlots)) : 0.0f; }
 
 // MetalFX temporal scaling (docs/render-enhanced.md "Stage 5"): the motion of every pixel and a device depth from $floatz, then
 // the scaler on SDL's command buffer (no SDL pass open) into the history texture, which replaces the scene image as the TAA's does.
 bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_t rh, uint32_t w, uint32_t h, const Camera& cam,
                                  const void* u, size_t usize) {
     if (!mfxMotion || mfxW != rw || mfxH != rh) {
-        for (SDL_GPUTexture** t : {&mfxMotion, &mfxDepth}) if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
+        for (SDL_GPUTexture** t : {&mfxMotion, &mfxDepth, &mfxReactive}) if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
         SDL_GPUTextureCreateInfo ti{};
         ti.type = SDL_GPU_TEXTURETYPE_2D;
         ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
@@ -561,6 +655,8 @@ bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_
         mfxMotion = SDL_CreateGPUTexture(dev, &ti);
         ti.format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
         mfxDepth = SDL_CreateGPUTexture(dev, &ti);
+        ti.format = SDL_GPU_TEXTUREFORMAT_R8_UNORM;
+        mfxReactive = SDL_CreateGPUTexture(dev, &ti);
         if (!mfxMotion || !mfxDepth) return false;
         mfxW = rw, mfxH = rh;
     }
@@ -580,6 +676,12 @@ bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_
     pass(enhMfxMotionPipe, mfxMotion, mb, 2);
     const SDL_GPUTextureSamplerBinding db[1] = {{floatzTex, pointClampSampler}};
     pass(enhMfxDepthPipe, mfxDepth, db, 1);
+    // the reactive mask: where a moving object's shadow came or went, MetalFX takes the current frame (enh_shadow_change)
+    if (mfxReactive && enhMfxReactivePipe) {
+        const SDL_GPUTextureSamplerBinding rb[4] = {{velocityTex, pointClampSampler}, {floatzTex, pointClampSampler},
+                                                    {aoReady ? aoTex[0] : aoWhite, clampSampler}, {aoPrevValid ? aoPrevTex : aoWhite, clampSampler}};
+        pass(enhMfxReactivePipe, mfxReactive, rb, 4);
+    }
     if (temporalHold && taaHistValid && taaW == w && taaH == h) { // paused: the last output again, no scaler run
         restoreScaledScene();
         SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
@@ -594,7 +696,23 @@ bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_
     }
     if (temporalHeld) std::cout << "MetalFX: running again, history reset\n";
     const bool reset = !(taaHistValid && taaPrevVPValid) || std::exchange(temporalHeld, false);
-    if (!metalFx.encode(dev, cmd, sceneTex, mfxDepth, mfxMotion, taaHist[1 - taaCur], rw, rh, w, h, cam.jitterX, cam.jitterY, reset)) {
+    // the colour without NaN / infinities (fs_enh_finite_copy): one such value in the scaler's history spreads (black blocks)
+    if (!mfxColor || mfxColorW != rw || mfxColorH != rh) {
+        if (mfxColor) SDL_ReleaseGPUTexture(dev, mfxColor);
+        SDL_GPUTextureCreateInfo ci{};
+        ci.type = SDL_GPU_TEXTURETYPE_2D, ci.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+        ci.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        ci.width = rw, ci.height = rh, ci.layer_count_or_depth = 1, ci.num_levels = 1;
+        mfxColor = SDL_CreateGPUTexture(dev, &ci);
+        mfxColorW = rw, mfxColorH = rh;
+    }
+    SDL_GPUTexture* mfxIn = sceneTex;
+    if (mfxColor && enhFiniteCopyPipe) {
+        const SDL_GPUTextureSamplerBinding cb[1] = {{sceneTex, pointClampSampler}};
+        pass(enhFiniteCopyPipe, mfxColor, cb, 1);
+        mfxIn = mfxColor;
+    }
+    if (!metalFx.encode(dev, cmd, mfxIn, mfxDepth, mfxMotion, mfxReactive, taaHist[1 - taaCur], rw, rh, w, h, cam.jitterX, cam.jitterY, reset)) {
         if (!metalFxLogged) metalFxLogged = true, std::cout << metalFx.describe() << " (our TAA instead)\n";
         return false;
     }
@@ -653,6 +771,12 @@ void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Ca
             t = SDL_CreateGPUTexture(dev, &ti);
             if (!t) sdlFail("AO texture");
         }
+        if (aoPrevTex) SDL_ReleaseGPUTexture(dev, aoPrevTex);
+        SDL_GPUTextureCreateInfo pi{};
+        pi.type = SDL_GPU_TEXTURETYPE_2D, pi.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, pi.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        pi.width = hw, pi.height = hh, pi.layer_count_or_depth = 1, pi.num_levels = 1;
+        aoPrevTex = SDL_CreateGPUTexture(dev, &pi);
+        aoLastFrame = ~0u;
         aoW = hw, aoH = hh;
     }
     const Mat4 vp = cam.viewProj(frameAspect());
@@ -732,10 +856,20 @@ void Renderer::enhAO(SDL_GPUCommandBuffer* cmd, uint32_t w, uint32_t h, const Ca
         SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
         SDL_EndGPURenderPass(p);
     };
+    // the last frame's AO image for the temporal filter (enh_shadow_change), when the AO ran in the frame before this one
+    aoPrevValid = aoPrevTex && aoLastFrame != ~0u && aoLastFrame + 1 == taaFrame;
+    if (aoPrevValid) {
+        SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+        SDL_GPUTextureLocation src{}, dst{};
+        src.texture = aoTex[0], dst.texture = aoPrevTex;
+        SDL_CopyGPUTextureToTexture(cp, &src, &dst, hw, hh, 1, false);
+        SDL_EndGPUCopyPass(cp);
+    }
     pass(enhAoPipe, aoTex[1], floatzTex, pointClampSampler, &u, sizeof u);
     const float bu[4] = {1.0f / float(hw), 1.0f / float(hh), 0, 0};
     pass(enhAoBlurPipe, aoTex[0], aoTex[1], pointClampSampler, bu, sizeof bu);
     aoReady = true;
+    aoLastFrame = taaFrame;
     if (rtGINow) {
         prepareSceneRT(cmd, scene, *frameItems);
         enhRTGI(cmd, hw, hh, inv, zl.data(), eye, vp);

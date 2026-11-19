@@ -38,8 +38,9 @@ public:
     TemporalScaler& operator=(const TemporalScaler&) = delete;
     // Encodes one frame; false if the scaler could not be made (then the caller resolves with its own TAA). jitter: the
     // projection's sub-pixel offset in NDC (Camera::jitterX / Y); reset: no valid history (first frame, a cut, a resize).
+    // reactive (R8, may be null): the reactive mask, 1 where the current frame's colour should win over the history.
     bool encode(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* color, SDL_GPUTexture* depth, SDL_GPUTexture* motion,
-                SDL_GPUTexture* output, unsigned inW, unsigned inH, unsigned outW, unsigned outH, float jitterNdcX, float jitterNdcY,
+                SDL_GPUTexture* reactive, SDL_GPUTexture* output, unsigned inW, unsigned inH, unsigned outW, unsigned outH, float jitterNdcX, float jitterNdcY,
                 bool reset);
     std::string describe() const; // the scaler's size and the texture usages it needs (log)
 

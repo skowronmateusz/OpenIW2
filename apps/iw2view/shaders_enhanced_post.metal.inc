@@ -188,6 +188,19 @@ static float3 enh_world_at(float2 uv, constant AOU& u, texture2d<float> fz, samp
     const float4 p = u.invViewProj * float4(float2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0) * w, cz, w);
     return p.xyz / p.w;
 }
+// normalize(v), or the fallback where v is zero or not finite (normalize of a zero vector is NaN)
+static float3 enh_safe_normal(float3 v, float3 fallback) {
+    const float l2 = dot(v, v);
+    return l2 > 1e-12 && isfinite(l2) ? v * rsqrt(l2) : fallback;
+}
+// A finite HDR colour: NaN and infinities to 0, the rest limited to kEnhHdrMax (half float holds up to 65504). A non-finite pixel
+// in the temporal history (ours or MetalFX's) spreads to its neighbours frame by frame (black blocks that grow).
+constant float kEnhHdrMax = 30000.0;
+static float3 enh_finite(float3 c) {
+    return float3(isfinite(c.x) ? clamp(c.x, 0.0, kEnhHdrMax) : 0.0, isfinite(c.y) ? clamp(c.y, 0.0, kEnhHdrMax) : 0.0,
+                  isfinite(c.z) ? clamp(c.z, 0.0, kEnhHdrMax) : 0.0);
+}
+static bool enh_all_finite(float4 c) { return all(isfinite(c)); }
 static float enh_ign(float2 px, float frame) { // interleaved gradient noise
     px += 5.588238 * frame;
     return fract(52.9829189 * fract(dot(px, float2(0.06711056, 0.00583715))));
@@ -208,8 +221,8 @@ fragment float4 fs_enh_ao(GlowVOut in [[stage_in]], constant AOU& u [[buffer(0)]
     const float3 pd = enh_world_at(uv0 + ty, u, fz, s, wc), pu = enh_world_at(uv0 - ty, u, fz, s, wd);
     const float3 dx = abs(wa - w) < abs(wb - w) ? pr - P : P - pl;
     const float3 dy = abs(wc - w) < abs(wd - w) ? pd - P : P - pu;
-    float3 N = normalize(cross(dy, dx));
     const float3 V = normalize(u.eye.xyz - P);
+    float3 N = enh_safe_normal(cross(dy, dx), V); // (a zero cross product at a depth edge would make the AO NaN)
     if (dot(N, V) < 0.0) N = -N;
     const float2 px = uv0 * u.size.zw;
     float ao = 1.0;
@@ -227,7 +240,7 @@ fragment float4 fs_enh_ao(GlowVOut in [[stage_in]], constant AOU& u [[buffer(0)]
             float3 dW = (Q - P) - V * dot(Q - P, V);
             if (dot(dW, dW) < 1e-8) continue;
             dW = normalize(dW);
-            const float3 axis = normalize(cross(dW, V));
+            const float3 axis = enh_safe_normal(cross(dW, V), N);
             const float3 projN = N - axis * dot(N, axis);
             const float projLen = length(projN);
             if (projLen < 1e-4) continue;
@@ -397,7 +410,18 @@ struct TaaU {
     float4x4 prevViewProj; // previous, without jitter
     float4 z;              // x, y: clip z line; z: $floatz sky threshold; w: 1 = history valid
     float4 size;           // xy: 1 / size; zw: jitter (NDC) of this frame
+    float4 react;          // x: 1 = the AO images of this and the last frame are valid; y, z: shadow change that starts / completes
+                           // the reaction; w: the history weight at a full reaction
 };
+// The moving objects' shadow changed under this pixel since the last frame (docs/render-enhanced.md "Moving shadows in the temporal
+// filter"): the AO image's contact channel (which carries the ray-traced sun shadow of the moving objects) now and the last frame's
+// at the reprojected position. The ground under a moving shadow is still, so its motion vectors keep the old shadow in the history
+// and the neighbourhood clamp of a textured ground does not reject it: 0 = no change, 1 = take the current frame.
+static float enh_shadow_change(constant TaaU& u, float2 uv, float2 prevUv, texture2d<float> aoNow, texture2d<float> aoPrev, sampler ls) {
+    if (u.react.x < 0.5) return 0.0;
+    const float a = aoNow.sample(ls, uv).g, b = aoPrev.sample(ls, prevUv).g;
+    return smoothstep(u.react.y, u.react.z, abs(a - b));
+}
 // Catmull-Rom history sample from 5 bilinear taps (the corner taps of the 4 x 4 kernel dropped), so the history stays sharp when it
 // is resampled every frame.
 static float3 enh_history(texture2d<float> t, sampler ls, float2 uv, float2 texSize) {
@@ -430,12 +454,21 @@ static float2 enh_pixel_motion(constant TaaU& u, float2 uv, texture2d<float> vel
 }
 fragment float4 fs_enh_mfx_motion(GlowVOut in [[stage_in]], constant TaaU& u [[buffer(0)]], texture2d<float> vel [[texture(0)]],
                                   texture2d<float> fz [[texture(1)]], sampler vs [[sampler(0)]], sampler zs [[sampler(1)]]) {
-    return float4(enh_pixel_motion(u, in.uv, vel, vs, fz.sample(zs, in.uv).r), 0.0, 1.0);
+    const float2 v = enh_pixel_motion(u, in.uv, vel, vs, fz.sample(zs, in.uv).r);
+    return float4(all(isfinite(v)) ? clamp(v, -4.0, 4.0) : float2(0.0), 0.0, 1.0); // (NDC: no motion is ever larger than 2)
+}
+// MetalFX's reactive mask (1 = the current frame's colour): the moving objects' shadow change (enh_shadow_change).
+fragment float4 fs_enh_mfx_reactive(GlowVOut in [[stage_in]], constant TaaU& u [[buffer(0)]], texture2d<float> vel [[texture(0)]],
+                                    texture2d<float> fz [[texture(1)]], texture2d<float> aoNow [[texture(2)]], texture2d<float> aoPrev [[texture(3)]],
+                                    sampler vs [[sampler(0)]], sampler zs [[sampler(1)]], sampler ls [[sampler(2)]], sampler ls2 [[sampler(3)]]) {
+    const float2 v = enh_pixel_motion(u, in.uv, vel, vs, fz.sample(zs, in.uv).r);
+    const float2 prevUv = in.uv - float2(v.x * 0.5, -v.y * 0.5);
+    return float4(enh_shadow_change(u, in.uv, saturate(prevUv), aoNow, aoPrev, ls));
 }
 fragment float4 fs_enh_mfx_depth(GlowVOut in [[stage_in]], constant TaaU& u [[buffer(0)]], texture2d<float> fz [[texture(0)]],
                                  sampler zs [[sampler(0)]]) {
     const float cz = fz.sample(zs, in.uv).r;
-    if (cz >= u.z.z) return float4(1.0);
+    if (cz >= u.z.z || !isfinite(cz)) return float4(1.0);
     const float w = max((cz - u.z.y) / u.z.x, 1e-3);
     return float4(saturate(cz / w));
 }
@@ -444,7 +477,9 @@ static float3 enh_ycocg(float3 c) { return float3(dot(c, float3(0.25, 0.5, 0.25)
 static float3 enh_rgb(float3 y) { return float3(y.x + y.y - y.z, y.x + y.z, y.x - y.y - y.z); }
 fragment float4 fs_enh_taa(GlowVOut in [[stage_in]], constant TaaU& u [[buffer(0)]], texture2d<float> cur [[texture(0)]],
                            texture2d<float> hist [[texture(1)]], texture2d<float> vel [[texture(2)]], texture2d<float> fz [[texture(3)]],
-                           sampler ps [[sampler(0)]], sampler ls [[sampler(1)]], sampler vs [[sampler(2)]], sampler zs [[sampler(3)]]) {
+                           texture2d<float> aoNow [[texture(4)]], texture2d<float> aoPrev [[texture(5)]],
+                           sampler ps [[sampler(0)]], sampler ls [[sampler(1)]], sampler vs [[sampler(2)]], sampler zs [[sampler(3)]],
+                           sampler as [[sampler(4)]], sampler as2 [[sampler(5)]]) {
     // neighbourhood of the current frame (in a compressed space, Karis' luminance weighting), and the nearest depth for the velocity
     float3 mn = 1e9, mx = -1e9, m1 = 0.0, m2 = 0.0;
     float3 c0 = 0.0;
@@ -453,7 +488,7 @@ fragment float4 fs_enh_taa(GlowVOut in [[stage_in]], constant TaaU& u [[buffer(0
     for (int y = -1; y <= 1; ++y)
         for (int x = -1; x <= 1; ++x) {
             const float2 q = in.uv + float2(x, y) * u.size.xy;
-            const float3 c = enh_ycocg(enh_tonemap_weight(max(cur.sample(ps, q).rgb, 0.0)));
+            const float3 c = enh_ycocg(enh_tonemap_weight(enh_finite(cur.sample(ps, q).rgb)));
             if (x == 0 && y == 0) c0 = c;
             mn = min(mn, c), mx = max(mx, c);
             m1 += c, m2 += c * c;
@@ -474,15 +509,39 @@ fragment float4 fs_enh_taa(GlowVOut in [[stage_in]], constant TaaU& u [[buffer(0
         v = vel.sample(vs, nearestUv).rg;
     }
     const float2 prevUv = in.uv - float2(v.x * 0.5, -v.y * 0.5);
-    const float3 current = cur.sample(ps, in.uv).rgb;
+    const float3 current = enh_finite(cur.sample(ps, in.uv).rgb);
     if (u.z.w < 0.5 || any(prevUv < 0.0) || any(prevUv > 1.0)) return float4(current, 1.0);
-    const float3 h = enh_ycocg(enh_tonemap_weight(enh_history(hist, ls, prevUv, 1.0 / u.size.xy)));
+    const float3 h = enh_ycocg(enh_tonemap_weight(enh_finite(enh_history(hist, ls, prevUv, 1.0 / u.size.xy))));
     const float3 hc = clamp(h, mn, mx);
     // blend in the compressed space, back to linear
-    const float3 outW = enh_rgb(mix(c0, hc, 0.9));
+    // the history weight, lower where a moving object's shadow came or went (enh_shadow_change)
+    const float histW = mix(0.9, u.react.w, enh_shadow_change(u, in.uv, prevUv, aoNow, aoPrev, as));
+    const float3 outW = enh_rgb(mix(c0, hc, histW));
     const float m = max(max(outW.r, outW.g), outW.b);
-    return float4(max(outW / max(1.0 - m, 1e-3), 0.0), 1.0);
+    return float4(enh_finite(outW / max(1.0 - m, 1e-3)), 1.0);
 }
+// MetalFX's colour input: the scene with NaN / infinities removed and the HDR range limited (enh_finite), so no non-finite value
+// reaches the scaler's history (docs/render-enhanced.md "Non-finite values").
+fragment float4 fs_enh_finite_copy(GlowVOut in [[stage_in]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {
+    const float4 c = src.read(uint2(in.position.xy));
+    return float4(enh_finite(c.rgb), isfinite(c.a) ? saturate(c.a) : 1.0);
+}
+// The non-finite guard: each texel of a small target counts the non-finite pixels of its tile of the image (p.xy: image size,
+// p.zw: tile size).
+struct NanCountU { float4 p; };
+fragment float4 fs_enh_nan_count(GlowVOut in [[stage_in]], constant NanCountU& u [[buffer(0)]], texture2d<float> src [[texture(0)]],
+                                 sampler s [[sampler(0)]]) {
+    const uint2 o = uint2(in.position.xy) * uint2(u.p.zw), size = uint2(u.p.xy);
+    float n = 0.0;
+    for (uint y = 0; y < uint(u.p.w); ++y)
+        for (uint x = 0; x < uint(u.p.z); ++x) {
+            const uint2 q = o + uint2(x, y);
+            if (q.x < size.x && q.y < size.y && !enh_all_finite(src.read(q))) n += 1.0;
+        }
+    return float4(n);
+}
+// IW2_ENH_INJECT_NAN (docs/debug-flags.md): NaN into a rectangle of an image (the test of the guard and the sanitising).
+fragment float4 fs_enh_nan_inject(GlowVOut in [[stage_in]]) { return float4(as_type<float>(0x7fc00000u)); }
 
 // ---- atmosphere: sun shafts (light scattered in the air), half size, added to the scene before TAA ----
 struct VolU {
