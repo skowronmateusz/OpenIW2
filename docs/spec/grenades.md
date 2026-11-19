@@ -236,6 +236,16 @@ and G_SetAngle (0x4d83c0) sets them. So a map weapon placed upright with angles 
 (duhoc_assault: the Thompson on the cliff top). No hit keeps the map's angles. Port: World::runItem, game::itemRestAngles. Port: a ground entity counts as moving while its mover position channel is
 active; passEnt is the item itself (owner unset); only weapon items run.
 
+Using a weapon item (the use key, 0x5341a0): the common use sends "trigger" to the item entity with the player as the activator first
+(see vehicles.md "Use key"), then the type-2 use function runs Touch_Item (0x521a90) and Pickup_Weapon, which may swap with a held weapon
+of the same slot class; the notify does not depend on what the pickup then takes, on the item being hidden (hide only keeps it from
+the clients, the use scan still finds it) or on its spawnflags. silotown_assault.gsc:1187..1207 depends on this: a suspended weapon
+item is spawned, hidden and replaced by a visible model; the script waits for "trigger" on the item, deletes the model and raises the
+flag player_has_sniper_rifle (the objective "get the German sniper" ends with it). Implemented in `World::usePlayerEntity`, test
+`tests/test_itemtrigger.cpp`. The touch pickup (G_TouchTriggers) cannot take a primary weapon the player does not own, so only the
+use key completes it. A swap leaves the old weapon as a new item at the used item's place; using it swaps back, so repeated presses
+alternate the two weapons, one swap per press.
+
 ## Rockets (G_FireRocket 0x527810, G_RunMissile, decoded)
 - +0x168 = destabilizeDistance (+0x5ac, int) / projectileSpeed (+0x384, int) · 1000 (0x52795d..0x527973); the shooter's +0x128 &
   0x20000 is copied (0x527979..0x52798d) and disables the destabilization; setstablemissile(bool) (0x4efde0, eType 9 / 0xc / 1

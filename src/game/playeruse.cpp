@@ -387,6 +387,11 @@ void World::findPlayerUseEntity() {
 // out), a turret's 0x51db50; trigger_use's (0x52cdd0) does nothing more.
 void World::usePlayerEntity(Entity& e) {
     if (e.classname.rfind("weapon_", 0) == 0) {
+        // The same "trigger" as every other use (0x5341a0), sent before the item's use function and so also when the pickup then
+        // takes nothing; a script that spawned the item (silotown_assault.gsc:1198..1202, a hidden suspended sniper rifle) waits
+        // for it. A thread woken by it resumes in the frame's script stage, after the pickup.
+        vm_.notify(e.obj, "trigger", {Value(player_->obj)});
+        if (e.obj->removed) return;
         pickUpWeaponItem(e);
         return;
     }
@@ -752,7 +757,7 @@ Entity& World::debugSpawnWeaponItem(const std::string& weapon, const Vec3& origi
 
 Entity* World::debugUseItem(Entity& item) {
     const size_t before = entities_.size();
-    pickUpWeaponItem(item);
+    usePlayerEntity(item);
     return entities_.size() > before ? entities_.back().get() : nullptr;
 }
 
@@ -762,7 +767,7 @@ Entity* World::debugUseWeaponItem(const std::string& weapon, int stock, int clip
     if (stock != 0) e.obj->set("$ammoStock", Value(int32_t(stock)));
     if (clip != 0) e.obj->set("$ammoClip", Value(int32_t(clip)));
     const size_t before = entities_.size();
-    pickUpWeaponItem(e);
+    usePlayerEntity(e);
     return entities_.size() > before ? entities_.back().get() : nullptr;
 }
 
