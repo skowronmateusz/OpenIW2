@@ -236,13 +236,20 @@ and G_SetAngle (0x4d83c0) sets them. So a map weapon placed upright with angles 
 (duhoc_assault: the Thompson on the cliff top). No hit keeps the map's angles. Port: World::runItem, game::itemRestAngles. Port: a ground entity counts as moving while its mover position channel is
 active; passEnt is the item itself (owner unset); only weapon items run.
 
-Using a weapon item (the use key, 0x5341a0): the common use sends "trigger" to the item entity with the player as the activator first
-(see vehicles.md "Use key"), then the type-2 use function runs Touch_Item (0x521a90) and Pickup_Weapon, which may swap with a held weapon
-of the same slot class; the notify does not depend on what the pickup then takes, on the item being hidden (hide only keeps it from
-the clients, the use scan still finds it) or on its spawnflags. silotown_assault.gsc:1187..1207 depends on this: a suspended weapon
-item is spawned, hidden and replaced by a visible model; the script waits for "trigger" on the item, deletes the model and raises the
-flag player_has_sniper_rifle (the objective "get the German sniper" ends with it). Implemented in `World::usePlayerEntity`, test
-`tests/test_itemtrigger.cpp`. The touch pickup (G_TouchTriggers) cannot take a primary weapon the player does not own, so only the
+Using a weapon item (the use key, 0x5341a0): the type-2 branch notifies the item with "touch" (const 0x1c7f0e2, string 0x58a280) and
+the user as the argument, then runs Touch_Item (0x521a90) and Pickup_Weapon (0x521170). The item's "trigger" (const 0x1c7f0e4, string
+0x58a278) is not part of the use key for items: it comes from Pickup_Weapon after the pickup (0x52173e..0x52176f), with two arguments:
+the player and the item dropped by the swap, or undefined when the weapon went into a free slot (0x521637 pushes the dropped item, 0x521742
+pushes undefined). Directly after it the player is notified "pickup" (const 0x1c7f0aa, string 0x58a398) with the used item and the same
+dropped item (0x5217a0..0x5217c8). The "can't get primary" refusal returns before both. Hidden items are still found by the use scan
+(hide only keeps the item from the clients). silotown_assault.gsc:1187..1207 depends on the "trigger": a suspended weapon item is spawned,
+hidden and replaced by a visible model; the script waits for "trigger" on the item, deletes the model and raises the flag
+player_has_sniper_rifle (the objective "get the German sniper" ends with it). beltot.gsc:1695..1701 (attach_weapon) takes the dropped
+item from the third waittill value and links it to the truck with linkto, so the weapon the player leaves behind rides along; with an
+undefined value the call raised "linkto needs two entities" at each pickup. Implemented in `World::pickUpWeaponItem`, test
+`tests/test_itemtrigger.cpp`. TODO(spec): the ammo-only branch (0x521656, the weapon is already owned): it reaches the same "trigger"
+site with undefined when the item is used up and leaves the item (no notify) while rounds remain; the port keeps the player-only
+"trigger" for it and does not model the rounds. The touch pickup (G_TouchTriggers) cannot take a primary weapon the player does not own, so only the
 use key completes it. A swap leaves the old weapon as a new item at the used item's place; using it swaps back, so repeated presses
 alternate the two weapons, one swap per press.
 

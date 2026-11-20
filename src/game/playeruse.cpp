@@ -387,11 +387,9 @@ void World::findPlayerUseEntity() {
 // out), a turret's 0x51db50; trigger_use's (0x52cdd0) does nothing more.
 void World::usePlayerEntity(Entity& e) {
     if (e.classname.rfind("weapon_", 0) == 0) {
-        // The same "trigger" as every other use (0x5341a0), sent before the item's use function and so also when the pickup then
-        // takes nothing; a script that spawned the item (silotown_assault.gsc:1198..1202, a hidden suspended sniper rifle) waits
-        // for it. A thread woken by it resumes in the frame's script stage, after the pickup.
-        vm_.notify(e.obj, "trigger", {Value(player_->obj)});
-        if (e.obj->removed) return;
+        // A use of a weapon item sends "touch" with the user (0x5341a0, the item branch) and runs Touch_Item; its "trigger" comes
+        // from the pickup itself (0x52173e..0x52176f), see pickUpWeaponItem. A script that spawned the item (silotown_assault.gsc:1198..1202,
+        // a hidden suspended sniper rifle) waits for that "trigger"; a thread woken by it resumes in the frame's script stage.
         pickUpWeaponItem(e);
         return;
     }
@@ -594,7 +592,14 @@ void World::pickUpWeaponItem(Entity& item) {
     vm_.notify(item.obj, "touch", {Value(player_->obj)});
     if (item.obj->removed) return;
     Inventory& inv = inventory(*player_);
-    if (inv.owned.count(w)) return;
+    if (inv.owned.count(w)) {
+        // TODO(spec): the ammo-only path (0x521656: the item's rounds are added to the held weapon). It reaches the same "trigger" site
+        // (0x52173e) with no dropped weapon when the item is used up, and leaves the item (no notify) when rounds remain; neither the
+        // rounds nor that branch are modelled, so the item keeps sending its "trigger" with the player only, as before.
+        if (!mp_) vm_.notify(item.obj, "trigger", {Value(player_->obj)});
+        return;
+    }
+    Entity* droppedItem = nullptr; // the swapped-out weapon item, the second "trigger" argument (0x521637..0x521651)
     // Slot choice (0x521394..0x52150c). Slot class = weaponSlot (def +0x80: primary 1, primaryb 2). A free slot of 0x4dcae0 (slot 1, else 2)
     // takes the weapon. With both slots full: the held weapon (ps+0xb0) is dropped when it has the same slot class (0x52146d); else, when
     // the player has neither stock nor clip of the new weapon's ammo / clip type (0x5214ac..0x5214e9), the slot-1 weapon is dropped;
@@ -618,6 +623,7 @@ void World::pickUpWeaponItem(Entity& item) {
             return;
         }
         Entity& dropped = spawnEntity("weapon_" + cur);
+        droppedItem = &dropped;
         // 0x5220f0: the player's stock (ps+0x118 by ammoName) and clip (ps+0x318 by clipName) move onto the item (+0x148 / +0x154,
         // -1 for none, 0x522328..0x522340) and are cleared in the player state.
         {
@@ -689,6 +695,15 @@ void World::pickUpWeaponItem(Entity& item) {
     player_->obj->set("$weapon", Value(w)); // switch to it (0x532060)
     if (!remotePickup_) startSound(pickupSoundAlias(weaponField(w, "pickupSound"), false, soundExists), nullptr); // event 0x90 on the player (Touch_Item 0x521c41)
     raisePickupEvent(w, false);
+    // After the swap, the item's "trigger" with the user and the dropped weapon item, or undefined when the weapon went into a free slot
+    // (0x52173e: 0x46efb0 pushes undefined, 0x521637 pushes the dropped item; notify of the item, 2 arguments), then "pickup" on the player
+    // with the used item and the same dropped item (0x5217a0..0x5217c8; the walk-over pickup in itempickupworld.cpp sends it too).
+    // beltot.gsc:1695..1701 (attach_weapon) re-attaches the dropped weapon to the truck from it. The multiplayer drop pickup keeps its own flow.
+    if (!mp_) {
+        const Value old = droppedItem ? Value(droppedItem->obj) : Value();
+        vm_.notify(item.obj, "trigger", {Value(player_->obj), old});
+        vm_.notify(player_->obj, "pickup", {Value(item.obj), old});
+    }
     freeEntity(item);
 }
 
