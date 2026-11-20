@@ -30,12 +30,9 @@ struct PlayerShadowInput {
     std::string weaponClass;
     int weaponState = 0;        // PM_Weapon state: 1 raising, 2 dropping, 3 firing, 5 / 7 reloading, 10 / 11 melee
     int clip = 0;               // rounds in the clip: a fall is a shot
-    float adsFrac = 0;          // aim fraction 0..1
-    bool aiming = false;        // the aim is held (the weapon's view aim, PlayerWeapon::viewAiming): the body's weapon position
+    float adsFrac = 0;          // the view model's aim fraction 0..1: the weight of the body's aim pose, frame by frame
+    bool aiming = false;        // the aim is held (the weapon's view aim, PlayerWeapon::viewAiming): the context of the events
 };
-// The blend of the body's animation when the aim changes (our own choice: the aim pose follows the press at once, like the stance
-// transitions, instead of after half the view model's aim time and the script's default blend).
-constexpr int kShadowAimBlendMs = 60;
 
 class PlayerShadowBody {
 public:
@@ -51,6 +48,10 @@ public:
     // The move type chosen from the movement ("idle", "run", "idlecr", "idleprone", ...) and the strafing value.
     const std::string& moveType() const { return st_.moveType; }
     const std::string& strafing() const { return strafing_; }
+    // The aim pose's animation (the move type's item with the aim, 0 while an event holds the legs or when it is the hip one) and
+    // its share of the two legs animations' weight, which is the view model's aim fraction.
+    int aimNode() const { return aimNode_; }
+    float aimWeight() const;
     // The posed skeleton of a body or attachment model: the blended animation, then the torso pitch to the view (our own
     // rule, TODO(spec): the original's torso pitch controls are not traced) on the spine bones.
     assets::XPose pose(const assets::XModelParts& parts) const;
@@ -75,7 +76,9 @@ private:
     // The previous frame's state, for the events.
     std::string prevWeapon_;
     int prevWeaponState_ = 0, prevClip_ = 0, prevViewHeight_ = 60;
-    bool prevAiming_ = false;
+    // The aim pose's legs animation and item, played beside the hip one (st_.legsNode) with the aim fraction's share of the weight.
+    int aimNode_ = 0;
+    const PaItem* aimItem_ = nullptr;
 };
 
 } // namespace iw2::game

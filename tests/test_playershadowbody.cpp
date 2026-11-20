@@ -163,36 +163,71 @@ void aimTests(Fixture& f) {
     Rig hip(f), ads(f);
     ads.in.aiming = true, ads.in.adsFrac = 1.0f;
     hip.step(500), ads.step(500);
-    check(hip.legs() != ads.legs(), "aiming down the sights picks the aim idle");
+    auto aimName = [](const Rig& r) { return r.body.aimNode() > 0 ? r.body.anim().tree().nodes()[size_t(r.body.aimNode())].name : std::string(); };
+    check(!aimName(ads).empty() && aimName(ads) != ads.legs(), "the aim idle plays beside the hip idle");
+    check(ads.body.aimWeight() == 1.0f && hip.body.aimWeight() == 0.0f, "aimed: all the weight on the aim idle; at the hip none");
     check(dist(hip.at("tag_weapon_right"), ads.at("tag_weapon_right")) > 1.0f, "the weapon hand moves with the aim");
-    // The change is a short blend from the press (the held aim), not from the view model's aim fraction: one frame in, the pose is
-    // between the two; within kShadowAimBlendMs (and a frame) it is the aim pose, while the view model is still raising the weapon.
+    // The aim pose's weight is the view model's aim fraction, frame by frame, as it rises (the weapon's ADS transition in) and falls
+    // (out): no threshold, no blend of its own. The fraction here rises linearly over 300 ms and falls over 200 ms, as a view model's.
     Rig change(f);
     change.step(500);
-    change.in.aiming = true, change.in.adsFrac = 0.0f;
-    change.step(16);
-    const float mid = dist(change.at("tag_weapon_right"), hip.at("tag_weapon_right"));
-    change.in.adsFrac = 0.3f;
-    change.step(game::kShadowAimBlendMs);
-    const float settled = dist(change.at("tag_weapon_right"), ads.at("tag_weapon_right"));
     const float full = dist(ads.at("tag_weapon_right"), hip.at("tag_weapon_right"));
-    check(mid > 0.01f && mid < full, "the aim blends in");
-    check(settled < 0.05f * full, "the aim pose is reached within the aim blend, from the press");
-    check(change.legs() == ads.legs(), "the aim idle is chosen at the press");
-    // Letting go: back to the hip pose as fast, while the view model's aim fraction is still high.
-    change.in.aiming = false, change.in.adsFrac = 0.9f;
-    change.step(game::kShadowAimBlendMs + 16);
-    check(dist(change.at("tag_weapon_right"), hip.at("tag_weapon_right")) < 0.05f * full && change.legs() == hip.legs(), "the hip pose returns within the aim blend");
-    // Walking while aiming: the aim walk at once, back to the run when the aim is let go.
+    bool equal = true, monotonic = true;
+    float last = 0.0f;
+    change.in.aiming = true;
+    for (int t = 16; t <= 320; t += 16) {
+        change.in.adsFrac = std::min(1.0f, float(t) / 300.0f);
+        change.step(16);
+        equal &= std::fabs(change.body.aimWeight() - change.in.adsFrac) < 1e-5f;
+        const float d = dist(change.at("tag_weapon_right"), hip.at("tag_weapon_right"));
+        monotonic &= d >= last - 0.05f;
+        last = d;
+        if (t == 48) check(d > 0.01f && d < 0.5f * full, "a sixth of the way into the raise, the pose is a little way to the aim");
+    }
+    check(equal, "raising: the aim weight equals the view model's aim fraction every frame");
+    check(monotonic, "raising: the weapon hand moves steadily to the aim pose");
+    check(dist(change.at("tag_weapon_right"), ads.at("tag_weapon_right")) < 0.05f * full, "fully raised: the aim pose");
+    change.in.aiming = false;
+    for (int t = 16; t <= 208; t += 16) {
+        change.in.adsFrac = std::max(0.0f, 1.0f - float(t) / 200.0f);
+        change.step(16);
+        equal &= std::fabs(change.body.aimWeight() - change.in.adsFrac) < 1e-5f;
+        if (t == 48) check(change.body.aimWeight() > 0.7f, "letting go: the aim pose stays while the view model's aim is still high");
+    }
+    check(equal, "lowering: the aim weight equals the view model's aim fraction every frame");
+    check(dist(change.at("tag_weapon_right"), hip.at("tag_weapon_right")) < 0.05f * full, "fully lowered: the hip pose");
+    // Half raised, the weapon hand is about half way (the two animations are siblings in the tree, so the pose blends by the share).
+    Rig half(f);
+    half.in.aiming = true, half.in.adsFrac = 0.5f;
+    half.step(500);
+    const Vec mid = half.at("tag_weapon_right"), h0 = hip.at("tag_weapon_right"), a1 = ads.at("tag_weapon_right");
+    const Vec lerp{0.5f * (h0[0] + a1[0]), 0.5f * (h0[1] + a1[1]), 0.5f * (h0[2] + a1[2])};
+    check(dist(mid, lerp) < 0.25f * full, "half raised: the weapon hand about half way");
+    // The hip and aim animations share a parent in the tree, in every stance and move type and for another weapon type.
+    auto siblings = [&](int height, float vx, const char* weapon, const char* cls) {
+        Rig r(f);
+        r.in.viewHeightTarget = height, r.in.vx = vx, r.in.weapon = weapon, r.in.mpAnimType = weapon, r.in.weaponClass = cls;
+        r.in.aiming = true, r.in.adsFrac = 0.5f;
+        r.step(500);
+        const auto& nodes = r.body.anim().tree().nodes();
+        const int a = r.body.aimNode(), l = r.body.state().legsNode;
+        return a == 0 || (l > 0 && nodes[size_t(a)].parent == nodes[size_t(l)].parent);
+    };
+    bool sib = true;
+    for (const int h : {60, 40, 11})
+        for (const float v : {0.0f, 190.0f}) sib &= siblings(h, v, "thompson", "smg") && siblings(h, v, "kar98k", "rifle");
+    check(sib, "the hip and aim legs animations are siblings in every stance, at rest and moving, for two weapon types");
+    // Walking while aiming: the aim walk weighs in with the fraction beside the run, and the run comes back as it falls.
     Rig run(f), aimRun(f);
     run.in.vx = aimRun.in.vx = 190.0f;
     run.step(500), aimRun.step(500);
-    aimRun.in.aiming = true;
+    aimRun.in.aiming = true, aimRun.in.adsFrac = 0.5f;
     aimRun.step(16);
-    check(aimRun.legs() != run.legs(), "aiming while running switches to the aim walk at once");
-    aimRun.in.aiming = false;
+    check(aimRun.legs() == run.legs() && !aimName(aimRun).empty() && aimName(aimRun) != run.legs(), "aiming while running: the aim walk beside the run");
+    check(std::fabs(aimRun.body.aimWeight() - 0.5f) < 1e-5f, "half raised: half the weight on the aim walk");
+    aimRun.in.aiming = false, aimRun.in.adsFrac = 0.0f;
     aimRun.step(16);
-    check(aimRun.legs() == run.legs(), "letting go of the aim runs again at once");
+    check(aimRun.body.aimWeight() == 0.0f && aimRun.legs() == run.legs(), "lowered: the run alone");
     // The torso follows the view pitch (our own rule): looking down bends it forward and down, not sideways (yaw 0: forward is +x).
     Rig level(f), down(f), up(f);
     down.in.pitch = 50.0f, up.in.pitch = -50.0f;

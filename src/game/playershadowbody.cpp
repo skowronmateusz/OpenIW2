@@ -11,6 +11,7 @@ namespace iw2::game {
 
 namespace {
 
+constexpr float kDefaultBlend = 0.2f; // a command without "blendtime" (as playPaCommand)
 constexpr float kMaxStepS = 0.1f;   // a longer gap (a pause, a stall) steps this much
 constexpr int kStandHeight = 60, kCrouchHeight = 40, kProneHeight = 11;
 constexpr int kStateRaising = 1, kStateDropping = 2, kStateReload = 5, kStateReloadEmpty = 7, kStateMelee = 10, kStateMeleeHit = 11;
@@ -48,6 +49,7 @@ void PlayerShadowBody::reset() {
     prevWeaponState_ = prevClip_ = 0;
     prevViewHeight_ = kStandHeight;
     switchHold_ = false;
+    aimNode_ = 0, aimItem_ = nullptr;
 }
 
 float PlayerShadowBody::nodeMoveSpeed(int node) {
@@ -93,12 +95,17 @@ bool PlayerShadowBody::update(const PlayerShadowInput& in) {
     mv.viewHeightTarget = in.viewHeightTarget;
     mv.xySpeed = std::sqrt(in.vx * in.vx + in.vy * in.vy);
     playerBodyMoves(in.vx, in.vy, in.yaw, mv.forwardMove, mv.rightMove);
-    mv.slow = in.aiming; // aiming slows the body to a walk
-    ctx.moveType = paMoveType(mv);
-    ctx.strafing = strafing_ = paStrafing(mv);
-    ctx.weaponPosition = in.aiming ? "ads" : "hip";
-    const bool aimChanged = !fresh && in.aiming != prevAiming_;
-    prevAiming_ = in.aiming;
+    // The legs play two items of the move type: the hip one and the aim one (aiming slows the body to a walk), weighted by the view
+    // model's aim fraction. The events see the held aim.
+    PaContext hip = ctx, aim = ctx;
+    mv.slow = false;
+    hip.moveType = paMoveType(mv), hip.strafing = paStrafing(mv), hip.weaponPosition = "hip";
+    mv.slow = true;
+    aim.moveType = paMoveType(mv), aim.strafing = paStrafing(mv), aim.weaponPosition = "ads";
+    mv.slow = in.aiming;
+    ctx = in.aiming ? aim : hip;
+    strafing_ = ctx.strafing;
+    const float aimFrac = std::clamp(in.adsFrac, 0.0f, 1.0f);
 
     // Events, from the changes of the state since the last frame (the player's own weapon and stance code does not call the
     // animation driver as the multiplayer server's does). The move type of the previous step is the one they see.
@@ -143,24 +150,65 @@ bool PlayerShadowBody::update(const PlayerShadowInput& in) {
         st_.torsoActive = false;
     }
 
-    // The move type's animation, re-chosen when its item changes; it waits for the legs' hold to run out to its last 49 ms. The
+    // The move type's animations, re-chosen when an item changes; they wait for the legs' hold to run out to its last 49 ms. The
     // first pose is taken at once (no blend from the empty state).
-    // A change of the aim takes the new item at once, with a short blend (kShadowAimBlendMs).
-    if (aimChanged || now + 49 >= st_.legsHeldUntilMs) {
-        const PaItem* item = script_.animation(ctx.moveType, ctx);
+    if (now + 49 >= st_.legsHeldUntilMs) {
+        const PaItem* item = script_.animation(hip.moveType, hip);
+        float blend = kDefaultBlend;
+        bool hipPlayed = false;
         if (item && item != st_.legsItem && !item->commands.empty()) {
             seed_ = seed_ * 1103515245u + 12345u;
             PaCommand cmd = item->commands[size_t((seed_ >> 16) % item->commands.size())];
             if (fresh) cmd.blendMs = 0;
-            else if (aimChanged) cmd.blendMs = cmd.blendMs >= 0 ? std::min(cmd.blendMs, kShadowAimBlendMs) : kShadowAimBlendMs;
+            blend = cmd.blendMs >= 0 ? float(cmd.blendMs) / 1000.0f : kDefaultBlend;
             playPaCommand(*anim_, lib_, &st_, cmd, false, now);
             st_.legsItem = item;
+            hipPlayed = true;
         }
+        const PaItem* aimItem = script_.animation(aim.moveType, aim);
+        if (aimItem != aimItem_ || hipPlayed) {
+            int node = 0;
+            if (aimItem && !aimItem->commands.empty()) {
+                seed_ = seed_ * 1103515245u + 12345u;
+                const PaCommand& cmd = aimItem->commands[size_t((seed_ >> 16) % aimItem->commands.size())];
+                if (aimItem != aimItem_ || hipPlayed) blend = fresh ? 0.0f : cmd.blendMs >= 0 ? float(cmd.blendMs) / 1000.0f : kDefaultBlend;
+                for (const PaPart& p : cmd.parts)
+                    if (p.body != PaBody::Torso && (node = tree_->find(p.anim)) > 0) break;
+            }
+            if (node == st_.legsNode || node < 0) node = 0; // the same animation with the aim: nothing to weigh
+            if (aimNode_ && aimNode_ != node && aimNode_ != st_.legsNode) anim_->clear(aimNode_, blend);
+            if (node && node != aimNode_) {
+                // It starts in step with the hip animation (the same normalized time), at no weight; the split below weighs it.
+                AnimState::SetArgs a;
+                a.weight = 1.0f, a.blendTime = 0.0f;
+                const float hipTime = st_.legsNode > 0 ? anim_->nodeStates()[size_t(st_.legsNode)].time : 0.0f;
+                anim_->set(node, a); // not a knob: the hip animation keeps its state
+                AnimNodeState& s = anim_->nodeStates()[size_t(node)];
+                s.time = s.oldTime = hipTime, s.weight = s.goalWeight = 0.0f, s.blendLeft = 0.0f;
+            }
+            aimNode_ = node, aimItem_ = aimItem;
+        }
+    } else if (aimNode_) {
+        anim_->clear(aimNode_, kDefaultBlend); // an event holds the legs: the aim animation goes with the hip one
+        aimNode_ = 0, aimItem_ = nullptr;
+    }
+    // The split: the hip and aim animations share their weight (and goal) by the aim fraction, every frame, so the body's aim pose
+    // follows the view model's raise and lower exactly; a blend between move types under way goes on in the shared total.
+    if (aimNode_ && st_.legsNode > 0) {
+        AnimNodeState& h = anim_->nodeStates()[size_t(st_.legsNode)];
+        AnimNodeState& a = anim_->nodeStates()[size_t(aimNode_)];
+        const float total = h.weight + a.weight, goal = h.goalWeight + a.goalWeight, left = std::max(h.blendLeft, a.blendLeft);
+        // Weighed in again after a frame without weight (the released node's time went back to 0): it starts in step with the other.
+        if (a.weight == 0.0f && aimFrac > 0.0f) a.time = a.oldTime = h.time;
+        if (h.weight == 0.0f && aimFrac < 1.0f) h.time = h.oldTime = a.time;
+        h.weight = total * (1.0f - aimFrac), a.weight = total * aimFrac;
+        h.goalWeight = goal * (1.0f - aimFrac), a.goalWeight = goal * aimFrac;
+        h.blendLeft = a.blendLeft = left;
     }
 
     // The legs and torso play at the body's speed over the animation's own (docs/spec/mp-players.md "Animation rate from the
     // movement"); the speed is the player's velocity.
-    for (const int n : {st_.legsNode, st_.torsoActive ? st_.torsoNode : 0}) {
+    for (const int n : {st_.legsNode, aimNode_, st_.torsoActive ? st_.torsoNode : 0}) {
         if (n <= 0 || size_t(n) >= anim_->nodeStates().size()) continue;
         const float ms = nodeMoveSpeed(n);
         anim_->nodeStates()[size_t(n)].rate = ms > 0 ? paMoveRate(mv.xySpeed / ms, ms, false) : 1.0f;
@@ -170,6 +218,13 @@ bool PlayerShadowBody::update(const PlayerShadowInput& in) {
     // Lying, the torso bends little: a full bend would put the head through the ground.
     pitch_ = std::clamp(in.pitch, -kPitchLimit, kPitchLimit) * (in.viewHeightTarget <= kProneHeight ? kPronePitchScale : 1.0f);
     return true;
+}
+
+float PlayerShadowBody::aimWeight() const {
+    if (!aimNode_ || st_.legsNode <= 0) return 0.0f;
+    const AnimNodeState& h = anim_->nodeStates()[size_t(st_.legsNode)];
+    const AnimNodeState& a = anim_->nodeStates()[size_t(aimNode_)];
+    return h.weight + a.weight > 0.0f ? a.weight / (h.weight + a.weight) : 0.0f;
 }
 
 assets::XPose PlayerShadowBody::pose(const assets::XModelParts& parts) const {
