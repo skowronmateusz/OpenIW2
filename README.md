@@ -67,8 +67,9 @@ reflections, sun shafts, bloom, auto exposure, a "Period film" colour grade, mot
 MetalFX anti-aliasing, ray-traced reflections, shadows and contact occlusion of moving objects, ray-traced shadows of muzzle
 flashes and explosions, ray-traced global illumination (only on Macs and builds that have ray tracing; Ultra is High plus
 that, and equals High elsewhere) and HDR output on displays that support it. Picking Low, Medium, High or Ultra sets
-every row to that preset's values; changing a row by hand switches the quality choice to Custom and keeps the other rows as
-they are. A profile from an earlier version keeps its look. Changes apply at once, except Enhanced graphics itself and HDR output, which apply at the
+every quality row, MetalFX and its render resolution to that preset's values; changing one of them by hand switches the
+quality choice to Custom and keeps the other rows as they are. Colour grade, motion blur, depth of field and HDR output are
+your own choice and no preset changes them. A profile from an earlier version keeps its look. Changes apply at once, except Enhanced graphics itself and HDR output, which apply at the
 next start. More in `docs/render-enhanced.md`.
 
 ### Options that differ

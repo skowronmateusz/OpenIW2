@@ -123,6 +123,8 @@ constexpr int kEnhPresetDefault = 1; // medium
 struct EnhPresetOption {
     const char* cvar;
     std::array<const char*, 4> values; // low, medium, high, ultra
+    // The value the option had while unset in a config written before it was part of the presets (nullptr: the preset's value).
+    const char* unsetBefore = nullptr;
 };
 inline const std::vector<EnhPresetOption>& enhPresetOptions() {
     static const std::vector<EnhPresetOption> options = {
@@ -134,8 +136,11 @@ inline const std::vector<EnhPresetOption>& enhPresetOptions() {
         {"r_enhRTContactAO", {"1", "1", "1", "1"}},
         {"r_enhContactShadows", {"0", "1", "1", "1"}},
         {"r_enhTAA", {"0", "1", "1", "1"}},
-        {"r_enhMetalFX", {"0", "0", "0", "0"}},
-        {"r_enhRenderScale", {"1", "1", "1", "1"}},
+        // MetalFX and its render resolution scale with the preset (needs TAA, so not in low; where the GPU or build has no MetalFX
+        // the cvars have no effect and the scene is drawn at the window size). Measured on an M4 Pro at 3024x1712 (duhoc_assault,
+        // ultra): the scene's GPU time 19.3 ms native, 12.3 ms at 0.67, 9.65 ms at 0.5 (docs/render-enhanced.md "Presets").
+        {"r_enhMetalFX", {"0", "1", "1", "1"}, "0"},
+        {"r_enhRenderScale", {"1", "0.5", "0.67", "0.67"}, "1"},
         {"r_enhGGX", {"1", "1", "1", "1"}},
         {"r_enhSSR", {"0", "1", "1", "1"}},
         {"r_enhRTReflections", {"1", "1", "1", "1"}},
@@ -148,12 +153,13 @@ inline const std::vector<EnhPresetOption>& enhPresetOptions() {
         {"r_enhVolumetric", {"0", "0", "0.35", "0.35"}},
         {"r_enhBloom", {"1", "1", "1", "1"}},
         {"r_enhAutoExposure", {"0", "1", "1", "1"}},
-        {"r_enhGrade", {"0", "0", "0", "0"}},
-        {"r_enhMotionBlur", {"0", "0", "0", "0"}},
-        {"r_enhDOF", {"0", "0", "0", "0"}},
-        {"r_enhEdr", {"1", "1", "1", "1"}},
     };
     return options;
+}
+// The page's taste options: not part of a preset. A pick leaves them as they are and changing one keeps the preset.
+inline const std::array<const char*, 4>& enhTasteOptions() {
+    static const std::array<const char*, 4> taste = {"r_enhGrade", "r_enhMotionBlur", "r_enhDOF", "r_enhEdr"};
+    return taste;
 }
 inline bool enhNameIs(const char* a, const char* b) {
     for (; *a && *b; ++a, ++b)
@@ -205,8 +211,13 @@ inline EnhCvarWrites enhPresetResolve(const EnhCvarGet& get) {
     EnhCvarWrites w;
     const int preset = enhPresetFrom(get("r_enhPreset"));
     if (!enhConcrete(get("r_enhPreset"))) w.emplace_back("r_enhPreset", std::to_string(preset));
+    // A config with any enhanced setting saved was written by an earlier version: an option that joined the presets later had its
+    // old default there while unset (a new profile has no enhanced setting at all and takes the preset's values).
+    bool written = !get("r_enhanced").empty() || !get("r_enhPreset").empty();
+    for (const EnhPresetOption& o : enhPresetOptions()) written = written || !get(o.cvar).empty();
+    for (const char* t : enhTasteOptions()) written = written || !get(t).empty();
     for (const EnhPresetOption& o : enhPresetOptions())
-        if (!enhConcrete(get(o.cvar))) w.emplace_back(o.cvar, enhPresetValue(preset, o));
+        if (!enhConcrete(get(o.cvar))) w.emplace_back(o.cvar, written && o.unsetBefore && get(o.cvar).empty() ? o.unsetBefore : enhPresetValue(preset, o));
     if (const std::string r = get("r_enhRebake"); !r.empty() && !enhConcrete(r)) w.emplace_back("r_enhRebake", "0");
     const auto after = [&](const char* n) {
         for (auto it = w.rbegin(); it != w.rend(); ++it)
@@ -246,12 +257,16 @@ inline void enhMapResolve(std::map<std::string, std::string>& m) {
     enhMapApply(m, enhPresetResolve([&](const char* n) { return enhMapGet(m, n); }));
     for (const char* n : {"r_enhPreset", "r_enhRebake"}) // the page's spelling for every entry it reads
         if (const std::string v = enhMapGet(m, n); !v.empty()) enhMapSet(m, n, v);
+    for (const char* n : enhTasteOptions())
+        if (const std::string v = enhMapGet(m, n); !v.empty()) enhMapSet(m, n, v);
     for (const EnhPresetOption& o : enhPresetOptions()) enhMapSet(m, o.cvar, enhMapGet(m, o.cvar));
 }
 // Setting `name` on the map, then what the preset rules write after it (enhPresetAfterSet).
 inline void enhMapSetOption(std::map<std::string, std::string>& m, const std::string& name, const std::string& value) {
     const EnhPresetOption* o = enhPresetOption(name.c_str());
-    const std::string canonical = o ? o->cvar : enhNameIs(name.c_str(), "r_enhPreset") ? "r_enhPreset" : name; // the page's spelling
+    std::string canonical = o ? o->cvar : enhNameIs(name.c_str(), "r_enhPreset") ? "r_enhPreset" : name; // the page's spelling
+    for (const char* t : enhTasteOptions())
+        if (enhNameIs(name.c_str(), t)) canonical = t;
     enhMapSet(m, canonical, value);
     enhMapApply(m, enhPresetAfterSet(canonical, [&](const char* n) { return enhMapGet(m, n); }));
 }

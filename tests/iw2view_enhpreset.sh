@@ -1,7 +1,7 @@
 #!/bin/sh
 # The Enhanced graphics presets in iw2view, end to end (docs/render-enhanced.md "Presets"):
-#   1. an older profile with "as the preset" (-1) values is read with the saved preset's values (high: sun shadows 3) and the
-#      shot does not rewrite the profile;
+#   1. an older profile with "as the preset" (-1) values is read with the saved preset's values (high: sun shadows 3) and its
+#      earlier MetalFX (unset: off), so it reads as Custom, and the shot does not rewrite the profile;
 #   2. --cvar r_enhPreset picks a preset over the profile's options; a --cvar option on top makes it custom, whatever the order;
 #   3. the menu path (IW2_MENU_KEYS set:, as the page's rows): picking Low writes Low's values into the saved profile, then an option
 #      changed by hand makes the preset custom and keeps the other values; the saved profile reads back as that custom setting.
@@ -33,7 +33,8 @@ menu() { # menu <name> <keys>
 
 # 1. migration
 shot old
-expect old 2 3
+expect old 4 3
+grep -q '^enhanced rendering: .*MetalFX off' "$TMP/old.out" || fail "old: MetalFX of the earlier version not kept (off)"
 cmp -s "$CFG" "$TMP/config.orig" || fail "old: the shot rewrote the profile"
 
 # 2. --cvar
@@ -51,6 +52,7 @@ saved r_enhSunShadows 1
 saved r_enhAO 0
 saved r_enhTAA 0
 saved r_enhRTGI 0
+saved r_enhMetalFX 0
 grep -q '"-1"' "$CFG" && fail "low: an \"as the preset\" value is still saved"
 menu hand set:r_enhAO=1
 saved r_enhPreset 4

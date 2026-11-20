@@ -38,14 +38,14 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhVolumetric` | 0 | Sun shafts: light scattered in the air through the sun's shadow (0 off .. 2; 0.35 in the high preset, else 0). |
 | `r_enhGrade` | 0 | Colour grade: 0 neutral, 1 "period film" (contrast, desaturation, warm shadows, grain). |
 | `r_enhMapLightSpec` | 1 | GGX specular from the map's light entities near the camera (their diffuse stays baked). |
-| `r_enhMetalFX` | 0 | MetalFX temporal anti-aliasing instead of ours (needs TAA, a MetalFX GPU and the patched SDL; see "Stage 5"). |
+| `r_enhMetalFX` | 1 | MetalFX temporal anti-aliasing instead of ours (needs TAA, a MetalFX GPU and the patched SDL; see "Stage 5"). |
 | `r_enhRTShadows` | 1 | Ray-traced sun and lamp shadows of the moving objects, soft (GPU family 9 and later; see "Stage 5"). |
 | `r_enhRTContactAO` | 1 | Ray-traced contact occlusion of the moving objects (GPU family 9 and later). |
 | `r_enhRTLightShadows` | 1 | Ray-traced shadows of the effect lights (muzzle flashes, explosions), with `r_enhLightShadows` (GPU family 9 and later). |
 | `r_enhRTGI` | 0 | Ray-traced global illumination of the moving objects (GPU family 9 and later; on in the ultra preset only; see "Ray-traced global illumination"). |
 | `r_enhRTBeyondView` | 1 | Objects outside the view but within 1500 units in the ray tracing (reflections, shadows); costs their CPU skinning. |
 | `r_enhRTReflections` | 1 | Ray-traced reflections on water and the reflective surface classes (GPU family 9 and later: M3 and later; see "Stage 5"). |
-| `r_enhRenderScale` | 1 | With MetalFX: the scene's resolution as a fraction of the window (0.5..1; the page offers 1, 0.77, 0.67, 0.5), upscaled by MetalFX. |
+| `r_enhRenderScale` | 0.5 | With MetalFX: the scene's resolution as a fraction of the window (0.5..1; the page offers 1, 0.77, 0.67, 0.5), upscaled by MetalFX. |
 | `r_enhProbes` | 1 | Reflection probes captured when the map loads: rooms reflect themselves instead of the sky (off in the low preset). |
 | `r_enhDOF` | 0 | Depth of field while aiming down the sights (0 off .. 2). |
 | `r_enhPlayerShadow` | 1 | The player's shadow-only body (sun shadows, ray tracing); never drawn in the view. On in every preset. |
@@ -60,9 +60,11 @@ Gameplay, the server and the network are not affected; it is render-only.
 
 Our own design. `r_enhPreset` is Low, Medium, High, Ultra or Custom, and every option of the Enhanced graphics page holds a
 concrete value of its own (there is no "as the preset" value):
-- picking Low, Medium, High or Ultra writes that preset's value into every option of the page;
-- changing an option of the page by hand to a value other than the preset's makes the preset Custom; the options keep their
-  values (picking Custom changes no option, picking a preset again replaces them);
+- picking Low, Medium, High or Ultra writes that preset's value into every quality and performance option of the page;
+- changing one of them by hand to a value other than the preset's makes the preset Custom; the options keep their values
+  (picking Custom changes no option, picking a preset again replaces them);
+- the taste options (colour grade, motion blur, depth of field, HDR output) are not part of a preset: a pick leaves them as
+  they are, and changing one keeps the preset;
 - the cvars without a row (`r_enhTonemap`, `r_enhAOStrength`, `r_enhBloomIntensity`, ...) are not part of a preset;
 - on the command line a `--cvar r_enhPreset` is applied first, like picking it on the page, then the other `--cvar` options, so
   `--cvar r_enhPreset=2 --cvar r_enhAO=0` is the high preset with AO off (Custom) in either order.
@@ -75,14 +77,20 @@ concrete value of its own (there is no "as the preset" value):
 | Sun shafts (`r_enhVolumetric`) | 0 | 0 | 0.35 | 0.35 |
 | RT global illumination (`r_enhRTGI`) | off | off | off | on |
 | Highlights and reflections (GGX), bloom, player shadow, the other ray tracing rows, HDR output | on | on | on | on |
-| MetalFX, colour grade, motion blur, depth of field | off / neutral | off / neutral | off / neutral | off / neutral |
-| MetalFX render resolution | 1 | 1 | 1 | 1 |
+| MetalFX (`r_enhMetalFX`, where the GPU and build have it) | off | on | on | on |
+| MetalFX render resolution (`r_enhRenderScale`) | 1 | 0.5 | 0.67 | 0.67 |
+
+MetalFX upscaling is what makes the higher presets fit a Retina display: on an M4 Pro at 3024x1712 (duhoc_assault, the ultra
+options) the scene took 19.3 ms of GPU time at native resolution, 12.3 ms at 0.67 and 9.65 ms at 0.5, with an image error
+against a native reference of 3.6 at 0.67 and 4.3 at 0.5 (3.1 for our TAA at native). Low has no TAA, so no MetalFX; without
+MetalFX (no MetalFX GPU or build) the render resolution has no effect and the scene is drawn at the window size.
 
 The table is `game::enhPresetOptions` (src/game/renderenhanced.h). Rows of features the machine lacks (MetalFX, ray tracing) are
 not shown, but a preset still writes their cvars.
 
 A profile saved before this design may hold -1 ("as the preset") or no value for an option. When the profile is loaded each
-such option takes the value of the preset saved with it, so its picture does not change; when an option then differs from that
+such option takes the value of the preset saved with it, so its picture does not change (MetalFX and its resolution, which
+joined the presets later, take their earlier defaults there: off and native); when an option then differs from that
 preset (a choice made by hand), the preset becomes Custom. An old `r_enhRebake` -1 becomes 0. The resolved values are written
 to the profile with the next change of a saved option. Tests: tests/test_enhpresets.cpp, tests/iw2view_enhpreset.sh.
 
