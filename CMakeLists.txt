@@ -1154,6 +1154,14 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(mpturretdamage_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
 endif()
 
+add_executable(test_mpturretsound tests/test_mpturretsound.cpp)
+target_link_libraries(test_mpturretsound PRIVATE iw2_game iw2_audio)
+if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
+  # The fire sounds of a gunner that is not the local client are the turret's own, positional ones.
+  add_test(NAME mpturretsound_world COMMAND test_mpturretsound)
+  set_tests_properties(mpturretsound_world PROPERTIES ENVIRONMENT "IW2_MAIN=${IW2_TEST_MAIN}")
+endif()
+
 add_executable(test_mpweaponcredit tests/test_mpweaponcredit.cpp)
 target_link_libraries(test_mpweaponcredit PRIVATE iw2_game)
 if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")

@@ -416,6 +416,11 @@ What the client learns (VAs in the 1.3 Linux dedicated server; player-state offs
   tests/test_mpturretview.cpp (for the gunner's and a watcher's front end: a stretch without snapshots while attack
   is held keeps the loop and plays no stop sound; the release plays the stop sound once and ends the loop; the watcher
   hears loopFireSound, the gunner loopFireSoundPlayer; an older snapshot and the newer one again replay nothing).
+  The server's own fire loop and stop sound of a gunner that is not the local client (a bot, a network client) are the
+  turret's loopFireSound / stopFireSound at the turret (a positional channel with a distance range); only the gunner this
+  process shows plays the player variants (the "local" channel, no position). openiw2 had played the player variants for
+  every server-side gunner, so on a listen server a bot's MG was heard at full volume from anywhere on the map. Test:
+  tests/test_mpturretsound.cpp.
   The ammo counter keeps the hand weapon: the server does not change ps.weapon on a turret (no write in 0x810a708..
   0x810c5f0); TODO(spec): whether the client ammo ownerdraw hides itself on a turret.
 - The player state to entity state copy (0x80dfe64) copies eFlags, and with any 0x300 bit set puts viewLockEntity in

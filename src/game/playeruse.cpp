@@ -540,7 +540,12 @@ void World::thinkPlayerTurret() {
             playerViewLocked_ = 2; // 0x51b287
         }
     }
-    turretFireSound(t, true);
+    // The player variants (loopFireSoundPlayer / stopFireSoundPlayer, the "local" channel: no position) belong to the gunner this
+    // process shows. A bot or a network client on the gun (the server's per-client think swaps it in as player_) sounds as
+    // the turret: loopFireSound / stopFireSound at the turret, so it attenuates with the distance (docs/spec/turrets.md
+    // "Multiplayer"). TODO(spec): the original's cgame choice of the variant (see mpSetRemoteTurretSound).
+    const bool localGunner = !mp_ || (size_t(mp_->localClient) < mp_->clients.size() && mp_->clients[size_t(mp_->localClient)].ent == player_);
+    turretFireSound(t, localGunner);
 }
 
 // The client think's use part. ClientThink_real (…0x4e7eda) handles the press first: buttons old / new, then 0x5343d0
