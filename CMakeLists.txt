@@ -1070,6 +1070,9 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(iw2viewenhpreset_e2e PROPERTIES PASS_REGULAR_EXPRESSION "iw2view enhanced presets: ok" TIMEOUT 300)
   add_test(NAME iw2viewgpuguard_e2e COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2view_gpuguard.sh $<TARGET_FILE:iw2view> ${IW2_TEST_MAIN} elalamein)
   set_tests_properties(iw2viewgpuguard_e2e PROPERTIES PASS_REGULAR_EXPRESSION "iw2view gpu guard: ok" TIMEOUT 400)
+  # The 3D output below the window size and dynamic resolution (docs/render-enhanced.md "3D output scale", "Dynamic resolution").
+  add_test(NAME iw2viewdynres_e2e COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2view_dynres.sh $<TARGET_FILE:iw2view> ${IW2_TEST_MAIN} elalamein)
+  set_tests_properties(iw2viewdynres_e2e PROPERTIES PASS_REGULAR_EXPRESSION "iw2view dynamic resolution: ok" TIMEOUT 300)
   # The server's session log (docs/logging.md); the log folder is a temp folder, never the real one.
   add_test(NAME iw2server_log COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2server_log.sh $<TARGET_FILE:iw2server>
     $<TARGET_FILE:iw2netclient> $<TARGET_FILE:iw2netinfo> ${IW2_TEST_MAIN})

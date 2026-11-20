@@ -652,12 +652,14 @@ float Renderer::enhNanCountNow() { return nanSeq > 0 ? enhNanSlot(uint32_t((nanS
 // the scaler on SDL's command buffer (no SDL pass open) into the history texture, which replaces the scene image as the TAA's does.
 bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_t rh, uint32_t w, uint32_t h, const Camera& cam,
                                  const void* u, size_t usize) {
-    if (!mfxMotion || mfxW != rw || mfxH != rh) {
+    // dynamic resolution: the inputs at the largest render size (MetalFX's input size), this frame's content at their top left
+    const uint32_t aw = dynResFrame ? std::max(dynMaxW, rw) : rw, ah = dynResFrame ? std::max(dynMaxH, rh) : rh;
+    if (!mfxMotion || mfxW != aw || mfxH != ah) {
         for (SDL_GPUTexture** t : {&mfxMotion, &mfxDepth, &mfxReactive}) if (*t) SDL_ReleaseGPUTexture(dev, *t), *t = nullptr;
         SDL_GPUTextureCreateInfo ti{};
         ti.type = SDL_GPU_TEXTURETYPE_2D;
         ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        ti.width = rw, ti.height = rh, ti.layer_count_or_depth = 1, ti.num_levels = 1;
+        ti.width = aw, ti.height = ah, ti.layer_count_or_depth = 1, ti.num_levels = 1;
         ti.format = SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
         mfxMotion = SDL_CreateGPUTexture(dev, &ti);
         ti.format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
@@ -665,7 +667,7 @@ bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_
         ti.format = SDL_GPU_TEXTUREFORMAT_R8_UNORM;
         mfxReactive = SDL_CreateGPUTexture(dev, &ti);
         if (!mfxMotion || !mfxDepth) return false;
-        mfxW = rw, mfxH = rh;
+        mfxW = aw, mfxH = ah;
     }
     auto pass = [&](SDL_GPUGraphicsPipeline* pipe, SDL_GPUTexture* dst, const SDL_GPUTextureSamplerBinding* tb, uint32_t n) {
         SDL_GPUColorTargetInfo ct{};
@@ -673,6 +675,10 @@ bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_
         ct.load_op = SDL_GPU_LOADOP_DONT_CARE;
         ct.store_op = SDL_GPU_STOREOP_STORE;
         SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+        if (dynResFrame) {
+            const SDL_GPUViewport content{0, 0, float(rw), float(rh), 0.0f, 1.0f};
+            SDL_SetGPUViewport(p, &content);
+        }
         SDL_BindGPUGraphicsPipeline(p, pipe);
         SDL_BindGPUFragmentSamplers(p, 0, tb, n);
         SDL_PushGPUFragmentUniformData(cmd, 0, u, uint32_t(usize));
@@ -704,14 +710,14 @@ bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_
     if (temporalHeld) std::cout << "MetalFX: running again, history reset\n";
     const bool reset = !(taaHistValid && taaPrevVPValid) || std::exchange(temporalHeld, false);
     // the colour without NaN / infinities (fs_enh_finite_copy): one such value in the scaler's history spreads (black blocks)
-    if (!mfxColor || mfxColorW != rw || mfxColorH != rh) {
+    if (!mfxColor || mfxColorW != aw || mfxColorH != ah) {
         if (mfxColor) SDL_ReleaseGPUTexture(dev, mfxColor);
         SDL_GPUTextureCreateInfo ci{};
         ci.type = SDL_GPU_TEXTURETYPE_2D, ci.format = SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
         ci.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        ci.width = rw, ci.height = rh, ci.layer_count_or_depth = 1, ci.num_levels = 1;
+        ci.width = aw, ci.height = ah, ci.layer_count_or_depth = 1, ci.num_levels = 1;
         mfxColor = SDL_CreateGPUTexture(dev, &ci);
-        mfxColorW = rw, mfxColorH = rh;
+        mfxColorW = aw, mfxColorH = ah;
     }
     SDL_GPUTexture* mfxIn = sceneTex;
     if (mfxColor && enhFiniteCopyPipe) {
@@ -719,7 +725,11 @@ bool Renderer::enhMetalFxResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_
         pass(enhFiniteCopyPipe, mfxColor, cb, 1);
         mfxIn = mfxColor;
     }
-    if (!metalFx.encode(dev, cmd, mfxIn, mfxDepth, mfxMotion, mfxReactive, taaHist[1 - taaCur], rw, rh, w, h, cam.jitterX, cam.jitterY, reset)) {
+    if (dynResFrame && mfxIn != mfxColor) return false; // the content must be in an input of the largest size
+    metal::TemporalScaler::Dynamic dyn;
+    dyn.contentW = rw, dyn.contentH = rh, dyn.minScale = 0.5f, dyn.maxScale = dynMaxScale;
+    if (!metalFx.encode(dev, cmd, mfxIn, mfxDepth, mfxMotion, mfxReactive, taaHist[1 - taaCur], aw, ah, w, h, cam.jitterX, cam.jitterY, reset,
+                        dynResFrame ? &dyn : nullptr)) {
         if (!metalFxLogged) metalFxLogged = true, std::cout << metalFx.describe() << " (our TAA instead)\n";
         return false;
     }

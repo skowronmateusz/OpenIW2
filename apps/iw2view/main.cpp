@@ -2966,7 +2966,8 @@ struct Renderer {
             }
         }
         if (n.taa != enh.taa) taaHistValid = false, taaPrevVPValid = false;
-        if (n.metalFx != enh.metalFx || n.renderScale != enh.renderScale) taaHistValid = false; // MetalFX or its render size changed
+        if (n.metalFx != enh.metalFx || n.renderScale != enh.renderScale || n.dynRes != enh.dynRes || n.outputScale != enh.outputScale)
+            taaHistValid = false; // MetalFX, its render size or the 3D output size changed
         if (n.ggx != enh.ggx) envFor = nullptr; // rebuild the environment cube
         enh = n;
     }
@@ -3121,6 +3122,53 @@ struct Renderer {
     game::GpuGuard gpuGuard;
     bool gpuHold = false; // this frame: no native Metal work (ray tracing, MetalFX)
     bool metalFxNow() const { return enh.metalFx && metalCaps.metalFx && !gpuHold; }
+    // Dynamic resolution (docs/render-enhanced.md "Dynamic resolution"): with MetalFX upscaling, the render scale follows the GPU time
+    // of the frame's command buffer (game::dynResUpdate), r_enhRenderScale its upper bound. Only the live loop's frames move it
+    // (dynResTick); a --shot or an IW2_BENCH run keeps the upper bound unless IW2_DYNRES_BENCH (docs/debug-flags.md).
+    game::DynResState dynRes;
+    game::DynResParams dynResParams;
+    uint64_t dynResSeq = 0, dynResTicks = 0;
+    bool dynResFrame = false;          // this frame: MetalFX's inputs at the largest render size, the content at their top left
+    uint32_t dynMaxW = 0, dynMaxH = 0; // that size
+    float dynMaxScale = 1.0f;          // the upper bound of this frame
+    bool dynResWanted() const { return enh.enabled && enh.dynRes && enh.taa && metalFxNow(); }
+    // The render scale of a dynamic frame: the controller's, or IW2_DYNRES_FORCE (debug), within 0.5 .. the upper bound.
+    float dynResScale(float upper) const {
+        static const char* forced = std::getenv("IW2_DYNRES_FORCE");
+        return std::clamp(forced ? float(std::atof(forced)) : dynRes.scale, 0.5f, upper);
+    }
+    // Once per drawn frame of the live loop (and of IW2_DYNRES_BENCH bench frames): the newest frame GPU time moves the scale.
+    // IW2_DYNRES_CYCLE=N (debug): instead, one ladder step every N frames, down to the lower bound and back up (size changes on
+    // purpose, for the end-to-end test).
+    void dynResTick(float displayHz) {
+        const float upper = game::effectiveRenderScale(enh.renderScale, true);
+        dynResParams.maxScale = upper;
+        dynResParams.targetMs = game::dynResBudgetMs(enh.dynResFps, displayHz);
+        if (!dynResWanted() || temporalHold) { // off, MetalFX off or held, or paused (the frame is not rendered: no sample)
+            if (!dynResWanted() && dynRes.scale != upper) game::dynResReset(dynRes, dynResParams);
+            return;
+        }
+        const float before = dynRes.scale;
+        bool changed = false;
+        double sampleMs = 0.0;
+        if (static const char* cyc = std::getenv("IW2_DYNRES_CYCLE"); cyc && std::atoi(cyc) > 0) {
+            static bool down = true;
+            if (++dynResTicks % uint64_t(std::atoi(cyc)) == 0) {
+                if (down && dynRes.scale <= dynResParams.minScale + game::kDynResEps) down = false;
+                else if (!down && dynRes.scale >= upper - game::kDynResEps) down = true;
+                dynRes.scale = down ? game::dynResBelow(dynRes.scale, dynResParams) : game::dynResAbove(dynRes.scale, dynResParams);
+                changed = dynRes.scale != before;
+            }
+        } else {
+            const metal::FrameGpuTime t = metal::frameGpuTime();
+            if (t.seq == dynResSeq) return;
+            dynResSeq = t.seq, sampleMs = t.ms;
+            changed = game::dynResUpdate(dynRes, dynResParams, t.ms);
+        }
+        if (changed)
+            std::printf("dynamic resolution: %.2f -> %.2f (GPU %.1f ms, mean %.1f, budget %.1f ms)\n", double(before), double(dynRes.scale), sampleMs,
+                        double(dynRes.avgMs), double(dynResParams.targetMs));
+    }
     uint64_t gpuReportCalls = 0;
     void gpuErrorReport() {
         ++gpuReportCalls;
@@ -4402,7 +4450,7 @@ struct Renderer {
     // offscreen texture first and a final full-screen pass applies the ramp (game/gammaramp.h, docs/spec/ui.md "Brightness").
     void draw(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam,
               const std::vector<DrawItem>& items = {}, const std::vector<Quad2D>& overlay = {}, float blur = 0.0f) {
-        metal::watchCommandBuffer(cmd);
+        metal::watchCommandBuffer(cmd, true); // the frame's GPU time: dynamic resolution's sample
         gpuErrorReport();
         if (enh.enabled && enh.ggx && enh.probes && !capturingProbes && probesFor != scene.serial && !scene.batches.empty()) {
             captureProbes(cmd, scene);
@@ -4445,14 +4493,61 @@ struct Renderer {
         SDL_EndGPURenderPass(p);
     }
 
-    void drawFrame(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& camIn,
+    // The 3D output below the window size (docs/render-enhanced.md "3D output scale"): the composite writes this image, and a last
+    // pass stretches it to the window and draws the HUD there at the window's own resolution.
+    SDL_GPUTexture* out3dTex = nullptr;
+    SDL_GPUTexture* hudDepth = nullptr;
+    uint32_t out3dW = 0, out3dH = 0, hudDepthW = 0, hudDepthH = 0, out3dLoggedW = 0, out3dLoggedH = 0;
+    SDL_GPUTexture* ensureOut3d(uint32_t w, uint32_t h) {
+        if (!out3dTex || out3dW != w || out3dH != h) {
+            if (out3dTex) SDL_ReleaseGPUTexture(dev, out3dTex);
+            SDL_GPUTextureCreateInfo info{};
+            info.type = SDL_GPU_TEXTURETYPE_2D, info.format = colorFormat;
+            info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            info.width = w, info.height = h, info.layer_count_or_depth = 1, info.num_levels = 1;
+            out3dTex = SDL_CreateGPUTexture(dev, &info);
+            if (!out3dTex) sdlFail("3D output texture");
+            out3dW = w, out3dH = h;
+        }
+        return out3dTex;
+    }
+    SDL_GPUTexture* ensureHudDepth(uint32_t w, uint32_t h) {
+        if (!hudDepth || hudDepthW != w || hudDepthH != h) {
+            if (hudDepth) SDL_ReleaseGPUTexture(dev, hudDepth);
+            SDL_GPUTextureCreateInfo di{};
+            di.type = SDL_GPU_TEXTURETYPE_2D, di.format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+            di.usage = SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET;
+            di.width = w, di.height = h, di.layer_count_or_depth = 1, di.num_levels = 1;
+            hudDepth = SDL_CreateGPUTexture(dev, &di);
+            if (!hudDepth) sdlFail("HUD depth");
+            hudDepthW = w, hudDepthH = h;
+        }
+        return hudDepth;
+    }
+
+    void drawFrame(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* windowTarget, uint32_t tw, uint32_t th, const Scene& scene, const Camera& camIn,
                    const std::vector<DrawItem>& items, const std::vector<Quad2D>& overlay, float blur) {
+        // 3D output scale (docs/render-enhanced.md "3D output scale"): w x h is the 3D output, tw x th the window (the target); every
+        // 3D pass up to the composite runs at w x h into its own image, the HUD is drawn at tw x th after the stretch.
+        const auto osz = game::renderSize(tw, th, game::effectiveOutputScale(enh.outputScale, enh.enabled, capturingProbes));
+        const uint32_t w = osz[0], h = osz[1];
+        const bool lowOut = w != tw || h != th;
+        SDL_GPUTexture* const target = lowOut ? ensureOut3d(w, h) : windowTarget;
+        if (lowOut && (w != out3dLoggedW || h != out3dLoggedH))
+            out3dLoggedW = w, out3dLoggedH = h, std::printf("3D output %ux%u of %ux%u\n", w, h, tw, th);
         // Enhanced TAA (docs/render-enhanced.md "Temporal anti-aliasing"): every scene pass of the frame uses the jittered camera.
         Camera cam = camIn;
         const bool taaOn = enh.enabled && enh.taa;
         // Stage 5 render scale (docs/render-enhanced.md): with MetalFX upscaling the scene passes run at rw x rh and MetalFX
         // writes the output size; everything after the resolve (post, HUD) stays at w x h.
-        const float rscale = taaOn ? game::effectiveRenderScale(enh.renderScale, metalFxNow() && !capturingProbes) : 1.0f;
+        const bool mfxScaling = metalFxNow() && !capturingProbes;
+        dynResFrame = taaOn && dynResWanted() && !capturingProbes; // dynamic resolution: the render scale moves under the upper bound
+        dynMaxScale = game::effectiveRenderScale(enh.renderScale, mfxScaling);
+        if (dynResFrame) {
+            const auto m = game::renderSize(w, h, dynMaxScale);
+            dynMaxW = m[0], dynMaxH = m[1];
+        }
+        const float rscale = taaOn ? (dynResFrame ? dynResScale(dynMaxScale) : dynMaxScale) : 1.0f;
         const auto rsz = game::renderSize(w, h, rscale);
         const uint32_t rw = rsz[0], rh = rsz[1];
         const bool scaled = rw != w || rh != h;
@@ -4555,8 +4650,8 @@ struct Renderer {
                 }
                 for (int k = 0; k < 4; ++k) {
                     GpuVertex g{};
-                    g.pos[0] = xs[k] / float(w) * 2.0f - 1.0f;
-                    g.pos[1] = 1.0f - ys[k] / float(h) * 2.0f;
+                    g.pos[0] = xs[k] / float(tw) * 2.0f - 1.0f;
+                    g.pos[1] = 1.0f - ys[k] / float(th) * 2.0f;
                     g.pos[2] = 0.0f;
                     g.normal[2] = 1;
                     std::memcpy(g.color, q.rgba, 4);
@@ -5497,8 +5592,24 @@ struct Renderer {
             } else {
                 ghostValid = false; // flag 0xf7e8a4 cleared: the next shock starts with a capture only
             }
-            if (nq) drawOverlay(p2, cmd, scene, overlay, nq);
+            if (nq && !lowOut) drawOverlay(p2, cmd, scene, overlay, nq);
             SDL_EndGPURenderPass(p2);
+            if (lowOut) { // the 3D output stretched to the window (bilinear), then the HUD at the window's resolution
+                SDL_GPUColorTargetInfo fc{};
+                fc.texture = windowTarget;
+                fc.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                fc.store_op = SDL_GPU_STOREOP_STORE;
+                SDL_GPUDepthStencilTargetInfo fd = d2;
+                fd.texture = ensureHudDepth(tw, th);
+                fd.load_op = SDL_GPU_LOADOP_CLEAR, fd.store_op = SDL_GPU_STOREOP_DONT_CARE;
+                SDL_GPURenderPass* p3 = SDL_BeginGPURenderPass(cmd, &fc, 1, &fd);
+                SDL_BindGPUGraphicsPipeline(p3, copyPipe);
+                const SDL_GPUTextureSamplerBinding ob{out3dTex, clampSampler};
+                SDL_BindGPUFragmentSamplers(p3, 0, &ob, 1);
+                SDL_DrawGPUPrimitives(p3, 3, 1, 0, 0);
+                if (nq) drawOverlay(p3, cmd, scene, overlay, nq);
+                SDL_EndGPURenderPass(p3);
+            }
         }
         if (taaOn) enhTaaEndFrame(cmd, scene, camIn, w, h, items);
         restoreScaledTargets();
@@ -11569,6 +11680,7 @@ int main(int argc, char** argv) {
                     SDL_WaitForGPUFences(dev, true, &fence, 1);
                     SDL_ReleaseGPUFence(dev, fence);
                     const uint64_t t3 = SDL_GetTicksNS();
+                    if (std::getenv("IW2_DYNRES_BENCH")) renderer.dynResTick(60.0f); // debug: dynamic resolution moves during the bench
                     gatherMs.push_back(double(t1 - t0) * 1e-6);
                     encodeMs.push_back(double(t2 - t1) * 1e-6);
                     gpuMs.push_back(double(t3 - t2) * 1e-6);
@@ -14055,6 +14167,13 @@ int main(int argc, char** argv) {
                 hudKillcam.reset();
                 renderer.gamma = gammaFrom(uiCvars), renderer.zFeather = zFeatherFrom(uiCvars), lodDvarsFrom(uiCvars, renderer.lodScaleDvar, renderer.lodBiasDvar);
                 pollRebake(dev, scene, false);
+                { // dynamic resolution: the newest frame GPU time moves the render scale (docs/render-enhanced.md "Dynamic resolution")
+                    static float displayHz = 0.0f;
+                    static uint64_t hzFrame = 0;
+                    if (hzFrame++ % 120 == 0)
+                        if (const SDL_DisplayMode* dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window))) displayHz = dm->refresh_rate;
+                    renderer.dynResTick(displayHz);
+                }
                 renderer.draw(cmd, swap, w, h, scene, cam, items, hud, blur);
                 // debug token shot:<file.png> (IW2_MENU_KEYS): the same frame rendered once more into a PNG
                 if (!pendingShotPng.empty()) screenshot(dev, renderer, scene, cam, w, h, std::exchange(pendingShotPng, std::string()), items, hud, blur);

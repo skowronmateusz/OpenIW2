@@ -475,6 +475,89 @@ int main() {
     chk(renderSize(1920, 1080, 1.0f)[0] == 1920, __LINE__);
     chk(taaJitterPhases(1.0f) == 8 && taaJitterPhases(0.5f) == 32 && taaJitterPhases(0.67f) == 18, __LINE__);
     chk(taaJitter(8, 100, 100) == taaJitter(0, 100, 100) && taaJitter(8, 100, 100, 18) != taaJitter(0, 100, 100, 18), __LINE__);
+    // 3D output scale: enhanced only, never for a probe capture, clamped to 0.5..1; the 3D output of a Retina window at 75 %, and
+    // MetalFX's render size taken from the 3D output (not the window).
+    chk(effectiveOutputScale(0.75f, false, false) == 1.0f && effectiveOutputScale(0.75f, true, true) == 1.0f, __LINE__);
+    chk(effectiveOutputScale(0.75f, true, false) == 0.75f && effectiveOutputScale(0.1f, true, false) == 0.5f && effectiveOutputScale(2.0f, true, false) == 1.0f, __LINE__);
+    {
+        const auto o = renderSize(3024, 1712, effectiveOutputScale(0.75f, true, false));
+        chk(o[0] == 2268 && o[1] == 1284, __LINE__);
+        const auto r = renderSize(o[0], o[1], effectiveRenderScale(0.67f, true));
+        chk(r[0] == 1520 && r[1] == 860, __LINE__);
+        chk(std::fabs(float(o[0]) / float(o[1]) - 3024.0f / 1712.0f) < 1e-3f, __LINE__); // the aspect stays within rounding
+    }
+    {   // the settings: r_enhOutputScale clamped, 1 when unset; a preset pick sets it to 1 (no preset lowers it)
+        const auto get = [](std::map<std::string, std::string> m) {
+            return enhancedSettings([m](const char* n) { const auto it = m.find(n); return it == m.end() ? std::string() : it->second; });
+        };
+        chk(get({}).outputScale == 1.0f && get({{"r_enhOutputScale", "0.75"}}).outputScale == 0.75f && get({{"r_enhOutputScale", "0.2"}}).outputScale == 0.5f, __LINE__);
+        for (int p = 0; p < 4; ++p) {
+            bool set = false;
+            for (const auto& [k, v] : enhPresetPick(p)) set = set || (k == "r_enhOutputScale" && v == "1");
+            chk(set, __LINE__);
+        }
+    }
+
+    // Dynamic resolution (docs/render-enhanced.md "Dynamic resolution"): the ladder, the controller's steps and its hysteresis.
+    {
+        DynResParams p;
+        p.targetMs = 16.0f, p.minScale = 0.5f, p.maxScale = 0.67f;
+        chk(near(dynResBelow(0.67f, p), 0.65f) && near(dynResBelow(0.65f, p), 0.60f) && near(dynResBelow(0.5f, p), 0.5f), __LINE__);
+        chk(near(dynResAbove(0.65f, p), 0.67f) && near(dynResAbove(0.5f, p), 0.55f) && near(dynResAbove(0.67f, p), 0.67f), __LINE__);
+        chk(near(dynResBudgetMs(60.0f, 120.0f), 16.6667f) && near(dynResBudgetMs(0.0f, 120.0f), 8.3333f) && near(dynResBudgetMs(0.0f, 0.0f), 16.6667f), __LINE__);
+        chk(near(dynResPredictMs(10.0f, 1.0f, 0.5f), 2.5f), __LINE__);
+        // the GPU time of a scene whose cost is a fixed 2 ms plus pixels (scale squared): above the budget it steps down, never below
+        // the lower bound; every change waits holdDown samples
+        const auto gpuAt = [](float s, float full) { return 2.0f + (full - 2.0f) * s * s; };
+        DynResState st;
+        dynResReset(st, p);
+        chk(st.scale == 0.67f && !st.primed, __LINE__);
+        int changes = 0, lastChange = -100, minGap = 1000;
+        for (int i = 0; i < 400; ++i)
+            if (dynResUpdate(st, p, gpuAt(st.scale, 60.0f))) ++changes, minGap = std::min(minGap, i - lastChange), lastChange = i;
+        chk(near(st.scale, 0.5f) && changes >= 1 && minGap >= p.holdDown, __LINE__);
+        // a light scene: back up to the upper bound, one step at a time, holdUp samples apart, never above it
+        changes = 0, lastChange = -1000, minGap = 1000;
+        for (int i = 0; i < 1000; ++i) {
+            const float before = st.scale;
+            if (dynResUpdate(st, p, gpuAt(st.scale, 6.0f))) {
+                chk(near(st.scale, dynResAbove(before, p)), __LINE__);
+                ++changes, minGap = std::min(minGap, i - lastChange), lastChange = i;
+            }
+        }
+        chk(near(st.scale, 0.67f) && changes == 4 && minGap >= p.holdUp, __LINE__); // 0.5 -> 0.55 -> 0.6 -> 0.65 -> 0.67
+        // hysteresis: a scene that sits at its budget's edge settles; a few thousand samples of it change the scale at most twice
+        // (no oscillation between two steps)
+        for (const float full : {28.0f, 30.0f, 32.0f, 34.0f}) {
+            dynResReset(st, p);
+            int n = 0;
+            for (int i = 0; i < 400; ++i) dynResUpdate(st, p, gpuAt(st.scale, full));
+            for (int i = 0; i < 4000; ++i) n += dynResUpdate(st, p, gpuAt(st.scale, full) * (i % 2 ? 1.03f : 0.97f)) ? 1 : 0;
+            chk(n <= 2 && gpuAt(st.scale, full) < p.targetMs * p.downAbove + 0.5f, __LINE__);
+        }
+        // a single hitch (a load) counts as two budgets: one long frame does not step down
+        dynResReset(st, p);
+        for (int i = 0; i < 20; ++i) dynResUpdate(st, p, 8.0);
+        chk(!dynResUpdate(st, p, 500.0) && st.scale == 0.67f, __LINE__);
+        chk(!dynResUpdate(st, p, 0.0) && !dynResUpdate(st, p, -1.0), __LINE__); // no time: no sample
+        // a new, lower upper bound clamps the scale at the next sample
+        p.maxScale = 0.55f;
+        dynResUpdate(st, p, 8.0);
+        chk(st.scale <= 0.55f, __LINE__);
+        // jitter phases per ladder step (8 per output pixel: 8 / scale^2)
+        chk(taaJitterPhases(0.55f) == 27 && taaJitterPhases(0.6f) == 23 && taaJitterPhases(0.65f) == 19, __LINE__);
+        // MetalFX's content scale range: output / input, 1 / upper .. 1 / lower, inside the device's range
+        const auto r = metalFxContentScaleRange(0.5f, 0.67f, 0.0f, 0.0f);
+        chk(near(r[0], 1.0f / 0.67f) && near(r[1], 2.0f), __LINE__);
+        const auto rc = metalFxContentScaleRange(0.5f, 1.0f, 1.0f, 1.8f);
+        chk(near(rc[0], 1.0f) && near(rc[1], 1.8f), __LINE__);
+        // the settings: off unless set, 60 fps unless set, 0 = the display's rate
+        const auto get = [](std::map<std::string, std::string> m) {
+            return enhancedSettings([m](const char* n) { const auto it = m.find(n); return it == m.end() ? std::string() : it->second; });
+        };
+        chk(!get({}).dynRes && get({{"r_enhDynRes", "1"}}).dynRes && get({}).dynResFps == 60.0f && get({{"r_enhDynResFps", "0"}}).dynResFps == 0.0f, __LINE__);
+        chk(get({{"r_enhDynResFps", "500"}}).dynResFps == 240.0f, __LINE__);
+    }
 
     // Objects behind the camera join the ray tracing within the range only.
     chk(withinRtBeyondViewRange(1000, 1000, 0) && !withinRtBeyondViewRange(1500, 100, 0) && withinRtBeyondViewRange(0, 0, -1500), __LINE__);

@@ -39,6 +39,7 @@ namespace {
 struct GpuErrorState {
     std::mutex m;
     GpuErrors e;
+    FrameGpuTime frame;
 };
 GpuErrorState& gpuErrorState() {
     static GpuErrorState* s = new GpuErrorState; // never destroyed: a completion handler may run while the program exits
@@ -46,7 +47,7 @@ GpuErrorState& gpuErrorState() {
 }
 } // namespace
 
-void watchCommandBuffer(SDL_GPUCommandBuffer* cmd) {
+void watchCommandBuffer(SDL_GPUCommandBuffer* cmd, bool frame) {
 #ifdef SDL_GPU_OPENIW2_METAL_HANDLES
     id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)SDL_GetGPUCommandBufferMetalCommandBuffer(cmd);
     if (!cb) return;
@@ -56,6 +57,7 @@ void watchCommandBuffer(SDL_GPUCommandBuffer* cmd) {
             if (!(gpuMs > 0.0)) return;
             GpuErrorState& s = gpuErrorState();
             const std::lock_guard<std::mutex> lock(s.m);
+            if (frame) ++s.frame.seq, s.frame.ms = gpuMs;
             s.e.maxGpuMs = std::max(s.e.maxGpuMs, gpuMs);
             if (game::gpuTimeIsSlow(gpuMs)) ++s.e.slow, s.e.lastSlowMs = gpuMs;
             return;
@@ -68,8 +70,14 @@ void watchCommandBuffer(SDL_GPUCommandBuffer* cmd) {
         noteGpuError(code, text + after);
     }];
 #else
-    (void)cmd;
+    (void)cmd, (void)frame;
 #endif
+}
+
+FrameGpuTime frameGpuTime() {
+    GpuErrorState& s = gpuErrorState();
+    const std::lock_guard<std::mutex> lock(s.m);
+    return s.frame;
 }
 
 void noteGpuError(int code, const std::string& text) {
@@ -95,6 +103,9 @@ struct TemporalScaler::Impl {
     MTLPixelFormat color = MTLPixelFormatInvalid, depth = MTLPixelFormatInvalid, motion = MTLPixelFormatInvalid, out = MTLPixelFormatInvalid;
     bool react = false; // made with a reactive mask
     bool failed = false;
+    bool dynamic = false; // made with input content properties (dynamic resolution)
+    float minContent = 0.0f, maxContent = 0.0f; // its content scale range (output / input)
+    unsigned contentW = 0, contentH = 0;        // the last frame's content size
 };
 #else
 struct TemporalScaler::Impl {};
@@ -105,7 +116,7 @@ TemporalScaler::~TemporalScaler() { delete impl_; }
 
 bool TemporalScaler::encode(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* color, SDL_GPUTexture* depth,
                             SDL_GPUTexture* motion, SDL_GPUTexture* reactive, SDL_GPUTexture* output, unsigned inW, unsigned inH, unsigned outW, unsigned outH,
-                            float jitterNdcX, float jitterNdcY, bool reset) {
+                            float jitterNdcX, float jitterNdcY, bool reset, const Dynamic* dynamic) {
 #ifdef SDL_GPU_OPENIW2_METAL_HANDLES
     if (@available(macOS 13.0, *)) {
         id<MTLDevice> d = (__bridge id<MTLDevice>)SDL_GetGPUDeviceMetalDevice(dev);
@@ -119,8 +130,19 @@ bool TemporalScaler::encode(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_G
         if (@available(macOS 14.4, *)) {} else react = false;
         if (!d || !cb || !c || !z || !m || !o) return false;
         Impl& I = *impl_;
+        // dynamic resolution: the content scale range (output / input) for the render scales; the device's own limits where known
+        std::array<float, 2> range{0.0f, 0.0f};
+        if (dynamic) {
+            float smin = 0.0f, smax = 0.0f;
+            if (@available(macOS 14.0, *)) {
+                smin = [MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:d];
+                smax = [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:d];
+            }
+            range = game::metalFxContentScaleRange(dynamic->minScale, dynamic->maxScale, smin, smax);
+        }
         if (!I.scaler || I.inW != inW || I.inH != inH || I.outW != outW || I.outH != outH || I.color != c.pixelFormat ||
-            I.depth != z.pixelFormat || I.motion != m.pixelFormat || I.out != o.pixelFormat || I.react != react) {
+            I.depth != z.pixelFormat || I.motion != m.pixelFormat || I.out != o.pixelFormat || I.react != react ||
+            I.dynamic != (dynamic != nullptr) || (dynamic && (I.minContent != range[0] || I.maxContent != range[1]))) {
             MTLFXTemporalScalerDescriptor* desc = [MTLFXTemporalScalerDescriptor new];
             desc.colorTextureFormat = c.pixelFormat;
             desc.depthTextureFormat = z.pixelFormat;
@@ -128,12 +150,14 @@ bool TemporalScaler::encode(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_G
             desc.outputTextureFormat = o.pixelFormat;
             desc.inputWidth = inW, desc.inputHeight = inH, desc.outputWidth = outW, desc.outputHeight = outH;
             desc.autoExposureEnabled = YES;
-            desc.inputContentPropertiesEnabled = NO;
+            desc.inputContentPropertiesEnabled = dynamic ? YES : NO;
+            if (dynamic) desc.inputContentMinScale = range[0], desc.inputContentMaxScale = range[1];
             if (@available(macOS 14.4, *))
                 if (react) desc.reactiveMaskTextureEnabled = YES, desc.reactiveMaskTextureFormat = r.pixelFormat; // a moving shadow (fs_enh_mfx_reactive)
             I.scaler = [desc newTemporalScalerWithDevice:d];
             I.inW = inW, I.inH = inH, I.outW = outW, I.outH = outH;
             I.color = c.pixelFormat, I.depth = z.pixelFormat, I.motion = m.pixelFormat, I.out = o.pixelFormat, I.react = react;
+            I.dynamic = dynamic != nullptr, I.minContent = range[0], I.maxContent = range[1];
             I.failed = I.scaler == nil;
             reset = true;
         }
@@ -145,9 +169,13 @@ bool TemporalScaler::encode(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_G
         if (@available(macOS 14.4, *))
             if (I.react) I.scaler.reactiveMaskTexture = r;
         // MetalFX takes the jitter and the motion in input pixels, y down (game::metalFxJitterPixels, game::metalFxMotionScale);
-        // the signs were checked with a static camera and a pan (docs/render-enhanced.md "Stage 5").
-        const auto j = game::metalFxJitterPixels(jitterNdcX, jitterNdcY, inW, inH);
-        const auto ms = game::metalFxMotionScale(inW, inH);
+        // the signs were checked with a static camera and a pan (docs/render-enhanced.md "Stage 5"). With dynamic resolution the
+        // pixels are the content's (our jitter and motion are NDC of the content).
+        const unsigned cw = dynamic ? std::clamp(dynamic->contentW, 1u, inW) : inW, ch = dynamic ? std::clamp(dynamic->contentH, 1u, inH) : inH;
+        if (dynamic) I.scaler.inputContentWidth = cw, I.scaler.inputContentHeight = ch;
+        I.contentW = cw, I.contentH = ch;
+        const auto j = game::metalFxJitterPixels(jitterNdcX, jitterNdcY, cw, ch);
+        const auto ms = game::metalFxMotionScale(cw, ch);
         I.scaler.jitterOffsetX = j[0];
         I.scaler.jitterOffsetY = j[1];
         I.scaler.motionVectorScaleX = ms[0];
@@ -159,7 +187,7 @@ bool TemporalScaler::encode(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_G
     }
 #else
     (void)dev, (void)cmd, (void)color, (void)depth, (void)motion, (void)reactive, (void)output, (void)inW, (void)inH, (void)outW, (void)outH;
-    (void)jitterNdcX, (void)jitterNdcY, (void)reset;
+    (void)jitterNdcX, (void)jitterNdcY, (void)reset, (void)dynamic;
 #endif
     return false;
 }
@@ -172,7 +200,10 @@ std::string TemporalScaler::describe() const {
         return "MetalFX scaler " + std::to_string(impl_->inW) + "x" + std::to_string(impl_->inH) + " -> " + std::to_string(impl_->outW) +
                "x" + std::to_string(impl_->outH) + ", usage color " + std::to_string(unsigned(s.colorTextureUsage)) + " depth " +
                std::to_string(unsigned(s.depthTextureUsage)) + " motion " + std::to_string(unsigned(s.motionTextureUsage)) + " output " +
-               std::to_string(unsigned(s.outputTextureUsage));
+               std::to_string(unsigned(s.outputTextureUsage)) +
+               (impl_->dynamic ? ", dynamic content " + std::to_string(impl_->contentW) + "x" + std::to_string(impl_->contentH) + ", scale " +
+                                     std::to_string(impl_->minContent).substr(0, 4) + ".." + std::to_string(impl_->maxContent).substr(0, 4)
+                               : std::string());
     }
 #endif
     return "MetalFX: not built";

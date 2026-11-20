@@ -34,7 +34,7 @@ static bool samePicture(const game::EnhancedSettings& a, const game::EnhancedSet
            a.probes == b.probes && a.volumetric == b.volumetric && a.grade == b.grade && a.metalFx == b.metalFx && a.rtShadows == b.rtShadows &&
            a.rtLightShadows == b.rtLightShadows && a.playerShadow == b.playerShadow && a.rtBeyondView == b.rtBeyondView &&
            a.rtContactAO == b.rtContactAO && a.rtGI == b.rtGI && a.rtReflections == b.rtReflections && a.rebake == b.rebake &&
-           a.renderScale == b.renderScale && a.dof == b.dof && a.motionBlur == b.motionBlur && a.gridPerPixel == b.gridPerPixel;
+           a.renderScale == b.renderScale && a.outputScale == b.outputScale && a.dynRes == b.dynRes && a.dof == b.dof && a.motionBlur == b.motionBlur && a.gridPerPixel == b.gridPerPixel;
 }
 static bool holdsPreset(const Map& m, int preset) {
     for (const auto& o : game::enhPresetOptions())
@@ -165,11 +165,12 @@ int main() {
             game::enhMapResolve(now);
             // the picture of the earlier version: MetalFX and its resolution unset there were off and native
             game::EnhancedSettings was = before;
-            was.metalFx = false, was.renderScale = 1.0f;
+            was.metalFx = false, was.renderScale = 1.0f, was.dynRes = false; // (dynamic resolution joined later still: off)
             const game::EnhancedSettings after = settingsOf(now);
-            chk(samePicture(was, after) && !after.metalFx && after.renderScale == 1.0f, __LINE__);
+            chk(samePicture(was, after) && !after.metalFx && after.renderScale == 1.0f && !after.dynRes && after.outputScale == 1.0f, __LINE__);
             const bool presetHad = std::string(game::enhPresetOption("r_enhMetalFX")->values[size_t(p)]) == "0" &&
-                                   std::string(game::enhPresetOption("r_enhRenderScale")->values[size_t(p)]) == "1";
+                                   std::string(game::enhPresetOption("r_enhRenderScale")->values[size_t(p)]) == "1" &&
+                                   std::string(game::enhPresetOption("r_enhDynRes")->values[size_t(p)]) == "0";
             chk(game::enhMapGet(now, "r_enhPreset") == (presetHad ? std::to_string(p) : "4") && (presetHad ? holdsPreset(now, p) : true), __LINE__);
             chk(game::enhMapGet(now, "r_enhRebake") == "0", __LINE__);
         }
@@ -178,7 +179,7 @@ int main() {
                                  "seta r_enhRTGI \"-1\"\nseta r_enhgrade \"1\"\nseta r_enhVolumetric \"-1\"\n";
         const Map old = ui::parseConfig(text);
         game::EnhancedSettings before = settingsOf(old);
-        before.metalFx = false, before.renderScale = 1.0f; // unset in the earlier version: off, native
+        before.metalFx = false, before.renderScale = 1.0f, before.dynRes = false; // unset in the earlier version: off, native, fixed
         Map now = old;
         game::enhMapResolve(now);
         const game::EnhancedSettings after = settingsOf(now);
@@ -196,6 +197,7 @@ int main() {
         Map none{{"r_enhAO", "-1"}};
         game::enhMapResolve(none);
         chk(game::enhMapGet(none, "r_enhMetalFX") == "0" && game::enhMapGet(none, "r_enhRenderScale") == "1", __LINE__);
+        chk(game::enhMapGet(none, "r_enhDynRes") == "0" && game::enhMapGet(none, "r_enhOutputScale") == "1", __LINE__); // joined later: fixed, native
         Map tasteOnly{{"r_enhGrade", "1"}};
         game::enhMapResolve(tasteOnly);
         chk(game::enhMapGet(tasteOnly, "r_enhMetalFX") == "0" && game::enhMapGet(tasteOnly, "r_enhGrade") == "1", __LINE__);

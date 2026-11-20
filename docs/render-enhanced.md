@@ -45,7 +45,10 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | `r_enhRTGI` | 0 | Ray-traced global illumination of the moving objects (GPU family 9 and later; on in the ultra preset only; see "Ray-traced global illumination"). |
 | `r_enhRTBeyondView` | 1 | Objects outside the view but within 1500 units in the ray tracing (reflections, shadows); costs their CPU skinning. |
 | `r_enhRTReflections` | 1 | Ray-traced reflections on water and the reflective surface classes (GPU family 9 and later: M3 and later; see "Stage 5"). |
-| `r_enhRenderScale` | 0.5 | With MetalFX: the scene's resolution as a fraction of the window (0.5..1; the page offers 1, 0.77, 0.67, 0.5), upscaled by MetalFX. |
+| `r_enhRenderScale` | 0.5 | With MetalFX: the scene's resolution as a fraction of the 3D output (0.5..1; the page offers 1, 0.77, 0.67, 0.5), upscaled by MetalFX; with dynamic resolution its upper bound. |
+| `r_enhDynRes` | 0 | Dynamic resolution: with MetalFX, the render scale follows the GPU time of the frame, between 0.5 and `r_enhRenderScale` (on in the high and ultra presets; see "Dynamic resolution"). |
+| `r_enhDynResFps` | 60 | The frame rate dynamic resolution aims for (20..240; 0 = the display's refresh rate). No row, not part of a preset. |
+| `r_enhOutputScale` | 1 | The 3D output (scene, anti-aliasing, post) as a fraction of the window (0.5..1; the page offers 1, 0.85, 0.75, 0.67, 0.5), stretched to the window; the HUD and menus stay at the window's resolution (see "3D output scale"). |
 | `r_enhProbes` | 1 | Reflection probes captured when the map loads: rooms reflect themselves instead of the sky (off in the low preset). |
 | `r_enhDOF` | 0 | Depth of field while aiming down the sights (0 off .. 2). |
 | `r_enhPlayerShadow` | 1 | The player's shadow-only body (sun shadows, ray tracing); never drawn in the view. On in every preset. |
@@ -79,6 +82,8 @@ concrete value of its own (there is no "as the preset" value):
 | Highlights and reflections (GGX), bloom, player shadow, the other ray tracing rows, HDR output | on | on | on | on |
 | MetalFX (`r_enhMetalFX`, where the GPU and build have it) | off | on | on | on |
 | MetalFX render resolution (`r_enhRenderScale`) | 1 | 0.5 | 0.67 | 0.67 |
+| Dynamic resolution (`r_enhDynRes`) | off | off | on | on |
+| 3D resolution (`r_enhOutputScale`) | 1 | 1 | 1 | 1 |
 
 MetalFX upscaling is what makes the higher presets fit a Retina display: on an M4 Pro at 3024x1712 (duhoc_assault,
 `IW2_BENCH_GPU`) the presets took (before the multisampling and non-finite guard changes below) 16.1 / 17.3 / 17.7 ms of GPU time (medium / high / ultra) at native resolution without
@@ -86,12 +91,19 @@ MetalFX, and 11.7 / 14.6 / 14.8 ms with these values. An earlier comparison agai
 3.6 at 0.67 and 4.3 at 0.5 (3.1 for our TAA at native). Low has no TAA, so no MetalFX; without
 MetalFX (no MetalFX GPU or build) the render resolution has no effect and the scene is drawn at the window size.
 
+Dynamic resolution and the 3D resolution are performance options, so they are part of the presets. Dynamic resolution is on
+where the preset's render resolution leaves it room to go down (high and ultra: from 0.67 to 0.5); medium's 0.5 is already its
+lower bound, and low has no MetalFX. A preset never lowers the 3D resolution: how soft a stretched image looks depends on the
+display's pixel density (75 % of a Retina window is still finer than a 1080p screen, on a 1080p screen it is visibly soft), which
+a preset does not know; it is the player's choice, and picking a preset sets it back to native.
+
 The table is `game::enhPresetOptions` (src/game/renderenhanced.h). Rows of features the machine lacks (MetalFX, ray tracing) are
 not shown, but a preset still writes their cvars.
 
 A profile saved before this design may hold -1 ("as the preset") or no value for an option. When the profile is loaded each
-such option takes the value of the preset saved with it, so its picture does not change (MetalFX and its resolution, which
-joined the presets later, take their earlier defaults there: off and native); when an option then differs from that
+such option takes the value of the preset saved with it, so its picture does not change (MetalFX, its resolution and dynamic
+resolution, which joined the presets later, take their earlier defaults there: off, native and off; the 3D resolution's earlier
+behaviour, native, is every preset's value, so it needs no exception); when an option then differs from that
 preset (a choice made by hand), the preset becomes Custom. An old `r_enhRebake` -1 becomes 0. The resolved values are written
 to the profile with the next change of a saved option. Tests: tests/test_enhpresets.cpp, tests/iw2view_enhpreset.sh.
 
@@ -101,7 +113,8 @@ Options > OpenIW2 > Enhanced graphics (an OpenIW2 page added in memory to the ga
 experimental and may cause visual glitches and bugs; a note at the top of the page says so.
 - the master row (`r_enhanced`, Off / On, applies at the next start) is always shown; every other row only while it is On;
 - Quality (`r_enhPreset`: Low / Medium / High / Ultra / Custom; see "Presets");
-- one row per feature cvar, with concrete values only: the on/off features On / Off; Sun shafts Off / On / Strong; Colour
+- one row per feature cvar, with concrete values only: the on/off features On / Off; MetalFX render resolution Native / 77 % /
+  67 % / 50 %; Dynamic MetalFX resolution Off / On; 3D resolution Native / 85 % / 75 % / 67 % / 50 %; Sun shafts Off / On / Strong; Colour
   grade Neutral / Period film; Motion blur, Depth of field and HDR output Off / On;
 - all values are saved in the profile (archived like the shipped options) and, while the mode is on, read every frame and
   applied at once (the shadow maps are made again at a new size), except the master row and HDR output, which change the
@@ -471,6 +484,59 @@ at 67 % and 4.3 at 50 % with these signs, 6.3 and 7.7 with both flipped (which l
 native size and for our TAA. Cost at 1920 x 1080, high preset, duhoc beach: native with our TAA 6.64 ms; MetalFX at 77 % 6.10,
 67 % 5.35, 50 % 4.26 ms; medium preset 5.73 ms, with MetalFX at 67 % 4.86 ms. The reflection probes capture at native size.
 
+### 3D output scale
+
+Our own design. `r_enhOutputScale` (the page's "3D resolution (HUD stays sharp)": Native, 85 %, 75 %, 67 %, 50 %;
+`game::effectiveOutputScale`) draws the whole 3D part of the frame at that fraction of the window: the scene, the temporal
+filter (our TAA, or MetalFX's output), motion blur, depth of field, the tone pass, bloom, glow, the blurred screen and the shell
+shock blend all run at the 3D output size and write their composite into an image of the window's format at that size. A last
+pass stretches it to the window (bilinear) and draws the HUD, the menus and the console there, at the window's own resolution,
+so text and icons stay sharp. The log says `3D output WxH of WxH` when the size changes.
+- With MetalFX the scaler upscales the render size (`r_enhRenderScale` of the 3D output) to the 3D output size, and the stretch
+  does the rest: at 75 % and 0.67, a 3024 x 1712 window renders the scene at 1520 x 860, MetalFX writes 2268 x 1284.
+- Without MetalFX (no MetalFX GPU or build, `r_enhMetalFX 0`, or the low preset without TAA) the scene is drawn at the 3D output
+  size, our TAA (where on) resolves at that size, and the stretch makes the window size. The render resolution has no effect there,
+  as before; the 3D resolution is the one way to draw fewer pixels without MetalFX.
+- The projection's aspect is the 3D output's, which differs from the window's only by the rounding of its size (under 0.1 %).
+- The default renderer (`r_enhanced 0`) and the reflection probe captures never use it.
+Cost, M4 Pro, 3024 x 1712, duhoc_assault, see "Cost".
+
+### Dynamic resolution
+
+Our own design (`r_enhDynRes`, the page's "Dynamic MetalFX resolution", shown with the MetalFX rows). With MetalFX upscaling, the
+render scale follows the GPU time of the frame: `r_enhRenderScale` is its upper bound and 0.5 its lower bound. Without MetalFX it
+has no effect (our TAA keeps its history at the 3D output size and draws at that size; changing the size under it would need a
+resampled history, and the 3D output scale above is the option there).
+- The sample is the GPU time (`GPUEndTime - GPUStartTime`) of the frame's own command buffer, taken in its completion handler
+  (`metal::watchCommandBuffer(cmd, true)`, `metal::frameGpuTime`); the upload command buffers are not counted. The controller
+  (`game::dynResUpdate`) runs once per drawn frame of live play, on the newest completed sample (a frame or two old).
+- The budget is 1000 / `r_enhDynResFps` ms (60 fps by default; 0 = the display's refresh rate, 60 when it is unknown).
+- A running mean (weight 0.15 per sample; one sample counts at most two budgets, so a hitch such as a load does not move it)
+  above 92 % of the budget steps the scale down, to the step predicted to take 85 % of it (the time taken to scale with the pixel
+  count) and at least one step; a mean predicted below 80 % of the budget at the next step up steps it up by one. A change waits
+  8 samples before the next step down and 45 before a step up. The gap between 92 % and 80 % and the slower way up are the
+  hysteresis: a scene at the edge of its budget settles on one step instead of moving between two.
+- The scale is on a ladder of 0.05 steps (0.5, 0.55, 0.6, 0.65 and the upper bound itself), so the render-size targets (depth,
+  `$floatz`, motion vectors, the scene images, AO) are made again only at a step; the AO image of the last frame (the moving
+  shadows' change in the temporal filter) starts again at each step.
+- The MetalFX scaler is made once for the range: `inputContentPropertiesEnabled`, with its content scale range (output / input)
+  1 / upper bound .. 2, inside the device's own range (`supportedInputContentMin/MaxScaleForDevice`;
+  `game::metalFxContentScaleRange`). Its inputs (colour, depth, motion, reactive mask) are made at the largest render size, the
+  small passes that write them draw this frame's content into their top left, and every frame passes the content size
+  (`inputContentWidth / Height`); the jitter and the motion are in the content's pixels. A change of the scale needs no history
+  reset. The scaler is made again only when the upper bound, the 3D output size or a texture format changes. With dynamic
+  resolution off the scaler is the fixed one of "Render scale" above.
+- The jitter has 8 x (1 / scale)^2 phases at each step (`game::taaJitterPhases`: 18 at 0.67, 19 at 0.65, 23 at 0.6, 27 at 0.55,
+  32 at 0.5), and the texture mip bias is log2 of the current scale.
+- A `--shot` or an `IW2_BENCH` run never moves it: the scale stays at the upper bound (the scaler is still the dynamic one), so a
+  shot or a bench is the same every run. `IW2_DYNRES_FORCE`, `IW2_DYNRES_CYCLE` and `IW2_DYNRES_BENCH` (docs/debug-flags.md) move
+  it on purpose. While the game is paused (the MetalFX hold) it does not move; with dynamic resolution off, MetalFX off or
+  held after a GPU error ("GPU errors"), it goes back to the upper bound.
+- Each change prints `dynamic resolution: <from> -> <to> (GPU <ms>, mean <ms>, budget <ms>)`.
+TODO(spec): the thresholds, holds and the step were chosen by reasoning and checked with the unit tests' model scene (a fixed
+part plus a part per pixel), not tuned in live play; the GPU time of a frame paced by the display (vsync) may read higher than
+the same frame's at full clock, which would keep the scale lower than needed.
+
 ### Ray-traced reflections
 
 On GPUs with hardware ray tracing (`r_enhRTReflections`, the page's "RT reflections" row, shown only there):
@@ -704,6 +770,20 @@ the duhoc_assault beach reference spot (docs/debug-flags.md `IW2_BENCH`), yaw 18
 | preset medium / high | 5.66 / 6.59 | |
 | preset high without reflection probes | 6.87 | (the probes cost nothing measurable) |
 
+3D output scale and dynamic resolution, 3024 x 1712, duhoc_assault reference spot, yaw 180, GPU-bound ms (one run each, on a
+machine shared with other work; the presets' own numbers are higher than the earlier ones above for that reason):
+
+| Preset | native 3D output | 3D output 75 % | without MetalFX (Homebrew SDL): native / 75 % |
+|---|---|---|---|
+| low | 8.57 | 5.37 | 6.37 / 4.06 |
+| medium | 14.19 | 8.41 | 29.20 / 17.81 |
+| high | 17.85 | 10.32 | 32.00 / 19.48 |
+| ultra | 17.66 | 10.39 | 32.08 / 19.51 |
+
+Dynamic resolution (high / ultra, MetalFX): held at the upper bound 0.67, 17.85 / 17.66 ms, against 17.51 / 17.77 with it off
+(the fixed scaler); a forced scale of 0.55 15.40 / 15.62 ms against a fixed render scale of 0.55 15.26 / 15.52; at 0.5
+14.58 / 14.94 ms. The scaler made for a range of content sizes costs about as much as the fixed one.
+
 Ray-traced global illumination (ultra against high, duhoc beach, interleaved runs on a machine shared with other work, so the absolute
 values are higher than above; the high preset of this build against the build before it: +0.08 / +0.09 ms): yaw 180 +0.98 ms (min of 7 runs; the
 median +1.1), yaw 0 +0.74 ms. Between two consecutive frames of a still view the PSNR is the same as in the high preset (52.3 and 49.8 dB), so the
@@ -724,6 +804,12 @@ snapping and caster reach, the GTAO slice integral, the TAA jitter sequence, the
 point light shadow faces, the phase function and the film grade, the probe lattice, the camera motion reconstruction, the
 baked-light shadow light choice and the reflection probes (points near geometry, placement, index grid and assignment). `tests/test_lightgrid.cpp`: the
 grid points' positions.
+
+`tests/test_renderenhanced.cpp` also has the 3D output size, the dynamic resolution ladder, the controller's steps down and up,
+its holds, its hysteresis on a scene at the edge of its budget, the hitch limit, the jitter phases per step and MetalFX's content
+scale range. `tests/iw2view_dynres.sh` (ctest `iw2viewdynres_e2e`): the 3D output at 75 % with our TAA and with MetalFX, a bench
+that holds the scale, a forced scale as content inside the scaler's larger input, and live play drawn offscreen that steps
+through the ladder without a GPU error (the MetalFX parts only where the build and GPU have it).
 
 `tests/iw2view_nan.sh` (ctest `iw2viewnan_e2e`): the non-finite guard. `tests/iw2view_gpuguard.sh` (ctest
 `iw2viewgpuguard_e2e`): the ray tracing kernels build, a command buffer counted as hung is reported and holds the ray tracing

@@ -40,8 +40,15 @@ struct GpuErrors {
     uint64_t slow = 0;     // watched command buffers whose GPU time was above game::kGpuSlowMs
     double lastSlowMs = 0.0;
 };
-void watchCommandBuffer(SDL_GPUCommandBuffer* cmd);
+// frame: the frame's own command buffer (Renderer::draw); its GPU time is the sample of dynamic resolution (frameGpuTime).
+void watchCommandBuffer(SDL_GPUCommandBuffer* cmd, bool frame = false);
 GpuErrors gpuErrors();
+// The GPU time (GPUEndTime - GPUStartTime) of the last completed frame command buffer; seq counts them (0: none yet).
+struct FrameGpuTime {
+    uint64_t seq = 0;
+    double ms = 0.0;
+};
+FrameGpuTime frameGpuTime();
 // Counts an error as a failed command buffer's handler does (the handler's own path; also IW2_GPU_FAKE_ERROR, docs/debug-flags.md).
 void noteGpuError(int code, const std::string& text);
 
@@ -57,9 +64,16 @@ public:
     // Encodes one frame; false if the scaler could not be made (then the caller resolves with its own TAA). jitter: the
     // projection's sub-pixel offset in NDC (Camera::jitterX / Y); reset: no valid history (first frame, a cut, a resize).
     // reactive (R8, may be null): the reactive mask, 1 where the current frame's colour should win over the history.
+    // dynamic (docs/render-enhanced.md "Dynamic resolution"): the inputs are inW x inH (the largest render size) and hold content of
+    // contentW x contentH at their top left; the scaler is made once for render scales minScale..maxScale of the output (input content
+    // properties) and takes the content size every frame. Without it the content is the whole input.
+    struct Dynamic {
+        unsigned contentW = 0, contentH = 0;
+        float minScale = 0.5f, maxScale = 1.0f;
+    };
     bool encode(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* color, SDL_GPUTexture* depth, SDL_GPUTexture* motion,
                 SDL_GPUTexture* reactive, SDL_GPUTexture* output, unsigned inW, unsigned inH, unsigned outW, unsigned outH, float jitterNdcX, float jitterNdcY,
-                bool reset);
+                bool reset, const Dynamic* dynamic = nullptr);
     std::string describe() const; // the scaler's size and the texture usages it needs (log)
 
 private:

@@ -16,7 +16,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $*"; for f in "$TMP"/*.out; do echo "--- $f"; grep -E 'GPU|gputrace|MetalFX|kernel|offscreen|nan|error' "$f" | tail -20; done; exit 1; }
 mkdir -p "$TMP/home"
-ENH="--cvar r_enhanced=1 --cvar r_enhPreset=3 --cvar r_enhTAA=1 --cvar r_enhMetalFX=1 --cvar r_enhRenderScale=0.77"
+ENH="--cvar r_enhanced=1 --cvar r_enhPreset=3 --cvar r_enhTAA=1 --cvar r_enhMetalFX=1 --cvar r_enhRenderScale=0.77 --cvar r_enhDynRes=0"
 
 bench() { # bench <name> [env assignments...]
   name=$1; shift

@@ -75,7 +75,7 @@ std::string registeredDefault(const std::string& n) {
         // the taste options (grade, motion blur, DOF, HDR output) their own defaults
         {"r_enhanced", "0"}, {"r_enhPreset", "1"}, {"r_enhSunShadows", "2"}, {"r_enhWorldShadows", "1"}, {"r_enhAO", "1"},
         {"r_enhContactShadows", "1"}, {"r_enhTAA", "1"}, {"r_enhGGX", "1"}, {"r_enhSSR", "1"}, {"r_enhLightShadows", "1"},
-        {"r_enhMapLightSpec", "1"}, {"r_enhProbes", "1"}, {"r_enhMetalFX", "1"}, {"r_enhRenderScale", "0.5"}, {"r_enhRTReflections", "1"},
+        {"r_enhMapLightSpec", "1"}, {"r_enhProbes", "1"}, {"r_enhMetalFX", "1"}, {"r_enhRenderScale", "0.5"}, {"r_enhOutputScale", "1"}, {"r_enhDynRes", "0"}, {"r_enhRTReflections", "1"},
         {"r_enhRTShadows", "1"}, {"r_enhRTContactAO", "1"}, {"r_enhRTLightShadows", "1"}, {"r_enhRTBeyondView", "1"}, {"r_enhPlayerShadow", "1"},
         {"r_enhRTGI", "0"}, {"r_enhVolumetric", "0"}, {"r_enhBloom", "1"}, {"r_enhAutoExposure", "1"}, {"r_enhGrade", "0"},
         {"r_enhMotionBlur", "0"}, {"r_enhDOF", "0"}, {"r_enhEdr", "1"}, {"r_enhRebake", "0"},

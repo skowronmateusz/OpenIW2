@@ -104,7 +104,10 @@ struct EnhancedSettings {
     bool rtGI = false;       // r_enhRTGI: ray-traced one-bounce indirect light of the moving objects (GPU family 9+; on in the ultra preset only)
     bool rtReflections = true; // r_enhRTReflections: ray-traced reflections on water and the reflective surfaces (GPU family 9+)
     bool rebake = false;     // r_enhRebake: our own lighting re-bake instead of the shipped lightmaps (docs/render-rebake.md; Metal ray tracing build only); no preset turns it on
-    float renderScale = 1.0f; // r_enhRenderScale: scene resolution as a fraction of the window, upscaled by MetalFX (0.5..1)
+    float renderScale = 1.0f; // r_enhRenderScale: scene resolution as a fraction of the 3D output, upscaled by MetalFX (0.5..1)
+    bool dynRes = false;     // r_enhDynRes: MetalFX's render scale follows the GPU frame time, r_enhRenderScale its upper bound
+    float dynResFps = 60.0f; // r_enhDynResFps: the frame rate dynamic resolution aims for (0 = the display's refresh rate)
+    float outputScale = 1.0f; // r_enhOutputScale: the 3D output (scene, anti-aliasing, post) as a fraction of the window (0.5..1); the HUD stays native
     float dof = 0.0f;        // r_enhDOF: depth of field while aiming down the sights (0 = off, 1 = default strength, up to 2)
     float motionBlur = 0.0f; // r_enhMotionBlur: motion blur amount (0 = off, 1 = one frame of motion)
     bool gridPerPixel = true; // r_enhGridPerPixel: light-grid lattice per model instead of one sample
@@ -140,6 +143,12 @@ inline const std::vector<EnhPresetOption>& enhPresetOptions() {
         // the cvars have no effect and the scene is drawn at the window size). GPU times in docs/render-enhanced.md "Presets".
         {"r_enhMetalFX", {"0", "1", "1", "1"}, "0"},
         {"r_enhRenderScale", {"1", "0.5", "0.67", "0.67"}, "1"},
+        // Dynamic resolution (docs/render-enhanced.md "Dynamic resolution"): on where the preset's render scale leaves it room to
+        // go down (high, ultra); medium's 0.5 is already its lower bound. Off in a config written before it.
+        {"r_enhDynRes", {"0", "0", "1", "1"}, "0"},
+        // The 3D output below the window size (docs/render-enhanced.md "3D output scale"): a performance option, so a preset pick sets
+        // it, but no preset lowers it (how soft it looks depends on the display's pixel density, which a preset does not know).
+        {"r_enhOutputScale", {"1", "1", "1", "1"}},
         {"r_enhGGX", {"1", "1", "1", "1"}},
         {"r_enhSSR", {"0", "1", "1", "1"}},
         {"r_enhRTReflections", {"1", "1", "1", "1"}},
@@ -314,6 +323,9 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhDOF", f)) s.dof = std::clamp(f, 0.0f, 2.0f);
     if (num("r_enhMetalFX", f)) s.metalFx = f != 0.0f;
     if (num("r_enhRenderScale", f)) s.renderScale = std::clamp(f, 0.5f, 1.0f);
+    if (num("r_enhDynRes", f)) s.dynRes = f != 0.0f;
+    if (num("r_enhDynResFps", f)) s.dynResFps = f > 0.0f ? std::clamp(f, 20.0f, 240.0f) : 0.0f;
+    if (num("r_enhOutputScale", f)) s.outputScale = std::clamp(f, 0.5f, 1.0f);
     if (num("r_enhRTReflections", f)) s.rtReflections = f != 0.0f;
     if (num("r_enhRTShadows", f)) s.rtShadows = f != 0.0f;
     if (num("r_enhRTContactAO", f)) s.rtContactAO = f != 0.0f;
@@ -858,9 +870,88 @@ inline std::array<float, 2> metalFxMotionScale(unsigned w, unsigned h) { return 
 inline float effectiveRenderScale(float scale, bool metalFxActive) { return metalFxActive ? std::clamp(scale, 0.5f, 1.0f) : 1.0f; }
 // Jitter phases while upscaling: 8 per output pixel area, 8 x (1 / scale)^2 (so each output pixel gets about 8 samples).
 inline uint32_t taaJitterPhases(float scale) { return uint32_t(std::ceil(8.0f / (scale * scale) - 1e-3f)); }
+// The 3D output scale (docs/render-enhanced.md "3D output scale"): the size the scene, its anti-aliasing (our TAA or MetalFX's
+// output) and the post passes run at, as a fraction of the window; the composite stretches it to the window and draws the HUD there.
+// Enhanced mode only, never for the reflection probe captures (their own size).
+inline float effectiveOutputScale(float scale, bool enhanced, bool probeCapture) {
+    return enhanced && !probeCapture ? std::clamp(scale, 0.5f, 1.0f) : 1.0f;
+}
 // The render size for an output size and scale: rounded, at least 1 x 1.
 inline std::array<uint32_t, 2> renderSize(uint32_t w, uint32_t h, float scale) {
     return {std::max(1u, uint32_t(std::lround(float(w) * scale))), std::max(1u, uint32_t(std::lround(float(h) * scale)))};
+}
+
+// ---- dynamic resolution (docs/render-enhanced.md "Dynamic resolution") -------------------------------------------------------------
+// Our own design. With MetalFX upscaling, the render scale follows the GPU time of the frame's command buffer: a smoothed time above
+// downAbove of the frame budget steps the scale down (to the step predicted to take `aim` of the budget, at least one step); a time
+// predicted at the next step up below upBelow steps it up by one. The scale is on a ladder (multiples of `step`, and the upper bound
+// itself) so the render-size targets are made again only at a step, and each change waits for holdDown / holdUp new samples (the band
+// between the two thresholds and the longer wait upwards are the hysteresis). The time is assumed to scale with the pixel count
+// (scale squared); the fixed part of the frame makes a real step down save less, which the next step down after holdDown covers.
+// TODO(spec): the thresholds and holds were chosen by reasoning, not tuned in live play on several GPUs.
+struct DynResParams {
+    float targetMs = 1000.0f / 60.0f; // the frame budget
+    float minScale = 0.5f, maxScale = 1.0f;
+    float step = 0.05f;
+    float downAbove = 0.92f, upBelow = 0.80f, aim = 0.85f;
+    float smoothing = 0.15f; // weight of a new sample in the running mean
+    int holdDown = 8, holdUp = 45;
+};
+struct DynResState {
+    float scale = 1.0f;
+    float avgMs = 0.0f;
+    int since = 0;
+    bool primed = false;
+};
+constexpr float kDynResEps = 1e-4f;
+// The frame budget for a target rate (0: the display's rate, 60 when that is unknown).
+inline float dynResBudgetMs(float fps, float displayHz) {
+    const float f = fps > 0.0f ? fps : (displayHz > 1.0f ? displayHz : 60.0f);
+    return 1000.0f / f;
+}
+// The ladder's step below / above s (the upper bound is on the ladder; the lower bound is a multiple of the step).
+inline float dynResBelow(float s, const DynResParams& p) {
+    const float k = std::ceil(s / p.step - kDynResEps) - 1.0f;
+    return std::clamp(k * p.step, p.minScale, p.maxScale);
+}
+inline float dynResAbove(float s, const DynResParams& p) {
+    const float k = std::floor(s / p.step + kDynResEps) + 1.0f;
+    return std::clamp(k * p.step, p.minScale, p.maxScale);
+}
+// The GPU time at scale `to` for a time measured at scale `from` (the pixel count).
+inline float dynResPredictMs(float ms, float from, float to) { return from > 0.0f ? ms * (to * to) / (from * from) : ms; }
+// Back to the upper bound, no samples (dynamic resolution off, MetalFX off or held, a new bound).
+inline void dynResReset(DynResState& st, const DynResParams& p) { st = DynResState{}, st.scale = p.maxScale; }
+// One sample (the GPU time of a frame, ms); true when the scale changed.
+inline bool dynResUpdate(DynResState& st, const DynResParams& p, double gpuMs) {
+    if (!(gpuMs > 0.0)) return false;
+    if (st.scale > p.maxScale + kDynResEps || st.scale < p.minScale - kDynResEps) st.scale = std::clamp(st.scale, p.minScale, p.maxScale);
+    const float sample = std::min(float(gpuMs), 2.0f * p.targetMs); // a hitch (a load, a pipeline compile) counts as two budgets at most
+    st.avgMs = st.primed ? st.avgMs + p.smoothing * (sample - st.avgMs) : sample;
+    st.primed = true;
+    ++st.since;
+    if (st.avgMs > p.targetMs * p.downAbove && st.since >= p.holdDown && st.scale > p.minScale + kDynResEps) {
+        const float want = st.scale * std::sqrt(p.targetMs * p.aim / st.avgMs);
+        const float next = std::clamp(std::min(dynResBelow(st.scale, p), std::floor(want / p.step + kDynResEps) * p.step), p.minScale, p.maxScale);
+        st.avgMs = dynResPredictMs(st.avgMs, st.scale, next), st.scale = next, st.since = 0;
+        return true;
+    }
+    if (st.since >= p.holdUp && st.scale < p.maxScale - kDynResEps) {
+        const float next = dynResAbove(st.scale, p);
+        if (dynResPredictMs(st.avgMs, st.scale, next) < p.targetMs * p.upBelow) {
+            st.avgMs = dynResPredictMs(st.avgMs, st.scale, next), st.scale = next, st.since = 0;
+            return true;
+        }
+    }
+    return false;
+}
+// MetalFX's input content scale range for render scales minScale..maxScale: the output / input ratio, 1 / maxScale .. 1 / minScale,
+// clamped to what the device supports (supportedMin / supportedMax, 0 = unknown).
+inline std::array<float, 2> metalFxContentScaleRange(float minScale, float maxScale, float supportedMin, float supportedMax) {
+    float lo = 1.0f / std::max(maxScale, 1e-3f), hi = 1.0f / std::max(minScale, 1e-3f);
+    if (supportedMin > 0.0f) lo = std::max(lo, supportedMin), hi = std::max(hi, supportedMin);
+    if (supportedMax > 0.0f) hi = std::min(hi, supportedMax), lo = std::min(lo, supportedMax);
+    return {lo, hi};
 }
 
 // Ray-traced reflections: surfaces up to this GGX alpha (as the screen-space rays), rays up to this many units.
