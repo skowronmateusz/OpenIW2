@@ -1445,6 +1445,7 @@ private:
     float playerBoxHeight() const;
     // Script delete (0x4ef570): notify "death", then G_FreeEntity (0x4d7c30).
     void deleteEntityScripted(Entity& e);
+    void stopEntitySounds(Entity& e); // the loops the entity owns end when it is freed
     // G_FreeEntity's script part (0x4d7c30 -> 0x4670b0 at 0x4d7ea7): every entity free queues its script object for the VM.
     void freeEntity(Entity& e);
     void releaseFreedEntityState(Entity& e); // drops the animation state of a freed entity (frame end, savegame load)

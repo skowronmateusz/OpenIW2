@@ -602,6 +602,37 @@ Entity* World::spawnActor(Entity& spawner, bool force, const Value& targetname) 
     return &a;
 }
 
+// G_FreeEntity (0x4d7c30) resets the entity (after the unlink 0x419700 at 0x4d7ce3), whose state holds the loop sound index (ent+6, set by
+// playloopsound 0x4ef3f0), and the client replays the loops of the entities in its snapshot (0x4aaf90): a freed entity's loops end with it, a
+// deleted bomb stops ticking. The same holds for the loops the port starts for an entity by itself: the vehicle's idle / engine blend and turret
+// spin voices (0x510be0) and a mounted MG's fire loop (0x51b320), which would otherwise play on from their last origin once the tank or the gun
+// is deleted (crossroads: the destroyed tiger's MG kept firing). A freed sound_blend entity is no longer sent, so its loop ends too (0x4ac8a0).
+void World::stopEntitySounds(Entity& e) {
+    auto stop = [this](int& h) {
+        if (h > 0) stopSound(h);
+        h = 0;
+    };
+    if (const Value h = e.obj->get("$loopsound"); h.isNumber()) {
+        stopSound(h.asInt());
+        e.obj->set("$loopsound", Value());
+        e.obj->set("$loopalias", Value());
+    }
+    if (const Value h = e.obj->get("$blendhandle"); h.isNumber()) {
+        stopSound(h.asInt());
+        e.obj->set("$blendhandle", Value());
+    }
+    if (e.vehicle) {
+        stop(e.vehicle->idleHandle);
+        stop(e.vehicle->engHandle);
+        stop(e.vehicle->spinHandle);
+    }
+    if (e.turret && e.turret->loopHandle > 0) {
+        stopSound(e.turret->loopHandle);
+        e.turret->loopHandle = -1;
+        e.turret->loopSound.clear();
+    }
+}
+
 void World::deleteEntityScripted(Entity& e) {
     connectEntityPaths(e); // 0x4d7c30: freeing an entity with the DYNAMICPATH flag gives its paths back (0x5197a0)
     // delete (0x4ef570): notify "death" (0x46d0f0), then G_FreeEntity (0x4d7c30), which frees the script object (0x4670b0).
@@ -616,14 +647,7 @@ void World::deleteEntityScripted(Entity& e) {
         releaseSentient(e);      // 0x4fc9d2
         clearActorReferences(e); // 0x4fc9e0..0x4fca43
     }
-    // G_FreeEntity (0x4d7c30) resets the entity (after the unlink 0x419700 at 0x4d7ce3), whose state holds the loop sound index (ent+6, set by playloopsound
-    // 0x4ef3f0), so the client stops the loop with the entity: a deleted bomb stops ticking.
-    if (const Value h = e.obj->get("$loopsound"); h.isNumber()) stopSound(h.asInt());
-    e.obj->set("$loopsound", Value());
-    e.obj->set("$loopalias", Value());
-    // A freed sound_blend entity is no longer sent to the client, which stops calling the blend play (0x4ac8a0): the loop ends.
-    if (const Value h = e.obj->get("$blendhandle"); h.isNumber()) stopSound(h.asInt());
-    e.obj->set("$blendhandle", Value());
+    stopEntitySounds(e);
     releaseEntityLinks(e);
     vm_.freeObject(e.obj);
 }
@@ -657,6 +681,7 @@ void World::releaseFreedEntityState(Entity& e) {
 
 void World::freeEntity(Entity& e) {
     if (e.obj->removed) return; // already freed
+    stopEntitySounds(e);
     // Its own link and every link to it go, as in deleteEntityScripted (0x4d7c30, child list ent+0x1cc): a player linked to a
     // deleted trigger (sd.gsc bombzone_think deletes the bomb zones after a plant without unlinking the planter) moves again.
     releaseEntityLinks(e);
@@ -834,7 +859,10 @@ void World::frame(bool advanceTime) {
     // The entities freed before this point have had their script objects released (0x467150); the original's slot is free again
     // and keeps nothing, so their animation state goes too (an actor's full tree is about 100 KB, and freed entities stay listed).
     for (const auto& ep : entities_)
-        if (ep->obj->removed) releaseFreedEntityState(*ep);
+        if (ep->obj->removed) {
+            stopEntitySounds(*ep); // an object freed without freeEntity (the MP paths set the flag directly)
+            releaseFreedEntityState(*ep);
+        }
     runBadPlaces();        // stage 6
     // Stage 7: the vehicle the player rides runs first.
     if (player_ && (pmFlags_ & 0x20000u) && player_->usingVehicle >= 0)
