@@ -100,6 +100,10 @@ crouch with no event. The cgame (0x4bac40 / 0x4bac60) sets the client stance to 
 is held, then starts hint state 4 (parm 1) or 5 (parm 2) through 0x4ba880. So the wish becomes the blocked stance and the hint
 is raised once per stand attempt, for cg_invalidCmdHintDuration (1800 ms); it does not repeat while the player stays under cover.
 Releasing a held `+movedown` under cover is such an attempt, since the client stance is then still stand.
+The same two handlers and the one of event 0x8c (0x4bac21) take the events with parm 0 that give a request back: a prone
+request that finds no ground room, a request for a stance a script forbids, a prone request of a script-linked player
+(pmove.md "Stance requests"). Those set the client stance only; no hint. A script-linked player's rise is not traced, so it
+is never refused.
 
 ## usercmd buttons (CL_CmdButtons 0x409af0, stance 0x409500)
 

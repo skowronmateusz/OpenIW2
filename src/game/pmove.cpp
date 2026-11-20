@@ -641,49 +641,99 @@ float viewHeightAt(int target, bool down, int percent) {
 
 float maxsZ(Stance s, const MoveParams& mp) { return s == Stance::Prone ? 30.0f : s == Stance::Crouch ? 50.0f : mp.maxs[2]; }
 
-// Stance change (0x509d10): standing up needs room for the taller box; going prone needs ground
-// (SP 0x4fc000 always returns 1: no gate in SP; in MP the prone body must fit, proneBodyFits). A change starts a view-height transition (0x509840).
+} // namespace
+
+// A forbidden stance request and its replacement (docs/spec/pmove.md "Stance requests").
+StanceRequest stanceRequestAllowed(Stance current, Stance request, uint32_t disallow, bool linked) {
+    const bool noStand = (disallow & kNoStand) != 0, noCrouch = (disallow & kNoCrouch) != 0, noProne = (disallow & kNoProne) != 0;
+    const auto replaced = [](Stance s) { return StanceRequest{s, s == Stance::Stand ? 0x8c : s == Stance::Crouch ? 0x8d : 0x8e}; };
+    const bool standing = current == Stance::Stand;
+    if (request == Stance::Prone) {
+        // Walking 0x509eea: only when prone is forbidden; linked 0x50a2fb: always. Stand when standing and allowed to, else crouch
+        // when allowed, else stand.
+        if (!linked && !noProne) return {request, 0};
+        return replaced(standing && !noStand ? Stance::Stand : !noCrouch ? Stance::Crouch : Stance::Stand);
+    }
+    if (request == Stance::Crouch) {
+        if (!noCrouch) return {request, 0};
+        if (linked) return replaced(Stance::Stand); // 0x50a32a
+        return replaced(standing && !noProne ? Stance::Prone : !noStand ? Stance::Stand : Stance::Prone); // 0x509f17
+    }
+    if (!noStand) return {request, 0};
+    if (linked) return replaced(Stance::Crouch); // 0x50a339
+    return replaced(current == Stance::Prone && !noProne ? Stance::Prone : !noCrouch ? Stance::Crouch : Stance::Prone); // 0x509f43
+}
+
+namespace {
+
+// Stance change (0x509d10, docs/spec/pmove.md "Stance requests"): standing up needs room for the taller box; going prone needs
+// ground (SP 0x4fc000 always returns 1: no gate in SP; in MP the prone body must fit, proneBodyFits). A script-linked player
+// (pm_type 1) takes the linked rules: no trace, no prone. A change starts a view-height transition (0x509840).
 void updateStance(const CollisionWorld& w, PlayerState& ps, const PlayerInput& in, const MoveParams& mp) {
     // pm_flags 0x8000 (freezecontrols / an absolute playerlinkto): outside a turret the whole stance logic is skipped (0x509e59 -> 0x50a37e),
     // so neither the crouch / prone keys nor the lack of them change the stance.
     if (in.controlsFrozen) return;
-    Stance want = in.stance;
+    const bool linked = ps.pmType == 1; // 0x509e64 -> 0x50a2c8
+    Stance request = in.stance;
+    // On a ladder (pm_flags 0x20 of the previous step) a crouch or prone request is cleared and the client told to stand (0x509e78).
+    if (!linked && ps.onLadder && request != Stance::Stand) {
+        request = Stance::Stand;
+        addPlayerEvent(ps, 0x8c, 0);
+    }
+    // Stances a script forbids: the request is replaced and the client told the replacement, on every step that still asks.
+    // TODO(spec): [not raised: no shipped script forbids every stance] the errors the exe reports when all three stances are
+    // forbidden (0x509ed0) or, for a linked player, both stand and crouch (0x50a2e4).
+    if (const StanceRequest allowed = stanceRequestAllowed(ps.stance, request, in.stanceDisallow, linked); allowed.event) {
+        request = allowed.stance;
+        addPlayerEvent(ps, allowed.event, 0);
+    }
+    Stance want = request;
     if (want == ps.stance) return;
-    // Moves go one step at a time between stand, crouch and prone.
+    // Moves go one stage at a time between stand, crouch and prone: the stance bits are written back from the view height target,
+    // which moves one stage per step (0x50a392, 0x50a3ec), so each stage runs its own test.
     if (int(want) > int(ps.stance) + 1) want = Stance(int(ps.stance) + 1);
     if (int(want) < int(ps.stance) - 1) want = Stance(int(ps.stance) - 1);
-    if (int(want) < int(ps.stance)) {
+    if (linked) {
+        // 0x50a362: the stance is the request, crouched with a crouch button and standing without; nothing tests whether the box
+        // fits (a seat inside a clip brush or under a low roof still lets the player stand up).
+    } else if (int(want) < int(ps.stance)) {
         // Rising (0x50a0a1 crouch request from prone, 0x50a148 stand request from prone or crouch): the box tested is the
         // requested stance's, but a stand request from prone tests the standing box (0x554 -> 0x100(%ebp), 0x50a150) before
         // stepping up to crouch. A blocked rise adds the event the cgame turns into the invalid-command hint: 0x8e (client
         // prone) with parm 2 (crouch blocked) or 1 (stand blocked) from prone, 0x8d (client crouch) with parm 1 from crouch.
         // The event is skipped while usercmd button 0x2000 (stance key held) is set (0x50a10c, 0x50a1f5, 0x50a28c).
-        const bool standRequest = in.stance == Stance::Stand;
+        // The traces are position tests with pm->tracemask & 0xfdff3fff (the clip mask without the body bits: 0x810011) and the
+        // player as pass entity (0x50a160..0x50a188).
+        const uint32_t mask = mp.traceMask & 0xfdff3fffu;
+        const bool standRequest = request == Stance::Stand;
         const Vec maxs{mp.maxs[0], mp.maxs[1], maxsZ(standRequest ? Stance::Stand : want, mp)};
-        const TraceResult tr = w.trace(ps.origin, ps.origin, mp.mins, maxs, Contents::PlayerSolid);
+        const TraceResult tr = w.trace(ps.origin, ps.origin, mp.mins, maxs, mask, mp.passEntity);
         bool blocked = tr.startSolid || tr.allSolid;
         // A stand request from prone that has no room to stand still rises to crouch when the crouch box fits, without an event (0x50a1b3).
         if (blocked && standRequest && ps.stance == Stance::Prone) {
             const Vec crouchMaxs{mp.maxs[0], mp.maxs[1], maxsZ(Stance::Crouch, mp)};
-            const TraceResult ct = w.trace(ps.origin, ps.origin, mp.mins, crouchMaxs, Contents::PlayerSolid);
+            const TraceResult ct = w.trace(ps.origin, ps.origin, mp.mins, crouchMaxs, mask, mp.passEntity);
             blocked = ct.startSolid || ct.allSolid;
         }
         if (blocked) {
             if (!in.stanceHeld) addPlayerEvent(ps, ps.stance == Stance::Prone ? 0x8e : 0x8d, standRequest ? 1 : 2);
             return;
         }
-    } else if (want == Stance::Prone && !ps.onGround) {
-        return;
-    } else if (want == Stance::Prone) {
-        // Going prone (MP exe 0x517b5e): the body behind the player must fit; refused, the client is told to give up
-        // the request (0x8c stand / 0x8d crouch) unless the stance key is held.
+    } else if (request == Stance::Prone) {
+        // A prone request (0x509f97), tested at both stages on the way down (from standing the first stage is the crouch): nothing
+        // without ground; then the body behind the player must fit (MP exe 0x517b5e); refused, the client is told to give up the
+        // request (0x8c stand / 0x8d crouch) unless the stance key is held.
+        if (!ps.onGround) return;
         if (mp.proneBodyCheck && !proneBodyFits(w, ps.origin, in.yaw, false, true, nullptr, 66.0f, mp.passEntity, mp.maxs[0])) {
             ps.proneBlocked = true;
             if (!in.stanceHeld) addPlayerEvent(ps, ps.stance == Stance::Crouch ? 0x8d : 0x8c, 0);
             return;
         }
-        ps.proneYaw = angleNorm360(in.yaw);
     }
+    // TODO(spec): the exe keeps the view height target while its transition runs (0x50a384: ps+0xd8 set) and writes the stance
+    // bits back from the target, so a change waits for the running transition (stand to prone takes 200 + 400 ms). Here the next
+    // stage starts at once. Changing it moves the timing of every stance change, MP included; left for a task of its own.
+    if (want == Stance::Prone) ps.proneYaw = angleNorm360(in.yaw);
     const int target = want == Stance::Prone ? 11 : want == Stance::Crouch ? 40 : 60;
     ps.transitionDown = target < ps.viewHeightTarget;
     ps.viewHeightTarget = target;

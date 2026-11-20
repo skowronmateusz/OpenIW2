@@ -33,7 +33,22 @@ struct PlayerInput {
     bool eFlagsNoLean = false;
     bool holdBreathHeld = false;  // usercmd 0x8000 (+holdbreath)
     bool breathWeapon = false;    // the weapon has an adsOverlayReticle (def +0x278) and weaponClass != item (9) (0x4dd350)
+    // Stances a script forbids, as the pm_flags bits allowstand / allowcrouch / allowprone(false) set: 0x400000 stand, 0x800000
+    // crouch, 0x1000000 prone (kStanceDisallowMask). A request for one is replaced (stanceRequestAllowed).
+    uint32_t stanceDisallow = 0;
 };
+
+constexpr uint32_t kNoStand = 0x400000u, kNoCrouch = 0x800000u, kNoProne = 0x1000000u, kStanceDisallowMask = 0x1c00000u;
+
+// The stance a request becomes while a script forbids stances (docs/spec/pmove.md "Stance requests": the walking rules
+// 0x509ebb..0x509f97, with `linked` the rules of a script-linked player 0x50a2c8..0x50a362, where prone is never entered and
+// the prone flag is not read). `current` is the stance of the player state. `event` names the replacement for the client
+// (0x8c stand, 0x8d crouch, 0x8e prone; added with parm 0), 0 when the request is kept.
+struct StanceRequest {
+    Stance stance = Stance::Stand;
+    int event = 0;
+};
+StanceRequest stanceRequestAllowed(Stance current, Stance request, uint32_t disallow, bool linked);
 
 // Hold-breath dvars (registered at 0x4fa9a2-0x4faa7d, flags 0x1082), defaults from the registration calls.
 struct BreathParams {
@@ -225,6 +240,13 @@ inline int resyncEventSeq(int seq, int handled) {
     if (seq < handled - 4) return seq;
     if (seq - handled > 4) return seq - 4;
     return handled;
+}
+// Hands every player-state event not handled yet to `fn(event, parm)` and counts it as handled. A client calls it after every
+// step of every move type, the script-linked one included (docs/spec/pmove.md "Linked player"): an event left in the ring would be
+// taken as new by the first later step that looks.
+template <class Fn>
+void forEachNewPlayerEvent(const PlayerState& ps, int& handled, Fn&& fn) {
+    for (handled = resyncEventSeq(ps.eventSeq, handled); handled < ps.eventSeq; ++handled) fn(ps.events[handled & 3], ps.eventParms[handled & 3]);
 }
 // Mantle view yaw cap (0x525b60): while mantling the view yaw stays within mantle yaw ± mantle_view_yawcap.
 float mantleClampYaw(const PlayerState& ps, float yaw);

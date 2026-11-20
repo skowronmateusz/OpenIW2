@@ -1367,8 +1367,8 @@ void World::registerCombatBuiltins() {
     };
     // allowstand/crouch/prone/leanleft/leanright (0x538c90 …): a zero argument sets the pm_flags bit that disables the
     // stance (0x400000 stand, 0x800000 crouch, 0x1000000 prone, 0x2000000 lean left, 0x4000000 lean right), non-zero
-    // clears it. The lean bits gate updateLean (0x50ae13); TODO(spec): [stays: belongs to the host's pmove] the stance bits force a stance change
-    // (events 0x8c..0x8e, 0x509eea / 0x50a2f3) in the front end's pmove.
+    // clears it. The lean bits gate updateLean (0x50ae13); the stance bits replace a request for a forbidden stance in the player
+    // move (events 0x8c..0x8e, 0x509eea / 0x50a2f3: PlayerInput::stanceDisallow, stanceRequestAllowed).
     const std::pair<const char*, uint32_t> allows[] = {{"allowstand", 0x400000u}, {"allowcrouch", 0x800000u}, {"allowprone", 0x1000000u},
                                                       {"allowleanleft", 0x2000000u}, {"allowleanright", 0x4000000u}};
     for (const auto& allow : allows)

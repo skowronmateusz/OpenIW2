@@ -12760,6 +12760,21 @@ int main(int argc, char** argv) {
             // PmoveSingle drops the mantle hint flag at the start of every step, whatever the move type (MP 0x51aab5); only the
             // mantle check of the walking move sets it again, so a turret, a vehicle, a link or the free camera shows no hint.
             ps.mantleFlags &= ~8u;
+            // The player-state events of the step just moved (ps+0x80 ring; only the last 4 are kept): sounds and fall damage, the view
+            // step, the client stance of the events 0x8c..0x8e and the invalid-command hint of a blocked rise. One place for the
+            // walking and the script-linked move, so a linked step leaves nothing in the ring for the first step after the unlink.
+            auto handlePlayerEvents = [&]() {
+                if (!world) return;
+                game::forEachNewPlayerEvent(ps, lastEventSeq, [&](int ev, int parm) {
+                    world->applyPlayerEvent(ev, parm);
+                    if (ev == 0x8f) viewImp.step(parm, cgNowMs()); // CG_EntityEvent 0x4bac84
+                    if (ev >= 1 && ev <= 0x45) playerWatch.footstep(int(ps.stance)); // the footstep summary (docs/logging.md)
+                    input.stanceEvent(ev); // the wish follows the event, so a blocked rise or a forbidden stance is not asked for again
+                    // Events 0x8d / 0x8e with parm 1 / 2 (the blocked stance changes of 0x509d10): the hint states 4 / 5 (0x4ba880).
+                    if ((ev == 0x8d || ev == 0x8e) && (parm == 1 || parm == 2)) setInvalidCmd(3 + parm, cgNowMs());
+                    if (ev == 0x95) input.clearAds(); // 0x4dd090 (the prone aim cancel): the cgame clears the toggled aim (0x4bafbc)
+                });
+            };
             if (onTurret) {
                 // The eye is the turret's tag_player (0x4e8b70); the turret code places the player behind it.
                 game::Vec3 eye;
@@ -12844,6 +12859,7 @@ int main(int argc, char** argv) {
                     in.dead = playerDead;
                     ps.pmType = world->playerPmType();
                     in.controlsFrozen = world->playerControlsFrozen();
+                    in.stanceDisallow = world->playerPmFlags() & game::kStanceDisallowMask; // allowstand / allowcrouch / allowprone(false)
                     in.adsHeld = (buttons & game::Button::Ads) != 0;
                     in.adsAllowed = pweapon.adsAllowed();
                     in.adsFrac = pweapon.adsFrac();
@@ -12865,6 +12881,7 @@ int main(int argc, char** argv) {
                     if (scene.collision) game::playerMove(world->collision(), ps, in, std::min(simDt, 0.1f), lmp);
                     ps.origin = {po[0], po[1], po[2]}; // the link's placement, whatever the step did
                     ps.velocity = {0, 0, 0};
+                    handlePlayerEvents(); // the 0x8c / 0x8d of a replaced stance request (a prone key while linked)
                     world->setPlayerPmFlag(0x4000, ps.holdingBreath);
                     world->setPlayerPmFlag(1, ps.stance == game::Stance::Prone);
                     world->setPlayerPmFlag(2, ps.stance == game::Stance::Crouch);
@@ -12898,6 +12915,7 @@ int main(int argc, char** argv) {
                 // ps+4 (ClientThink 0x4e7bc0: noclip 2, ufo 3, linked 1, dead 4 + linked), ps+0xc & 0x8000 and ps+0x7c & 0x20300 for the lean gates (0x50ade0).
                 ps.pmType = world->playerPmType(); // noclip 2, ufo 3, else by health and link: 0 / 1 / 4 / 5
                 in.controlsFrozen = world->playerControlsFrozen();
+                in.stanceDisallow = world->playerPmFlags() & game::kStanceDisallowMask; // allowstand / allowcrouch / allowprone(false)
                 in.eFlagsNoLean = inVehicle || world->playerOnTurret();
                 in.adsHeld = (buttons & game::Button::Ads) != 0;
                 in.adsAllowed = pweapon.adsAllowed();
@@ -12964,20 +12982,8 @@ int main(int argc, char** argv) {
                     world->setPlayerPmFlag(1, ps.stance == game::Stance::Prone);
                     world->setPlayerPmFlag(2, ps.stance == game::Stance::Crouch);
                 }
-                // The step's player-state events (footsteps, landings): sounds and fall damage. Only the last 4 kept.
-                if (world) {
-                    lastEventSeq = game::resyncEventSeq(ps.eventSeq, lastEventSeq);
-                    for (; lastEventSeq < ps.eventSeq; ++lastEventSeq) {
-                        world->applyPlayerEvent(ps.events[lastEventSeq & 3], ps.eventParms[lastEventSeq & 3]);
-                        if (ps.events[lastEventSeq & 3] == 0x8f) viewImp.step(ps.eventParms[lastEventSeq & 3], cgNowMs()); // CG_EntityEvent 0x4bac84
-                        // Events 0x8d / 0x8e with parm 1 / 2 (the blocked stance changes of 0x509d10): the hint states 4 / 5 (0x4ba880).
-                        const int ev = ps.events[lastEventSeq & 3], parm = ps.eventParms[lastEventSeq & 3];
-                        if (ev >= 1 && ev <= 0x45) playerWatch.footstep(int(ps.stance)); // the footstep summary (docs/logging.md)
-                        input.stanceEvent(ev); // the wish follows the event, so a blocked rise is not asked for again
-                        if ((ev == 0x8d || ev == 0x8e) && (parm == 1 || parm == 2)) setInvalidCmd(3 + parm, cgNowMs());
-                        if (ev == 0x95) input.clearAds(); // 0x4dd090 (the prone aim cancel): the cgame clears the toggled aim (0x4bafbc)
-                    }
-                }
+                // The step's player-state events (footsteps, landings, stance events).
+                handlePlayerEvents();
                 // Nothing under the player for 4000 units: it fell out of the world. Keep the moves that led there.
                 if (!fellOut && (world || scene.collision)) {
                     const game::TraceResult under = pcw.trace(ps.origin, {ps.origin[0], ps.origin[1], ps.origin[2] - 4000}, {0, 0, 0},

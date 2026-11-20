@@ -42,7 +42,73 @@ Player box at spawn (0x4e9100, constants at 0x5a5bdc): (−15, −15, 0)–(15, 
 - Standing up traces the taller box first. The prone body check 0x4fc000 accepts every position in SP
   (it only computes body angles); the MP game refuses prone positions whose body does not fit (docs/spec/mp-pmove.md
   "Prone body"). The prone body yaw follows the view and the view stays within it ± bg_prone_yawcap in both.
-  TODO(spec): the crouch/prone button logic (cmd bits 0x100/0x200). Mantling: see "Mantle" below.
+  The button logic is in "Stance requests" below. Mantling: see "Mantle" below.
+
+### Stance requests (0x509d10)
+
+The stance of the player state is pm_flags bit 1 (prone) and bit 2 (crouched); the request is the command's buttons 0x100
+(prone) and 0x200 (crouch), neither meaning stand. The routine handles the cases in this order and takes the first that applies:
+
+1. pm_type 4 or above (0x509d73): no stance change; the box top is the player's own maxs z (ps+0x554), the view height target is 8.
+2. In a vehicle, eFlags (ps+0x7c) 0x20000 without 0x80000 (0x509da0): standing box, both stance bits cleared, view height
+   target 60, event 0x8c with parm 0 on every step.
+3. On a turret, eFlags 0x300 (0x509e12): 0x100 alone is prone, 0x200 alone crouched, both standing; no test of room.
+4. pm_flags 0x8000 (0x509e59): the stance is left as it is.
+5. pm_type 1, or eFlags 0x80000 (0x509e64, 0x509e6d): the linked rules (0x50a2c8), below.
+6. Everything else: the walking rules.
+
+Only the walking rules (6) trace. Their traces are position tests (start = end = the origin) through the move's trace
+function with the player's number as pass entity (ps+0xa8) and the mask pm->tracemask & 0xfdff3fff: the clip mask 0x281c011
+without the body bits 0x2000000, 0x8000 and 0x4000, so 0x810011. The result used is the trace's all-solid byte (+0x22).
+
+Stances a script forbids: `allowstand(false)` sets pm_flags 0x400000, `allowcrouch(false)` 0x800000, `allowprone(false)`
+0x1000000 (builtins.md). A request for a forbidden stance is replaced before it is acted on: the buttons 0x300 are rewritten
+to the replacement and an event that names it is added with parm 0 (0x8c stand, 0x8d crouch, 0x8e prone; 0x4fb3b0), on every
+step in which the request is still the forbidden one. The cgame sets the client stance from the event (controls.md "Blocked
+stance changes"), so the request normally changes at once.
+
+Walking rules:
+- On a ladder (pm_flags 0x20) a crouch or prone request is cleared, with event 0x8c parm 0 (0x509e78).
+- Forbidden stances (0x509ebb..0x509f97), only when one of the three flags is set. All three set reports an error
+  (0x509ed0, text at 0x58c3e0: every stance is disallowed) and goes on.
+  - prone requested, prone forbidden: stand when the player stands and standing is allowed; else crouch when crouching is
+    allowed; else stand.
+  - crouch requested, crouch forbidden: prone when the player stands and prone is allowed; else stand when standing is
+    allowed; else prone.
+  - stand requested, stand forbidden: prone when the player is prone and prone is allowed; else crouch when crouching is
+    allowed; else prone.
+- Prone request (0x509f97): nothing when already prone. Otherwise nothing without a ground entity (ps+0x60 = 0x7ff); with
+  one, the prone body check (0x4fc000) decides: passed, the prone bit is set; refused, pm_flags 0x10000 is set and, unless
+  the buttons hold 0x2000, the event 0x8d (crouched) or 0x8c (standing) with parm 0 gives the request up.
+- Crouch request (0x50a0a1): from standing the crouched bit is set with no trace. From prone the crouch box (top 50) is
+  tested: free, crouched; blocked, event 0x8e parm 2 unless 0x2000.
+- Stand request (0x50a148): from prone the standing box (top = ps+0x554) is tested and, when blocked, the crouch box:
+  standing free → both bits cleared; only crouch free → crouched, no event; neither → event 0x8e parm 1 unless 0x2000.
+  From crouch the standing box is tested: free, standing; blocked, event 0x8d parm 1 unless 0x2000.
+
+Linked rules (0x50a2c8..0x50a375), for a player linked by script (pm_type 1): no trace and no prone.
+- Only the stand and crouch flags count (pm_flags & 0xc00000); both set reports an error (0x50a2e4, text at 0x58c408:
+  standing and crouching are both disallowed for a linked player) and goes on.
+- A prone request is always replaced: stand (0x8c) when the player stands and standing is allowed; else crouch (0x8d) when
+  crouching is allowed; else stand. A crouch request with crouching forbidden becomes stand (0x8c); a stand request with
+  standing forbidden becomes crouch (0x8d). The buttons are rewritten and the event added as above.
+- Then the stance is the request itself (0x50a362): a crouch button gives crouched, none gives standing. Nothing tests
+  whether the box fits, so a linked player whose seat lies inside a clip brush or under a low roof still stands up.
+
+After the rules, and only while no view-height transition is running (0x50a384: the transition start ps+0xd8 is zero), the
+view height target follows the stance bits one stage at a time (0x50a392): a prone bit with target 60 gives 40 first, a
+cleared prone bit with target 11 gives 40 first. Then the view height runs (0x509840) and box top, eFlags (4 crouched, 8
+prone) and the stance bits are written back from the target (0x50a3ec: 40 → top 50 and crouched, 11 → top 30 and prone,
+else top ps+0x554 and standing). So the stance never runs ahead of the view height: a change waits for the running
+transition to end, the rules are asked again on every step until then (a refused rise still adds its event), and a change
+over two stages (stand ↔ prone) runs two transitions and repeats its test for the second.
+
+Port (`updateStance`, src/game/pmove.cpp): the request is `PlayerInput::stance`, the forbidden stances
+`PlayerInput::stanceDisallow` (the three pm_flags bits), the replacement `stanceRequestAllowed`. Vehicle and turret (cases 2
+and 3) are handled by the callers, which do not run the player move there; eFlags 0x80000 is not set by any modelled path.
+The two errors are not raised (no shipped script forbids every stance). The stages are kept (stand ↔ prone passes through
+crouch, each stage with its test), but TODO(spec): a stage does not wait for the running view-height transition, the next
+one starts on the following step.
 
 ## Movement
 
@@ -142,8 +208,11 @@ the walking code (0x50c918). The linked branch drops the ladder flag (0x20 gives
 zeroes the velocity and both move commands, then runs the aim command (0x4dd020), the stance change and view height (0x509d10), the pm_time
 countdown, the footsteps (0x50a850) and PM_Weapon (0x4dfc30; its first step is the aim fraction 0x4dd0d0). The lean (0x50ade0, called from
 0x50b120 before the dispatch) is allowed without ground for pm_type 1 (0x50ae01). The position is the link's (animscripted.md "Player links"):
-nothing moves in the branch. So a script-linked player can aim down the sights, crouch and lean (decoytown's ride; the script only forbids
-prone with `allowprone(false)`); the absolute link sets pm_flags 0x8000 (controls frozen) and blocks the buttons. The port reaches it through
+nothing moves in the branch. So a script-linked player can aim down the sights, crouch and lean (decoytown's ride); the stance change uses the
+linked rules of "Stance requests": stand and crouch follow the buttons with no test of room, and prone is never entered (the scripts'
+`allowprone(false)` during a ride changes nothing there). The absolute link sets pm_flags 0x8000 (controls frozen) and blocks the buttons.
+The player-state events of the branch (the 0x8c / 0x8d of a replaced request) reach the cgame like those of a walking step: iw2view
+handles the events of both branches in one place, so none is left in the ring for the first step after the unlink. The port reaches it through
 `playerMove` with `ps.pmType` 1 or 5 (`PlayerState::pmType`); before, iw2view skipped pmove for a linked player, so the aim command never ran and
 the aim fraction stayed at 0. TODO(spec): the footsteps/bob call is not modelled (zero speed).
 
