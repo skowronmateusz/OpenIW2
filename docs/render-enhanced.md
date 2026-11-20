@@ -80,9 +80,10 @@ concrete value of its own (there is no "as the preset" value):
 | MetalFX (`r_enhMetalFX`, where the GPU and build have it) | off | on | on | on |
 | MetalFX render resolution (`r_enhRenderScale`) | 1 | 0.5 | 0.67 | 0.67 |
 
-MetalFX upscaling is what makes the higher presets fit a Retina display: on an M4 Pro at 3024x1712 (duhoc_assault, the ultra
-options) the scene took 19.3 ms of GPU time at native resolution, 12.3 ms at 0.67 and 9.65 ms at 0.5, with an image error
-against a native reference of 3.6 at 0.67 and 4.3 at 0.5 (3.1 for our TAA at native). Low has no TAA, so no MetalFX; without
+MetalFX upscaling is what makes the higher presets fit a Retina display: on an M4 Pro at 3024x1712 (duhoc_assault,
+`IW2_BENCH_GPU`) the presets took (before the multisampling and non-finite guard changes below) 16.1 / 17.3 / 17.7 ms of GPU time (medium / high / ultra) at native resolution without
+MetalFX, and 11.7 / 14.6 / 14.8 ms with these values. An earlier comparison against a native reference gave an image error of
+3.6 at 0.67 and 4.3 at 0.5 (3.1 for our TAA at native). Low has no TAA, so no MetalFX; without
 MetalFX (no MetalFX GPU or build) the render resolution has no effect and the scene is drawn at the window size.
 
 The table is `game::enhPresetOptions` (src/game/renderenhanced.h). Rows of features the machine lacks (MetalFX, ray tracing) are
@@ -228,7 +229,15 @@ atlas never draw it.
   5-tap Catmull-Rom filter, clipped to the variance box of the current 3 × 3 neighbourhood in YCoCg (values compressed by
   `c / (1 + max(c))`), the velocity taken at the nearest depth of that neighbourhood, blended 90 % history. The history
   restarts after a map change or a resize. A light unsharp mask in the tone pass offsets the softening.
-- Limitations: blended effects have no motion vectors of their own (the clip keeps their ghosting short); MSAA stays on.
+- Limitations: blended effects have no motion vectors of their own (the clip keeps their ghosting short).
+- Multisampling: with TAA on (and so with MetalFX) the scene draws one sample whatever `r_aaSamples` says
+  (`game::enhancedSceneSamples`): the temporal filter resolves the edges itself, and the multisampled RGBA16F colour and depth
+  targets cost GPU time for nothing. On an M4 Pro at 3024 x 1712 (duhoc_assault, `IW2_BENCH_GPU`, `r_aaSamples` 4, mean of two
+  runs) one sample took the frame from 13.3 / 13.8 / 13.8 ms to 10.5 / 11.9 / 11.6 ms (medium / high / ultra) with our TAA at
+  native size, and from 7.8 / 11.0 / 11.8 ms to 7.3 / 9.9 / 10.2 ms with the presets' MetalFX upscaling. Alpha-tested surfaces (fences, foliage) then use the alpha test
+  instead of alpha to coverage; TAA smooths their edges over frames. Like `r_aaSamples` the count is fixed when the renderer
+  starts, so switching TAA on the page changes it at the next start (until then TAA switched off leaves the scene with one
+  sample, and switched on keeps the samples it started with).
 
 ### Blended surfaces and the moving shadows
 

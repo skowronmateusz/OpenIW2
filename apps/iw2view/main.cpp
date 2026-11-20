@@ -3591,7 +3591,9 @@ struct Renderer {
         // Enhanced mode (docs/render-enhanced.md): the scene renders into RGBA16F, so light above 1 survives to the tone curve. The
         // frame (composite, HUD) keeps the target's format.
         sceneFormat = enh.enabled ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT : colorFormat;
-        sceneSamples = samples;
+        // Enhanced mode with TAA (and so with MetalFX, which needs it): one sample (game::enhancedSceneSamples). The temporal filter
+        // smooths the edges itself, and multisampling the RGBA16F scene cost 3.5 to 5 ms a frame at 3024 x 1712 on an M4 Pro.
+        sceneSamples = game::enhancedSceneSamples(enh, samples);
         while (sceneSamples > 1 && !(SDL_GPUTextureSupportsSampleCount(dev, sceneFormat, sampleCountEnum()) &&
                                      SDL_GPUTextureSupportsSampleCount(dev, SDL_GPU_TEXTUREFORMAT_D32_FLOAT, sampleCountEnum())))
             sceneSamples /= 2;
@@ -11347,6 +11349,7 @@ int main(int argc, char** argv) {
                 std::cout << "enhanced rendering: preset " << renderer.enh.preset << ", sun shadows " << renderer.enh.sunShadows << ", MetalFX "
                           << (renderer.enh.metalFx ? "on" : "off") << ", output SDR (shot)\n";
             renderer.init(dev, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, aaSamples());
+            if (renderer.enh.enabled) std::cout << "scene samples: " << renderer.sceneSamples << "\n";
             syncWeapon();
             pweapon.update(1.0f, {});
             game::PlayerWeapon::Input shotIn;
@@ -11640,6 +11643,7 @@ int main(int argc, char** argv) {
             std::cout << "enhanced rendering: preset " << renderer.enh.preset << ", sun shadows " << renderer.enh.sunShadows << ", MetalFX "
                       << (renderer.enh.metalFx ? "on" : "off") << ", output " << (renderer.edrOut ? "EDR" : "SDR") << "\n";
         renderer.init(dev, SDL_GetGPUSwapchainTextureFormat(dev, window), aaSamples());
+        if (renderer.enh.enabled) std::cout << "scene samples: " << renderer.sceneSamples << "\n";
         SDL_SetWindowRelativeMouseMode(window, true);
 
         if (menuMode) frontStack.open("main"); // UI_SetActiveMenu(MAIN) opens "main" (0x4c6520)

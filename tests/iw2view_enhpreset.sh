@@ -40,6 +40,10 @@ cmp -s "$CFG" "$TMP/config.orig" || fail "old: the shot rewrote the profile"
 # 2. --cvar
 shot pick --cvar r_enhPreset=0
 expect pick 0 1
+# multisampling (docs/render-enhanced.md "Multisampling"): one sample with TAA (high), r_aaSamples without it (low has no TAA)
+grep -q '^scene samples: 1$' "$TMP/old.out" || fail "old: TAA on, but the scene is multisampled"
+shot msaa --cvar r_enhPreset=0 --cvar r_aasamples=4
+grep -q '^scene samples: 4$' "$TMP/msaa.out" || fail "msaa: no TAA, but r_aaSamples 4 was not used"
 shot custom --cvar r_enhPreset=3 --cvar r_enhSunShadows=1
 expect custom 4 1
 shot reversed --cvar r_enhSunShadows=1 --cvar r_enhPreset=3

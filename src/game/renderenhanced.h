@@ -137,8 +137,7 @@ inline const std::vector<EnhPresetOption>& enhPresetOptions() {
         {"r_enhContactShadows", {"0", "1", "1", "1"}},
         {"r_enhTAA", {"0", "1", "1", "1"}},
         // MetalFX and its render resolution scale with the preset (needs TAA, so not in low; where the GPU or build has no MetalFX
-        // the cvars have no effect and the scene is drawn at the window size). Measured on an M4 Pro at 3024x1712 (duhoc_assault,
-        // ultra): the scene's GPU time 19.3 ms native, 12.3 ms at 0.67, 9.65 ms at 0.5 (docs/render-enhanced.md "Presets").
+        // the cvars have no effect and the scene is drawn at the window size). GPU times in docs/render-enhanced.md "Presets".
         {"r_enhMetalFX", {"0", "1", "1", "1"}, "0"},
         {"r_enhRenderScale", {"1", "0.5", "0.67", "0.67"}, "1"},
         {"r_enhGGX", {"1", "1", "1", "1"}},
@@ -328,6 +327,12 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (const std::string v = get("r_enhExposureBias"); !v.empty()) s.exposureBias = std::clamp(float(std::atof(v.c_str())), -2.0f, 2.0f); // signed
     return s;
 }
+
+// The scene's sample count at the renderer start (docs/render-enhanced.md "Multisampling"): r_aaSamples, except in enhanced mode
+// with TAA (MetalFX needs TAA, so it is covered too), which draws one sample: the temporal filter resolves the edges over frames,
+// and multisampled RGBA16F targets are expensive. Like r_aaSamples it is fixed when the renderer starts: switching TAA on or off
+// in the menu changes the sample count at the next start.
+inline int enhancedSceneSamples(const EnhancedSettings& s, int aaSamples) { return s.enabled && s.taa ? 1 : aaSamples; }
 
 // ---- tone mapping ------------------------------------------------------------------------------------------------------------------
 

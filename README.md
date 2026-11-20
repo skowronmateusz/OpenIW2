@@ -78,7 +78,7 @@ Hidden because they do nothing here: texture filter (always anisotropic), render
 quality, sound card, the console, and the multiplayer connection speed.
 
 - **Sync every frame** is on by default.
-- **Anti-aliasing** defaults to 4x and applies at the next start.
+- **Anti-aliasing** defaults to 4x and applies at the next start. With Enhanced graphics and its temporal anti-aliasing on, the game draws one sample instead (the temporal filter smooths the edges).
 - **Video mode** and **refresh rate** do nothing. Resize the window instead.
 
 ### Multiplayer

@@ -483,6 +483,16 @@ int main() {
     chk(metalRayTracingAllowed(true, true, false) && !metalRayTracingAllowed(true, false, false) &&
             !metalRayTracingAllowed(false, true, false) && !metalRayTracingAllowed(true, true, true), __LINE__);
 
+    // Multisampling: one sample in enhanced mode with TAA (MetalFX needs TAA); r_aaSamples otherwise.
+    {
+        EnhancedSettings e;
+        e.enabled = true, e.taa = true;
+        chk(enhancedSceneSamples(e, 4) == 1 && enhancedSceneSamples(e, 1) == 1, __LINE__);
+        e.taa = false;
+        chk(enhancedSceneSamples(e, 4) == 4, __LINE__);
+        e.enabled = false, e.taa = true;
+        chk(enhancedSceneSamples(e, 4) == 4 && enhancedSceneSamples(e, 2) == 2, __LINE__); // the classic look keeps its MSAA
+    }
     // MetalFX holds its last output during a single-player pause only.
     chk(metalFxHold(true, false) && !metalFxHold(false, false) && !metalFxHold(true, true), __LINE__);
     // Shadow-only player body: on in every preset, off with its cvar.
