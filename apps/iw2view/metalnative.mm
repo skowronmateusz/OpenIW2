@@ -5,8 +5,11 @@
 
 #include <SDL3/SDL_gpu.h>
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
+#include <mutex>
 #include <unordered_map>
 
 #ifdef SDL_GPU_OPENIW2_METAL_HANDLES
@@ -30,6 +33,59 @@ Caps query(SDL_GPUDevice* dev) {
     (void)dev;
 #endif
     return c;
+}
+
+namespace {
+struct GpuErrorState {
+    std::mutex m;
+    GpuErrors e;
+};
+GpuErrorState& gpuErrorState() {
+    static GpuErrorState* s = new GpuErrorState; // never destroyed: a completion handler may run while the program exits
+    return *s;
+}
+} // namespace
+
+void watchCommandBuffer(SDL_GPUCommandBuffer* cmd) {
+#ifdef SDL_GPU_OPENIW2_METAL_HANDLES
+    id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)SDL_GetGPUCommandBufferMetalCommandBuffer(cmd);
+    if (!cb) return;
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> b) {
+        const double gpuMs = (b.GPUEndTime - b.GPUStartTime) * 1000.0;
+        if (b.status != MTLCommandBufferStatusError) {
+            if (!(gpuMs > 0.0)) return;
+            GpuErrorState& s = gpuErrorState();
+            const std::lock_guard<std::mutex> lock(s.m);
+            s.e.maxGpuMs = std::max(s.e.maxGpuMs, gpuMs);
+            if (game::gpuTimeIsSlow(gpuMs)) ++s.e.slow, s.e.lastSlowMs = gpuMs;
+            return;
+        }
+        NSError* err = b.error;
+        const int code = err ? int(err.code) : 0;
+        const std::string text = err && err.localizedDescription.UTF8String ? err.localizedDescription.UTF8String : "unknown error";
+        char after[64] = "";
+        if (gpuMs > 0.0) std::snprintf(after, sizeof after, " [after %.0f ms on the GPU]", gpuMs);
+        noteGpuError(code, text + after);
+    }];
+#else
+    (void)cmd;
+#endif
+}
+
+void noteGpuError(int code, const std::string& text) {
+    const game::GpuErrorKind kind = game::gpuErrorKind(code, text);
+    GpuErrorState& s = gpuErrorState();
+    const std::lock_guard<std::mutex> lock(s.m);
+    ++s.e.count;
+    if (kind == game::GpuErrorKind::Stuck) ++s.e.stuck;
+    if (kind == game::GpuErrorKind::Ignored) ++s.e.ignored;
+    if (kind != game::GpuErrorKind::Ignored || s.e.last.empty()) s.e.lastCode = code, s.e.last = text; // the cause, not the flood after it
+}
+
+GpuErrors gpuErrors() {
+    GpuErrorState& s = gpuErrorState();
+    const std::lock_guard<std::mutex> lock(s.m);
+    return s.e;
 }
 
 #ifdef SDL_GPU_OPENIW2_METAL_HANDLES
@@ -136,11 +192,26 @@ id<MTLAccelerationStructure> buildPrimitive(id<MTLDevice> d, id<MTLCommandBuffer
 }
 } // namespace
 
-// Our own kernel (docs/render-enhanced.md "Ray-traced shadows of moving objects").
-const char* kShadowSource = R"MSL(
+// What both kernels start with. A helper one kernel's source used and only the other's defined left that kernel unbuilt (and the
+// frame retrying it), so the shared helpers live here and every kernel is built from this plus its own text (kernelSource).
+const char* kRtPrelude = R"MSL(
 #include <metal_stdlib>
 using namespace metal;
 using namespace raytracing;
+// A normal from two tangents, or towards the eye where they are parallel or zero (a depth edge, geometry right at the camera):
+// normalize of a zero vector is NaN, which the shadow, AO and lighting would carry into the picture and the temporal history.
+static float3 rtSafeNormal(float3 v, float3 toEye) {
+    const float l2 = dot(v, v);
+    if (l2 > 1e-12 && isfinite(l2)) return v * rsqrt(l2);
+    const float e2 = dot(toEye, toEye);
+    return e2 > 1e-12 ? toEye * rsqrt(e2) : float3(0.0, 0.0, 1.0);
+}
+// A pixel whose position cannot be rebuilt from the depth image (w of 0, a non-finite depth) starts no ray.
+static bool rtPointOk(float3 p) { return all(isfinite(p)) && all(abs(p) < 1e7); }
+)MSL";
+
+// Our own kernel (docs/render-enhanced.md "Ray-traced shadows of moving objects").
+const char* kShadowSource = R"MSL(
 struct RtShadowU {
     float4x4 inv;   // inverse (jittered) view-projection
     float4 z;       // x, y: clip z = x * w + y; z: $floatz sky threshold; w: frame index
@@ -176,7 +247,7 @@ static bool blocked(instance_acceleration_structure as, float3 o, float3 d, floa
     isect.assume_geometry_type(geometry_type::triangle);
     return isect.intersect(r, as, mask).type != intersection_type::none; // the moving objects only (2), with the player's body 8
 }
-// Alpha test of a ray candidate on an alpha-tested world triangle (stage 5): the triangle's UVs from the world buffers, its
+// Alpha test of a ray's hit on an alpha-tested world triangle (stage 5): the triangle's UVs from the world buffers, its
 // material's alpha mask layer and alpha function from the geometry table (x first index, y layer, z the AlphaFunc).
 static bool rt_alpha_pass(uint geom, uint prim, float2 bary, const device float* vtx, const device uint* idx, const device uint4* tab,
                           texture2d_array<float> masks) {
@@ -188,30 +259,33 @@ static bool rt_alpha_pass(uint geom, uint prim, float2 bary, const device float*
     const float a = rint(saturate(masks.sample(ms, uv, t.y).r) * 255.0);
     return t.z == 1 ? a >= 128.0 : t.z == 2 ? a > 0.0 : t.z == 3 ? a < 128.0 : true; // GE128, GT0, LT128 pass
 }
+// Is anything between o and o + d * len: the opaque scene, then the alpha-tested world, whose triangles are met whole (every
+// traversal is opaque) and tested here; a cut-out one is stepped over, at most 6 triangles deep (then the way counts as open).
+// No query hands triangle candidates back to the kernel (docs/render-enhanced.md "GPU errors").
 static bool blockedAny(instance_acceleration_structure as, float3 o, float3 d, float len, const device float* vtx, const device uint* idx,
                        const device uint4* tab, texture2d_array<float> masks) {
+    if (!(len > 0.05)) return false;
     ray r;
     r.origin = o;
     r.direction = d;
     r.min_distance = 0.05;
     r.max_distance = len;
-    intersection_query<instancing, triangle_data> q; // everything (the effect lights are not baked), alpha-tested surfaces tested
-    intersection_params qp;
-    qp.assume_geometry_type(geometry_type::triangle);
-    qp.accept_any_intersection(true);
-    q.reset(r, as, 0xf7u, qp); // not the player's shadow-only body (8): the effect lights are at the gun, inside it
-    while (q.next())
-        if (rt_alpha_pass(q.get_candidate_geometry_id(), q.get_candidate_primitive_id(), q.get_candidate_triangle_barycentric_coord(), vtx, idx, tab, masks))
-            q.commit_triangle_intersection();
-    return q.get_committed_intersection_type() != intersection_type::none;
-}
-// A normal from two tangents, or towards the eye where they are parallel or zero (a depth edge, geometry right at the camera):
-// normalize of a zero vector is NaN, which the shadow, AO and lighting would carry into the picture and the temporal history.
-static float3 rtSafeNormal(float3 v, float3 toEye) {
-    const float l2 = dot(v, v);
-    if (l2 > 1e-12 && isfinite(l2)) return v * rsqrt(l2);
-    const float e2 = dot(toEye, toEye);
-    return e2 > 1e-12 ? toEye * rsqrt(e2) : float3(0.0, 0.0, 1.0);
+    intersector<instancing> any;
+    any.accept_any_intersection(true);
+    any.assume_geometry_type(geometry_type::triangle);
+    any.force_opacity(forced_opacity::opaque);
+    if (any.intersect(r, as, 0x03u).type != intersection_type::none) return true; // the static world or a moving object (not the body, 8: the effect lights are at the gun, inside it)
+    intersector<instancing, triangle_data> nearest;
+    nearest.assume_geometry_type(geometry_type::triangle);
+    nearest.force_opacity(forced_opacity::opaque);
+    for (int card = 0; card < 6; ++card) {
+        const auto h = nearest.intersect(r, as, 0x04u);
+        if (h.type == intersection_type::none) return false;
+        if (rt_alpha_pass(h.geometry_id, h.primitive_id, h.triangle_barycentric_coord, vtx, idx, tab, masks)) return true;
+        r.min_distance = max(h.distance + 0.05, h.distance * 1.0001);
+        if (r.min_distance >= len) return false;
+    }
+    return false;
 }
 // 1 = open: the moving objects block fully, the player's body (instance mask 8) with the weight bodyW.
 static float visibility(instance_acceleration_structure as, float3 o, float3 d, float len, float bodyW) {
@@ -233,6 +307,7 @@ kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]]
     float w, wx, wy;
     const float3 P = posAt(fz, ps, u, uv, w);
     const float3 Px = posAt(fz, ps, u, uv + float2(2.0 / fzSize.x, 0.0), wx), Py = posAt(fz, ps, u, uv + float2(0.0, 2.0 / fzSize.y), wy);
+    if (!rtPointOk(P)) { outMask.write(float4(1.0), gid); outLights.write(float4(1.0), gid); return; }
     float3 n = rtSafeNormal(cross(Px - P, Py - P), u.eye.xyz - P);
     if (dot(n, u.eye.xyz - P) < 0.0) n = -n;
     const float3 o = P + n * (1.0 + w * 0.002);
@@ -261,6 +336,7 @@ kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]]
         const float3 tgt = u.lamp[i].xyz + j * u.flags.z;
         const float3 dl = tgt - o;
         const float ll = length(dl);
+        if (ll < 1.0) continue; // the jittered point is at the surface: no direction to trace
         lampSum += wgt;
         lampVis += wgt * visibility(as, o, dl / ll, ll - 1.0, bodyW);
     }
@@ -304,9 +380,6 @@ kernel void rt_dynamic_shadow(texture2d<float, access::sample> fz [[texture(0)]]
 
 // Our own kernel for ray-traced global illumination (docs/render-enhanced.md "Ray-traced global illumination").
 const char* kGiSource = R"MSL(
-#include <metal_stdlib>
-using namespace metal;
-using namespace raytracing;
 struct RtGiU {
     float4x4 inv;     // inverse (jittered) view-projection
     float4 z;         // x, y: clip z = x * w + y; z: $floatz sky threshold; w: frame index
@@ -345,6 +418,7 @@ kernel void rt_gi(texture2d<float, access::sample> fz [[texture(0)]], texture2d<
     float w, wx, wy;
     const float3 P = giPosAt(fz, ps, u, uv, w);
     const float3 Px = giPosAt(fz, ps, u, uv + float2(2.0 / fzSize.x, 0.0), wx), Py = giPosAt(fz, ps, u, uv + float2(0.0, 2.0 / fzSize.y), wy);
+    if (!rtPointOk(P)) { out.write(float4(0.0, 0.0, 0.0, 60000.0), gid); return; }
     float3 n = rtSafeNormal(cross(Px - P, Py - P), u.eye.xyz - P);
     if (dot(n, u.eye.xyz - P) < 0.0) n = -n;
     const float3 o = P + n * (1.0 + w * 0.002);
@@ -382,11 +456,25 @@ kernel void rt_gi(texture2d<float, access::sample> fz [[texture(0)]], texture2d<
 }
 )MSL";
 
+// One kernel from the shared prelude and its own source; nil with the compiler's message in `error`.
+static id<MTLComputePipelineState> buildKernel(id<MTLDevice> d, const char* source, const char* name, std::string& error) {
+    NSError* err = nil;
+    NSString* text = [[NSString stringWithUTF8String:kRtPrelude] stringByAppendingString:[NSString stringWithUTF8String:source]];
+    id<MTLLibrary> lib = [d newLibraryWithSource:text options:nil error:&err];
+    id<MTLFunction> fn = lib ? [lib newFunctionWithName:[NSString stringWithUTF8String:name]] : nil;
+    id<MTLComputePipelineState> pipe = fn ? [d newComputePipelineStateWithFunction:fn error:&err] : nil;
+    if (!pipe) error = std::string("the ") + name + " kernel could not be built: " + (err && err.localizedDescription.UTF8String ? err.localizedDescription.UTF8String : "no pipeline");
+    std::cout << "ray tracing kernel " << name << ": " << (pipe ? "built" : "not built") << "\n";
+    if (!pipe) std::cerr << "warning: ray tracing: " << error << "\n";
+    return pipe;
+}
+
 struct SceneRT::Impl {
     id<MTLComputePipelineState> shadowPipe = nil;
     id<MTLComputePipelineState> giPipe = nil;
+    bool shadowTried = false, giTried = false; // built (or failed) once: a kernel that does not build is not retried every frame
     id<MTLAccelerationStructure> world = nil;
-    id<MTLAccelerationStructure> worldAlpha = nil; // the alpha-tested surfaces (non-opaque)
+    id<MTLAccelerationStructure> worldAlpha = nil; // the alpha-tested surfaces (their own instance, mask kMaskAlpha)
     id<MTLBuffer> worldVerts = nil, worldIdx = nil, alphaTable = nil;
     id<MTLTexture> alphaMasks = nil;
     id<MTLBuffer> dummyBuf = nil;
@@ -411,7 +499,9 @@ struct SceneRT::Impl {
         uint32_t mask = kMaskDynamic;
     };
     std::vector<Item> items;
-    struct Cached { id<MTLAccelerationStructure> as; size_t triangles; };
+    // layout: the triangle count of each geometry, in order. A refit must describe the structure exactly as it was built
+    // (only the vertex positions may differ), so another layout under the same key builds a new structure.
+    struct Cached { id<MTLAccelerationStructure> as; size_t triangles; std::vector<uint32_t> layout; };
     std::unordered_map<const void*, Cached> rigid;   // bottom levels of models whose vertices never change
     std::unordered_map<const void*, Cached> skinned; // bottom levels of deforming models, refit every frame
     id<MTLBuffer> itemScratch = nil;
@@ -544,7 +634,7 @@ bool SceneRT::buildStatic(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPU
             g.indexBufferOffset = NSUInteger(r.first) * 4;
             g.indexType = MTLIndexTypeUInt32;
             g.triangleCount = r.count / 3;
-            g.opaque = NO; // tested per candidate (rt_alpha_pass)
+            g.opaque = YES; // met as whole triangles; the shaders test the alpha of the nearest one (rt_alpha_pass)
             [ag addObject:g];
             table.insert(table.end(), {r.first, r.layer, r.func, 0u});
             I.alphaTriangles += r.count / 3;
@@ -598,8 +688,9 @@ bool SceneRT::buildFrame(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, bool act
         [I.frameBlases addObject:I.world];
         inst.push_back(identityInstance(0, kMaskStatic));
         if (I.worldAlpha) {
+            // opaque like every other instance: a non-opaque one makes the traversal hand each triangle back to the shader, and
+            // that path in a fragment shader locks the GPU up now and then (docs/render-enhanced.md "GPU errors")
             MTLAccelerationStructureInstanceDescriptor a = identityInstance(uint32_t(I.frameBlases.count), kMaskAlpha);
-            a.options = MTLAccelerationStructureInstanceOptionNonOpaque;
             [I.frameBlases addObject:I.worldAlpha];
             inst.push_back(a);
         }
@@ -616,8 +707,12 @@ bool SceneRT::buildFrame(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, bool act
         auto& cache = it.deforming ? I.skinned : I.rigid;
         const auto c = cache.find(it.key);
         size_t tris = 0;
-        for (const auto& r : it.ranges) tris += r.second / 3;
-        const bool have = c != cache.end() && c->second.triangles == tris;
+        std::vector<uint32_t> layout;
+        for (const auto& r : it.ranges) {
+            tris += r.second / 3;
+            if (r.second >= 3) layout.push_back(r.second / 3);
+        }
+        const bool have = c != cache.end() && c->second.triangles == tris && c->second.layout == layout;
         if (have && !it.deforming) {
             blas = c->second.as;
         } else {
@@ -650,7 +745,7 @@ bool SceneRT::buildFrame(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, bool act
             } else {
                 blas = [d newAccelerationStructureWithSize:sz.accelerationStructureSize];
                 if (!blas) continue;
-                cache[it.key] = {blas, tris};
+                cache[it.key] = {blas, tris, layout};
             }
             const NSUInteger need = (refit ? sz.refitScratchBufferSize : sz.buildScratchBufferSize) + 255 & ~NSUInteger(255);
             ops.push_back({blas, pd, refit, scratchTotal});
@@ -721,16 +816,8 @@ bool SceneRT::shadowPass(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUT
     id<MTLTexture> m = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, mask);
     id<MTLTexture> lt = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, lights);
     if (!d || !cb || !z || !m || !lt) return false;
-    if (!I.shadowPipe) {
-        NSError* err = nil;
-        id<MTLLibrary> lib = [d newLibraryWithSource:[NSString stringWithUTF8String:kShadowSource] options:nil error:&err];
-        id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"rt_dynamic_shadow"] : nil;
-        I.shadowPipe = fn ? [d newComputePipelineStateWithFunction:fn error:&err] : nil;
-        if (!I.shadowPipe) {
-            I.error = err ? err.localizedDescription.UTF8String : "no shadow pipeline";
-            return false;
-        }
-    }
+    if (!std::exchange(I.shadowTried, true)) I.shadowPipe = buildKernel(d, kShadowSource, "rt_dynamic_shadow", I.error);
+    if (!I.shadowPipe) return false;
     id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
     [enc setComputePipelineState:I.shadowPipe];
     [enc setTexture:z atIndex:0];
@@ -766,16 +853,8 @@ bool SceneRT::giPass(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUTextu
     id<MTLTexture> hs = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, history);
     id<MTLTexture> o = (__bridge id<MTLTexture>)SDL_GetGPUTextureMetalTexture(dev, out);
     if (!d || !cb || !z || !hs || !o) return false;
-    if (!I.giPipe) {
-        NSError* err = nil;
-        id<MTLLibrary> lib = [d newLibraryWithSource:[NSString stringWithUTF8String:kGiSource] options:nil error:&err];
-        id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"rt_gi"] : nil;
-        I.giPipe = fn ? [d newComputePipelineStateWithFunction:fn error:&err] : nil;
-        if (!I.giPipe) {
-            I.error = err ? err.localizedDescription.UTF8String : "no global illumination pipeline";
-            return false;
-        }
-    }
+    if (!std::exchange(I.giTried, true)) I.giPipe = buildKernel(d, kGiSource, "rt_gi", I.error);
+    if (!I.giPipe) return false;
     id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
     [enc setComputePipelineState:I.giPipe];
     [enc setTexture:z atIndex:0];

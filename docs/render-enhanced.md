@@ -206,7 +206,8 @@ maps (no ray tracing) were already evaluated per fragment for blended world surf
 ### Non-finite values
 
 A NaN or infinite pixel that reaches the temporal history (ours or MetalFX's) spreads to its neighbours frame by frame: black
-blocks that grow, and with MetalFX on macOS 27 its Neural Engine inference can fail and abort the program. So:
+blocks that grow. (The black blocks and the abort inside MetalFX that were first put down to this had another cause, a GPU
+lockup in the ray tracing: "GPU errors" below. What follows keeps the history finite whatever the source.) So:
 
 - The normals the AO pass and the ray-traced passes rebuild from `$floatz` fall back to the direction to the eye where the two
   tangents are parallel or zero (a depth edge, geometry right at the camera); normalize of a zero vector is NaN.
@@ -399,10 +400,11 @@ for rendering below the output size.
 
 MetalFX while paused (`game::metalFxHold`): during a single-player pause (`cl_paused`, a menu over a frozen world) the
 scaler is not run. The frame shows its last output again, and its history is reset on the first frame after the pause. The
-frame does not change while paused, so nothing is lost. On macOS 27 the scaler runs a network on the Neural Engine, which can
-fail an internal assertion and abort the process (seen once after about 12 000 frames, in the pause menu). The hold avoids that
-work in the menu, and MetalFX stays off by default. It is not a complete fix: the failure is inside MetalFX, and the API has no
-way to keep the scaler off the Neural Engine.
+frame does not change while paused, so nothing is lost. On macOS 27 the scaler runs a network on the Neural Engine, and an
+assertion inside it aborted the process twice, both times in the pause menu. That was not a fault of the scaler: the GPU had
+stopped running the program's work seconds earlier (a lockup in the ray tracing, "GPU errors" below), and the scaler's stage
+that waits for that work gave up. The public API has no switch for the Neural Engine and none is needed. MetalFX stays off by
+default for its cost (above), not for this.
 
 Render scale (`r_enhRenderScale`, the page's "MetalFX render resolution": Native, Quality 77 %, Balanced 67 %, Performance
 50 %; only with MetalFX on, `game::effectiveRenderScale`, `game::renderSize`): the frame's scene part (depth, `$floatz` and
@@ -426,10 +428,13 @@ On GPUs with hardware ray tracing (`r_enhRTReflections`, the page's "RT reflecti
 - The scene: a two-level acceleration structure (`metal::SceneRT`): the static world and static models (the opaque surfaces of
   `Scene::batches`, built once per map) plus the frame's moving objects (models in the world: characters, their weapons,
   vehicles, script models; not the view model or effect sprites; opaque surfaces), one instance each with its model-to-world
-  transform. Alpha-tested surfaces (foliage, fences) of the world are a second, non-opaque structure (its own instance): the
-  queries that see the static world (reflections, the effect lights' shadows) walk their candidates with `intersection_query` and
-  keep a hit only where the material's alpha passes its alpha function (`rt_alpha_pass`: the triangle's UVs from the world
-  buffers, a 64 x 64 alpha mask per material in an R8 array, the geometry table; bound at fragment buffers 7-9 and texture 20). Rigid models keep their bottom level; skinned ones are built once for refitting and refit every frame, all in one
+  transform. Alpha-tested surfaces (foliage, fences) of the world are a second structure (its own instance, mask 4), opaque to
+  the traversal like the rest. The queries that see the static world (reflections, the effect lights' shadows) first trace the
+  opaque scene (masks 1 and 2), then the alpha-tested instance alone in front of that hit: the nearest triangle is kept where
+  the material's alpha passes its alpha function (`rt_alpha_pass`: the triangle's UVs from the world buffers, a 64 x 64 alpha
+  mask per material in an R8 array, the geometry table; bound at fragment buffers 7-9 and texture 20), and where it is cut
+  out the ray goes on from just behind it, at most 6 triangles deep. No query hands triangle candidates back to a shader
+  ("GPU errors" below). Rigid models keep their bottom level; skinned ones are built once for refitting and refit every frame, all in one
   encoder with one scratch buffer. It is bound at fragment buffer 6 of the scene passes, above SDL's buffers (the patch's render
   pass encoder getter); a placeholder that nothing hits is bound when it is off.
 - The ray queries live in a second build of the enhanced library (`IW2_ENH_RT`), used only by the pipelines of the draws that
@@ -533,6 +538,82 @@ The effect is subtle by construction: the baked light is the largest part of any
 is a few levels to about 50 of 255 on the nearby surfaces and a gentle darkening further out; across the rest of the frame it is
 under 2 levels. With TAA off there is no history to take radiance from, so the term is off.
 
+### GPU errors
+
+What happened (macOS 27.2, M4 Pro, twice in elalamein, within seconds of the autosave at the bunker with the ladder hatch):
+black rectangles that grew, then a frozen picture with the sound going on, and 25 to 53 s later an abort inside MetalFX
+(`ANE inference operation failed`). The system log of the second time has the order of events:
+1. one of the program's command buffers ends with `Caused GPU Hang Error`, and the GPU restarts;
+2. three more within five seconds, after which the system drops every command buffer of the process unrun
+   (`Ignored (for causing prior/excessive GPU errors)`), 7 s before the pause menu was opened;
+3. 20 s after that, the assertion inside MetalFX's scaler.
+
+Steps 1 and 2 were reproduced with the build of the incident (below). The rest is read from the log, not reproduced.
+TODO(spec): that the black rectangles are the tiles of the frames the GPU cut off, and the frozen picture the dropped command
+buffers. TODO(spec): why the scaler asserts. It runs part of its work on the Neural Engine and GPU work of its own in between;
+with that GPU work dropped, the stage that waits for it seems to give up after a time. The scaler was encoded at one place
+only, after the pause hold's early return, so the work that failed was queued before the pause. TODO(spec): the first time
+(no system log left) is placed at the hatch only by its GPU restart report and its autosave, both in the same second.
+MetalFX is the last link, not the cause: the hang needs the ray tracing and not MetalFX (the table below).
+
+The cause is in the ray tracing. The reflection ray of the scene's fragment shaders went through the alpha-tested world as a
+non-opaque instance: the traversal then hands every triangle it meets back to the shader as a candidate, and the shader kept it
+or not by the material's alpha. On this GPU a fragment shader that takes such candidates locks the GPU up now and then, within
+milliseconds (the failed command buffer had run for 4 ms). Measured at the hatch (camera -6817.9, -10910.1, 236.1, yaw 239,
+pitch 30, 3024 x 1708; at 1512 x 854 three runs had no hang):
+
+| what the reflection ray may meet | frames a run | runs with a GPU hang |
+| --- | --- | --- |
+| everything (as it was) | 80 | 10 of 12 |
+| the alpha-tested world only | 400 | 1 of 1 |
+| everything, the loop left after the first candidate | 400 | 1 of 1 |
+| everything, every candidate kept without the alpha test | 400 | 1 of 1 |
+| the static world only; the static world and the moving objects | 400 | 0 of 2 |
+| everything, traversal forced opaque (no candidates) | 80 | 0 of 6 |
+| nothing (ray tracing off), MetalFX on | 400 | 0 of 1 |
+| everything, MetalFX off | 400 | 1 of 1 |
+
+The build of the incident, at the same view with MetalFX off: hangs in 5 of 5 runs of 300 frames (11 hung command buffers,
+then 6813 dropped ones: the frames after them "finish" at once, unrun).
+
+Bad rays and bad geometry were ruled out apart from this, in a small Metal program on the same GPU: NaN / infinite / zero rays,
+NaN / infinite / degenerate / out-of-range triangles and NaN instance transforms all trace without an error in a compute
+kernel, with the plain intersector and with a candidate loop. The game's compute kernel that took candidates (the effect
+lights' shadows) ran 2400 frames at the hatch without an error. So the fault is tied to candidates in a fragment shader.
+TODO(spec): whether that is a defect of the GPU's driver or firmware, or a rule of Metal that the query broke, is not known;
+no rule that it breaks was found.
+
+The fix: no shader takes candidates any more. The alpha-tested instance is opaque, and the two queries that need the alpha
+test step through it one nearest triangle at a time (above, "Ray-traced reflections"; the kernel's `blockedAny`). The
+reflections' hit / miss image (`IW2_RT_DEBUG`) at the hatch and at an outdoor view is the same before and after. After the
+fix: 0 of 24 runs with a hang (18 of them 400 frames, with and without MetalFX, with an effect light).
+
+Around it:
+- GPU errors are seen and logged. SDL reports nothing when a command buffer fails, so every command buffer the renderer and
+  the uploads submit gets a completion handler (`metal::watchCommandBuffer`): `GPU error: <the driver's reason> [after N ms on
+  the GPU]` for the first one, then a count once a second (`game::gpuErrorKind`: stuck work, work dropped after errors,
+  other). A frame whose GPU work took above 250 ms is logged too (`game::kGpuSlowMs`; a report only).
+- The GPU guard (`game::GpuGuard`): after a failed command buffer the native Metal work (ray tracing, MetalFX) is held for
+  30 s. The frame then needs only SDL's own passes (our TAA resolves, at the window size), and the scaler is not handed work
+  the GPU may drop. The buffers that fail behind the first one extend the hold and count as the same error. A second error
+  later keeps both off until the program is started again. This is a net under the fix, not the fix: before the fix it kept
+  the program running through real hangs at the hatch, with MetalFX on (one hang, or two with the second hold, and no abort).
+- The ray tracing kernels are built once from a shared prelude plus their own source. A helper that one kernel used and only
+  the other defined had left the global illumination kernel unbuilt, and the frame retried the build every frame (about 7
+  frames a second at 3024 x 1708 on the ultra preset). A kernel that does not build is now reported once
+  (`ray tracing kernel <name>: built` / `not built`) and not retried.
+- Hygiene, none of it the cause: a pixel whose position cannot be rebuilt from the depth image starts no ray
+  (`rtPointOk`), the lamp ray is skipped where its jittered target is at the surface, a moving object whose box or transform
+  is not finite or far beyond a model's size is left out of the scene for that frame (`game::rtItemSane`: a bottom level of
+  triangles spread over a huge range took 10 s for one frame's rays in the same small program), and a skinned model's
+  bottom level is refit only when its geometry layout is the one it was built with.
+
+Not covered: the lighting re-bake's kernels (`r_enhRebake`, off in every preset, on command buffers of their own) still take
+candidates, in compute kernels.
+
+`IW2_GPU_TRACE`, `IW2_OFFSCREEN`, `IW2_GPU_FAKE_ERROR` and `IW2_GPU_GUARD_MS` (docs/debug-flags.md) show and test it
+(tests/iw2view_gpuguard.sh).
+
 ## Water shadows
 
 The water technique is drawn after the AO image is made and has no baked sun term, so the moving objects' sun shadow did not
@@ -594,6 +675,13 @@ snapping and caster reach, the GTAO slice integral, the TAA jitter sequence, the
 point light shadow faces, the phase function and the film grade, the probe lattice, the camera motion reconstruction, the
 baked-light shadow light choice and the reflection probes (points near geometry, placement, index grid and assignment). `tests/test_lightgrid.cpp`: the
 grid points' positions.
+
+`tests/iw2view_nan.sh` (ctest `iw2viewnan_e2e`): the non-finite guard. `tests/iw2view_gpuguard.sh` (ctest
+`iw2viewgpuguard_e2e`): the ray tracing kernels build, a command buffer counted as hung is reported and holds the ray tracing
+and MetalFX (hold, release, the second error for good), a clean run reports nothing, live play drawn offscreen runs without a
+GPU error, no frame shader takes triangle candidates, and the hatch view runs 300 frames at 3024 x 1708 without a GPU error.
+`tests/test_renderenhanced.cpp` has the classification of the driver's reasons, the guard's steps, the object check and the
+offscreen size.
 
 ## References
 

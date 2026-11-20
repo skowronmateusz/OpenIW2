@@ -292,7 +292,13 @@ static float3 enh_env(texture2d_array<float> env, sampler es, const device uchar
     return env.sample(es, uv, cube * 6 + face, level(lod)).rgb;
 }
 #ifdef IW2_ENH_RT
-// Alpha test of a ray candidate on an alpha-tested world triangle (stage 5): the triangle's UVs from the world buffers, its
+// Instance masks of the ray tracing scene (metal::SceneRT): the static world 1, the moving objects 2, the alpha-tested world 4, the
+// player's shadow-only body 8. A ray meets the alpha-tested world only as whole triangles (every traversal is opaque): the
+// shader tests the nearest one's alpha and, where it is cut out, goes on behind it, at most IW2_RT_ALPHA_STEPS triangles deep.
+#define IW2_RT_MASK_OPAQUE 0x03
+#define IW2_RT_MASK_ALPHA 0x04
+#define IW2_RT_ALPHA_STEPS 6
+// Alpha test of a ray's hit on an alpha-tested world triangle (stage 5): the triangle's UVs from the world buffers, its
 // material's alpha mask layer and alpha function from the geometry table (x first index, y layer, z the AlphaFunc).
 static bool rt_alpha_pass(uint geom, uint prim, float2 bary, const device float* vtx, const device uint* idx, const device uint4* tab,
                           texture2d_array<float> masks) {
@@ -317,21 +323,39 @@ static bool enh_rt_reflection(float3 wp, float3 r, float a, constant EnhFragU& e
     ray.direction = r;
     ray.min_distance = 0.5;
     ray.max_distance = eu.rtParams.z;
-    // the alpha-tested world (its own non-opaque instance) is tested per candidate
+    // The opaque scene first, then the alpha-tested world in front of that hit, triangle by triangle: no query here ever hands
+    // triangle candidates back to the shader (docs/render-enhanced.md "GPU errors").
     metal::raytracing::intersection_query<metal::raytracing::instancing, metal::raytracing::triangle_data> q;
     metal::raytracing::intersection_params qp;
     qp.assume_geometry_type(metal::raytracing::geometry_type::triangle);
-    q.reset(ray, rtScene, 0xf7, qp); // not the player's shadow-only body (instance mask 8)
-    while (q.next())
-        if (rt_alpha_pass(q.get_candidate_geometry_id(), q.get_candidate_primitive_id(), q.get_candidate_triangle_barycentric_coord(), rtVtx,
-                          rtIdx, rtTab, rtAlpha))
-            q.commit_triangle_intersection();
+    qp.force_opacity(metal::raytracing::forced_opacity::opaque);
+    q.reset(ray, rtScene, IW2_RT_MASK_OPAQUE, qp); // not the player's shadow-only body (instance mask 8)
+    q.next();
+    const bool solidHit = q.get_committed_intersection_type() != metal::raytracing::intersection_type::none;
+    float hitDist = solidHit ? q.get_committed_distance() : ray.max_distance;
+    bool hit = solidHit;
+    float from = ray.min_distance;
+    for (int card = 0; card < IW2_RT_ALPHA_STEPS; ++card) {
+        metal::raytracing::ray ar = ray;
+        ar.min_distance = from;
+        ar.max_distance = hitDist;
+        q.reset(ar, rtScene, IW2_RT_MASK_ALPHA, qp);
+        q.next();
+        if (q.get_committed_intersection_type() == metal::raytracing::intersection_type::none) break;
+        const float d = q.get_committed_distance();
+        if (rt_alpha_pass(q.get_committed_geometry_id(), q.get_committed_primitive_id(), q.get_committed_triangle_barycentric_coord(), rtVtx,
+                          rtIdx, rtTab, rtAlpha)) {
+            hitDist = d, hit = true;
+            break;
+        }
+        from = max(d + 0.05, d * 1.0001); // through the cut-out part of this triangle
+    }
     const float lod = a * eu.specParams.w;
-    if (q.get_committed_intersection_type() == metal::raytracing::intersection_type::none) {
+    if (!hit) {
         outRefl = eu.rtParams.w > 0.5 ? float3(0, 0, 4) : enh_env(env, es, pidx, eu, wp, r, lod); // nothing in the way: as without ray tracing
         return true;
     }
-    const float3 hp = ray.origin + r * q.get_committed_distance();
+    const float3 hp = ray.origin + r * hitDist;
     const float4 c = eu.viewProj * float4(hp, 1.0);
     if (c.w > 1.0 && eu.ssrParams.z > 0.5) {
         const float2 uv = float2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5);

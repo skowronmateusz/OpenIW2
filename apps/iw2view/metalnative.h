@@ -27,6 +27,24 @@ struct Caps {
 // What this build and GPU allow; IW2_NO_METALFX / IW2_NO_METAL_RT force the features off (fallback checks).
 Caps query(SDL_GPUDevice* dev);
 
+// GPU command-buffer errors (docs/render-enhanced.md "GPU errors"). A command buffer that the GPU did not finish (a hang, a
+// timeout, a buffer dropped after earlier errors) ends with an error status; nothing in SDL reports it. watchCommandBuffer adds a
+// completion handler to SDL's command buffer (before it is submitted) that counts such buffers; gpuErrors returns the totals.
+struct GpuErrors {
+    uint64_t count = 0;   // command buffers that ended with an error
+    uint64_t stuck = 0;   // of them: work that did not end (game::GpuErrorKind::Stuck: a hang, a timeout)
+    uint64_t ignored = 0; // of them: dropped unrun because of the errors before (game::GpuErrorKind::Ignored)
+    int lastCode = 0;     // the MTLCommandBufferError code of the last error that was not such a drop
+    std::string last;     // its text
+    double maxGpuMs = 0.0; // the longest GPU time of one watched command buffer
+    uint64_t slow = 0;     // watched command buffers whose GPU time was above game::kGpuSlowMs
+    double lastSlowMs = 0.0;
+};
+void watchCommandBuffer(SDL_GPUCommandBuffer* cmd);
+GpuErrors gpuErrors();
+// Counts an error as a failed command buffer's handler does (the handler's own path; also IW2_GPU_FAKE_ERROR, docs/debug-flags.md).
+void noteGpuError(int code, const std::string& text);
+
 // MetalFX temporal scaling into SDL's command buffer (between SDL passes). Inputs at the render size, single-sample: the linear
 // HDR colour, a depth texture (R32F device depth), motion (RG16F, NDC units, current -> previous unjittered NDC, as the
 // enhanced TAA's), the output at the output size with compute write usage.
@@ -66,7 +84,9 @@ public:
     SceneRT(const SceneRT&) = delete;
     SceneRT& operator=(const SceneRT&) = delete;
     // The static world: index ranges (first, count) of one vertex / index buffer (32-bit indices, the position first in a vertex).
-    // alpha: the alpha-tested ranges, tested per ray candidate against alphaMasks (an R8 2D array, one layer per material).
+    // alpha: the alpha-tested ranges: an instance of their own (kMaskAlpha), opaque to the traversal like every other; a shader
+    // that traces it tests the nearest triangle against alphaMasks (an R8 2D array, one layer per material) and goes on behind a
+    // cut-out one (docs/render-enhanced.md "GPU errors": no query hands triangle candidates back to a shader).
     bool buildStatic(SDL_GPUDevice* dev, SDL_GPUCommandBuffer* cmd, SDL_GPUBuffer* vertices, uint32_t vertexStride, SDL_GPUBuffer* indices,
                      const std::vector<std::pair<uint32_t, uint32_t>>& ranges, const std::vector<AlphaRange>& alpha = {},
                      SDL_GPUTexture* alphaMasks = nullptr);

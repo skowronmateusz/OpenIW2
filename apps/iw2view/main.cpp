@@ -370,6 +370,7 @@ private:
             acquireBuffer();
             mapped_ = static_cast<uint8_t*>(SDL_MapGPUTransferBuffer(dev_, tb_, true));
             cmd_ = SDL_AcquireGPUCommandBuffer(dev_);
+            metal::watchCommandBuffer(cmd_);
             copy_ = SDL_BeginGPUCopyPass(cmd_);
         }
         used_ = aligned + size;
@@ -3112,6 +3113,49 @@ struct Renderer {
     std::vector<DrawItem> shadowOnlyItems;
     // The game is paused (cl_paused, a menu over a frozen world): the MetalFX scaler is not run, its last output is shown
     // again, and its history is reset once the game runs again (docs/render-enhanced.md "MetalFX while paused").
+    // GPU command-buffer errors (docs/render-enhanced.md "GPU errors"): the first one and then a count a second go to the log.
+    uint64_t gpuErrorsLogged = 0, gpuErrorLogNs = 0, gpuSlowLogged = 0;
+    game::GpuGuard gpuGuard;
+    bool gpuHold = false; // this frame: no native Metal work (ray tracing, MetalFX)
+    bool metalFxNow() const { return enh.metalFx && metalCaps.metalFx && !gpuHold; }
+    uint64_t gpuReportCalls = 0;
+    void gpuErrorReport() {
+        ++gpuReportCalls;
+        // IW2_GPU_FAKE_ERROR=a[,b] (docs/debug-flags.md): at the a-th (and b-th) drawn frame a command buffer is counted as hung
+        if (static const char* fake = std::getenv("IW2_GPU_FAKE_ERROR"); fake) {
+            unsigned a = 0, b = 0;
+            std::sscanf(fake, "%u,%u", &a, &b);
+            if (gpuReportCalls == a || gpuReportCalls == b)
+                metal::noteGpuError(2, "IW2_GPU_FAKE_ERROR: Caused GPU Hang Error (00000003:kIOGPUCommandBufferCallbackErrorHang)");
+        }
+        const metal::GpuErrors e = metal::gpuErrors();
+        if (e.slow != gpuSlowLogged) {
+            std::cout << "GPU: a frame's work took " << e.lastSlowMs << " ms (" << e.slow << " such so far, longest " << e.maxGpuMs << " ms)\n";
+            gpuSlowLogged = e.slow;
+        }
+        static const uint64_t holdMs = std::getenv("IW2_GPU_GUARD_MS") ? uint64_t(std::max(1, std::atoi(std::getenv("IW2_GPU_GUARD_MS")))) : game::kGpuGuardHoldMs;
+        const bool heldBefore = gpuHold;
+        switch (game::gpuGuardUpdate(gpuGuard, e.count, SDL_GetTicks(), holdMs)) {
+        case game::GpuGuardEvent::Held:
+            std::cout << "GPU guard: ray tracing and MetalFX held for " << double(holdMs) / 1000.0 << " s (a GPU error)\n";
+            break;
+        case game::GpuGuardEvent::HeldForGood:
+            std::cout << "GPU guard: ray tracing and MetalFX off until the program is started again (GPU errors again)\n";
+            break;
+        case game::GpuGuardEvent::Released: std::cout << "GPU guard: ray tracing and MetalFX on again\n"; break;
+        case game::GpuGuardEvent::None: break;
+        }
+        gpuHold = gpuGuard.holding(SDL_GetTicks());
+        if (gpuHold != heldBefore) taaHistValid = false; // the resolve changes (MetalFX <-> our TAA): no history across it
+        if (e.count == gpuErrorsLogged) return;
+        const uint64_t now = SDL_GetTicksNS();
+        if (gpuErrorsLogged == 0) std::cout << "GPU error: " << e.last << " (code " << e.lastCode << ")\n";
+        else if (now - gpuErrorLogNs < 1000000000ull) return;
+        if (gpuErrorsLogged != 0 || e.count > 1)
+            std::cout << "GPU errors: " << e.count << " command buffers not run to the end (" << e.stuck << " stuck, " << e.ignored
+                      << " dropped after them); last cause: " << e.last << "\n";
+        gpuErrorsLogged = e.count, gpuErrorLogNs = now;
+    }
     bool temporalHold = false;
     bool temporalHeld = false; // the previous frame reused the output: the next encode starts a new history
     bool rtWantsBeyondView() const { return metalCaps.rayTracing && enh.enabled && enh.rtBeyondView && (enh.rtReflections || enh.rtShadows); }
@@ -3137,6 +3181,11 @@ struct Renderer {
     uint64_t giLastFrame = ~0ull;               // the frame it was last made in (its history is valid for the next one)
     uint64_t giScene = 0;
     void enhRTGI(SDL_GPUCommandBuffer* cmd, uint32_t hw, uint32_t hh, const game::Mat4c& inv, const float zl[2], const float eye[3], const Mat4& vp);
+    // IW2_GPU_TRACE (docs/debug-flags.md): what the ray tracing scene held since the last trace line
+    bool rtTrace = std::getenv("IW2_GPU_TRACE") != nullptr;
+    float rtTraceMaxDef = 0.0f, rtTraceMaxRigid = 0.0f, rtTraceMaxT = 0.0f;
+    uint64_t rtTraceItems = 0;
+    uint64_t rtLeftOut = 0, rtLeftOutLogMs = 0; // objects game::rtItemSane kept out of the ray tracing scene
     void prepareSceneRT(SDL_GPUCommandBuffer* cmd, const Scene& scene, const std::vector<DrawItem>& items) {
         if (!metalCaps.rayTracing || !enh.enabled) return;
         if (sceneRTFrame == frameCounter) return; // once a frame (the AO pass and the scene pass both ask)
@@ -3146,8 +3195,8 @@ struct Renderer {
             sceneRTFor = scene.serial;
             sceneRT.clearStatic();
             std::vector<std::pair<uint32_t, uint32_t>> ranges;
-            // the static world and static models; the alpha-tested surfaces (foliage, fences) apart, tested per ray candidate
-            // against their material's alpha (an R8 array of 64 x 64 layers, at most 255 materials)
+            // the static world and static models; the alpha-tested surfaces (foliage, fences) apart: a ray's nearest triangle of
+            // them is tested against its material's alpha (an R8 array of 64 x 64 layers, at most 255 materials)
             std::vector<metal::SceneRT::AlphaRange> alpha;
             std::unordered_map<int, uint32_t> layerOf;
             for (const Batch& b : scene.batches) {
@@ -3192,6 +3241,25 @@ struct Renderer {
                 std::vector<std::pair<uint32_t, uint32_t>> ranges;
                 for (const Batch& b : it.model->batches)
                     if (b.pass == Pass::Opaque && b.indexCount >= 3) ranges.push_back({b.firstIndex, b.indexCount});
+                if (it.model->hasBounds && !game::rtItemSane(it.model->mins, it.model->maxs, it.transform.data())) {
+                    if (const uint64_t now = SDL_GetTicks(); now - rtLeftOutLogMs >= 1000 || rtLeftOut == 0) {
+                        rtLeftOutLogMs = now;
+                        std::cout << "ray tracing: an object left out (box " << it.model->mins[0] << "," << it.model->mins[1] << "," << it.model->mins[2] << " .. "
+                                  << it.model->maxs[0] << "," << it.model->maxs[1] << "," << it.model->maxs[2] << "; " << rtLeftOut + 1 << " so far)\n";
+                    }
+                    ++rtLeftOut;
+                    continue;
+                }
+                if (rtTrace && it.model->hasBounds) {
+                    float ext = 0.0f;
+                    for (int ax = 0; ax < 3; ++ax) ext = std::max(ext, it.model->maxs[ax] - it.model->mins[ax]);
+                    const bool def = it.model->arenaVertices || list == &shadowOnlyItems;
+                    float sc = 0.0f;
+                    for (int k = 0; k < 16; ++k) sc = std::max(sc, std::abs(it.transform[size_t(k)]));
+                    if (def) rtTraceMaxDef = std::max(rtTraceMaxDef, ext); else rtTraceMaxRigid = std::max(rtTraceMaxRigid, ext);
+                    rtTraceMaxT = std::max(rtTraceMaxT, sc);
+                    ++rtTraceItems;
+                }
                 sceneRT.addItem(it.model->vertices, it.model->vertexOffset, uint32_t(sizeof(GpuVertex)), it.model->indices, ranges,
                                 it.transform.data(), it.model, it.model->arenaVertices || list == &shadowOnlyItems,
                                 list == &shadowOnlyItems ? metal::SceneRT::kMaskBody : metal::SceneRT::kMaskDynamic);
@@ -4328,6 +4396,8 @@ struct Renderer {
     // offscreen texture first and a final full-screen pass applies the ramp (game/gammaramp.h, docs/spec/ui.md "Brightness").
     void draw(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, uint32_t w, uint32_t h, const Scene& scene, const Camera& cam,
               const std::vector<DrawItem>& items = {}, const std::vector<Quad2D>& overlay = {}, float blur = 0.0f) {
+        metal::watchCommandBuffer(cmd);
+        gpuErrorReport();
         if (enh.enabled && enh.ggx && enh.probes && !capturingProbes && probesFor != scene.serial && !scene.batches.empty()) {
             captureProbes(cmd, scene);
         }
@@ -4376,16 +4446,16 @@ struct Renderer {
         const bool taaOn = enh.enabled && enh.taa;
         // Stage 5 render scale (docs/render-enhanced.md): with MetalFX upscaling the scene passes run at rw x rh and MetalFX
         // writes the output size; everything after the resolve (post, HUD) stays at w x h.
-        const float rscale = taaOn ? game::effectiveRenderScale(enh.renderScale, enh.metalFx && metalCaps.metalFx && !capturingProbes) : 1.0f;
+        const float rscale = taaOn ? game::effectiveRenderScale(enh.renderScale, metalFxNow() && !capturingProbes) : 1.0f;
         const auto rsz = game::renderSize(w, h, rscale);
         const uint32_t rw = rsz[0], rh = rsz[1];
         const bool scaled = rw != w || rh != h;
         outW = w, outH = h, renderScaleNow = float(rw) / float(w);
-        rtReflNow = enh.enabled && enh.rtReflections && metalCaps.rayTracing && !capturingProbes;
-        rtShadowNow = enh.enabled && (enh.rtShadows || enh.rtContactAO || (enh.rtLightShadows && enh.lightShadows && !dlights.empty())) &&
-                      metalCaps.rayTracing && !capturingProbes;
+        const bool rtNow = metalCaps.rayTracing && !gpuHold && !capturingProbes; // the GPU guard holds the ray tracing after a GPU error
+        rtReflNow = enh.enabled && enh.rtReflections && rtNow;
+        rtShadowNow = enh.enabled && (enh.rtShadows || enh.rtContactAO || (enh.rtLightShadows && enh.lightShadows && !dlights.empty())) && rtNow;
         rtLightsReady = false;
-        rtGINow = enh.enabled && enh.rtGI && metalCaps.rayTracing && taaOn && !capturingProbes; // (everywhere else the ultra preset is the high one)
+        rtGINow = enh.enabled && enh.rtGI && rtNow && taaOn; // (everywhere else the ultra preset is the high one)
         giReady = false;
         ++frameCounter;
         frameItems = &items;
@@ -13043,6 +13113,14 @@ int main(int argc, char** argv) {
                                       << " breathScale=" << ps.breathScale << " net=" << (netClient != nullptr) << "\n";
                         }
                     }
+                    if (std::getenv("IW2_POS_TRACE")) { // debug: where the player is, every 500 ms (docs/debug-flags.md)
+                        static int64_t nextTrace = 0;
+                        if (nowMs >= nextTrace) {
+                            nextTrace = nowMs + 500;
+                            log::Trace("pos") << "postrace t=" << nowMs << " pos=" << ps.origin[0] << "," << ps.origin[1] << "," << ps.origin[2] << " yaw=" << cam.yaw
+                                      << " pitch=" << cam.pitch << " ladder=" << ps.onLadder << " ground=" << ps.onGround << "\n";
+                        }
+                    }
                     // +scores / -scores (0x4a4d40 / 0x4a4d20): each change of the objectives key stamps the touch time 0xf79200.
                     if (!std::getenv("IW2_SHOT_OBJECTIVES") && input.objectivesHeld() != hudFade.objectivesHeld) hudFade.objectivesHeld = input.objectivesHeld(), hudFade.objectives = nowMs;
                 }
@@ -13734,6 +13812,9 @@ int main(int argc, char** argv) {
                         cam.yaw += float(std::atof(k.c_str() + 5));
                     } else if (k.rfind("yaw:", 0) == 0) { // yaw:<deg> sets the view yaw (absolute, e.g. to face a placed player)
                         cam.yaw = float(std::atof(k.c_str() + 4));
+                    } else if (k.rfind("setpos:", 0) == 0) { // setpos:X/Y/Z puts the local player there, at rest (scripted soaks, single player)
+                        float x = 0, y = 0, z = 0;
+                        if (std::sscanf(k.c_str() + 7, "%f/%f/%f", &x, &y, &z) == 3) ps.origin = {x, y, z}, ps.velocity = {0, 0, 0};
                     } else if (k.rfind("pitch:", 0) == 0) { // pitch:<deg> sets the view pitch (positive looks down)
                         cam.pitch = std::clamp(float(std::atof(k.c_str() + 6)), -89.0f, 89.0f);
                     } else if (k.rfind("cmd:", 0) == 0) { // cmd:+forward / cmd:-forward / cmd:weapnext: a bound command as if from a key
@@ -13899,7 +13980,21 @@ int main(int argc, char** argv) {
             SDL_GPUTexture* swap = nullptr;
             uint32_t w = 0, h = 0;
             const uint64_t profA = SDL_GetTicksNS();
-            const bool gotSwap = SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h);
+            // IW2_OFFSCREEN=WxH (docs/debug-flags.md): live play drawn into an offscreen image of that size instead of the window, so a
+            // soak does not depend on the display (asleep, locked or the window hidden, the system hands out no window images).
+            static const game::OffscreenSize offscreen = game::parseOffscreenSize(std::getenv("IW2_OFFSCREEN"));
+            static SDL_GPUTexture* offscreenTex = nullptr;
+            if (offscreen.on && !offscreenTex) {
+                SDL_GPUTextureCreateInfo oi{};
+                oi.type = SDL_GPU_TEXTURETYPE_2D, oi.format = SDL_GetGPUSwapchainTextureFormat(dev, window);
+                oi.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                oi.width = offscreen.w, oi.height = offscreen.h, oi.layer_count_or_depth = 1, oi.num_levels = 1;
+                offscreenTex = SDL_CreateGPUTexture(dev, &oi);
+                if (!offscreenTex) sdlFail("offscreen image");
+                std::cout << "offscreen: " << offscreen.w << "x" << offscreen.h << ", nothing is shown in the window\n";
+            }
+            if (offscreen.on) swap = offscreenTex, w = offscreen.w, h = offscreen.h;
+            const bool gotSwap = offscreen.on || SDL_WaitAndAcquireGPUSwapchainTexture(cmd, window, &swap, &w, &h);
             profWait += double(SDL_GetTicksNS() - profA) * 1e-6;
             netTracePrevWaitUs = (SDL_GetTicksNS() - profA) / 1000;
             if (gotSwap && swap)
@@ -13969,7 +14064,25 @@ int main(int argc, char** argv) {
                 if (pendingShot != Shot::None)
                     takeShot(std::exchange(pendingShot, Shot::None), captureRgba(dev, renderer, scene, cam, w, h, items, hud, blur), w, h);
             }
+            if (offscreen.on) { // no window image paces the loop: wait for the frame, so frames do not pile up on the GPU
+                SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+                SDL_WaitForGPUFences(dev, true, &fence, 1);
+                SDL_ReleaseGPUFence(dev, fence);
+            } else
             SDL_SubmitGPUCommandBuffer(cmd);
+            if (static const bool gpuTrace = std::getenv("IW2_GPU_TRACE") != nullptr; gpuTrace) { // debug: the GPU's state every 5 s
+                static uint64_t traceNs = SDL_GetTicksNS(), traceFrames = 0;
+                ++traceFrames;
+                if (const uint64_t nowNs = SDL_GetTicksNS(); nowNs - traceNs >= 5000000000ull) {
+                    const metal::GpuErrors ge = metal::gpuErrors();
+                    std::cout << "gputrace fps " << double(traceFrames) / (double(nowNs - traceNs) * 1e-9) << " gpu max ms " << ge.maxGpuMs << " slow " << ge.slow
+                              << " errors " << ge.count << " nan resets " << renderer.nanResets << " rt items/frame "
+                              << double(renderer.rtTraceItems) / double(traceFrames) << " extent deforming " << renderer.rtTraceMaxDef << " rigid "
+                              << renderer.rtTraceMaxRigid << " paused " << (menuEnv.getCvar("cl_paused") == "1") << "\n";
+                    renderer.rtTraceItems = 0, renderer.rtTraceMaxDef = renderer.rtTraceMaxRigid = renderer.rtTraceMaxT = 0.0f;
+                    traceNs = nowNs, traceFrames = 0;
+                }
+            }
             if (std::exchange(firstFramePending, false)) last = SDL_GetTicksNS(); // see endLoad
             if (traceFramesAfterLoad >= 0 && traceFramesAfterLoad < 3) {
                 std::string what = "frame presented #" + std::to_string(++traceFramesAfterLoad);

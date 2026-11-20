@@ -522,7 +522,7 @@ void Renderer::enhTaaResolve(SDL_GPUCommandBuffer* cmd, uint32_t rw, uint32_t rh
         nanInputMode = true;
         enhNanGuard(cmd, sceneTex, rw, rh);
     }
-    if (enh.metalFx && metalCaps.metalFx && enhMetalFxResolve(cmd, rw, rh, w, h, cam, &u, sizeof u)) {
+    if (metalFxNow() && enhMetalFxResolve(cmd, rw, rh, w, h, cam, &u, sizeof u)) {
         enhNanGuard(cmd, taaHist[taaCur], w, h);
         return;
     }

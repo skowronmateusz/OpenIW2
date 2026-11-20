@@ -1064,6 +1064,10 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   # the resolve's input or history, with our TAA and MetalFX where the build has it.
   add_test(NAME iw2viewnan_e2e COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2view_nan.sh $<TARGET_FILE:iw2view> ${IW2_TEST_MAIN} elalamein)
   set_tests_properties(iw2viewnan_e2e PROPERTIES PASS_REGULAR_EXPRESSION "iw2view nan: ok" TIMEOUT 300)
+  # GPU errors (docs/render-enhanced.md "GPU errors"): the ray tracing kernels build, a command buffer counted as hung holds
+  # the ray tracing and MetalFX (the GPU guard), and live play drawn offscreen runs without a GPU error.
+  add_test(NAME iw2viewgpuguard_e2e COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2view_gpuguard.sh $<TARGET_FILE:iw2view> ${IW2_TEST_MAIN} elalamein)
+  set_tests_properties(iw2viewgpuguard_e2e PROPERTIES PASS_REGULAR_EXPRESSION "iw2view gpu guard: ok" TIMEOUT 400)
   # The server's session log (docs/logging.md); the log folder is a temp folder, never the real one.
   add_test(NAME iw2server_log COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2server_log.sh $<TARGET_FILE:iw2server>
     $<TARGET_FILE:iw2netclient> $<TARGET_FILE:iw2netinfo> ${IW2_TEST_MAIN})

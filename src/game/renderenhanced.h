@@ -7,6 +7,8 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <string>
@@ -800,6 +802,88 @@ inline bool metalRayTracingAllowed(bool supportsRaytracing, bool apple9, bool fo
 // MetalFX while paused (docs/render-enhanced.md "MetalFX while paused"): a single-player pause (a menu over a frozen world)
 // shows the scaler's last output again instead of running it; a multiplayer world never pauses.
 inline bool metalFxHold(bool clPaused, bool multiplayer) { return clPaused && !multiplayer; }
+
+// GPU command-buffer errors (docs/render-enhanced.md "GPU errors"): what the error of a command buffer the GPU did not finish
+// means. Metal's text names the driver's reason; without one the MTLCommandBufferError code decides (2 timeout, 4 access revoked).
+//   Stuck:   this buffer's work did not end (a hang, a timeout, work cut off for holding up the display);
+//   Ignored: dropped unrun, because the driver no longer runs this process's work after its earlier errors;
+//   Other:   anything else (a buffer discarded while the GPU recovered from another one's error, out of memory, ...).
+// The GPU guard (docs/render-enhanced.md "GPU errors"). After a command buffer the GPU did not run to the end, the native Metal
+// work (ray tracing, MetalFX) is held for holdMs: the frame then needs only SDL's own passes, and the scaler is not handed work
+// the GPU may drop. Errors that arrive during a hold (the buffers queued behind the failed one) extend it and are no new
+// strike. The second strike holds for the rest of the run. Slow frames are only reported, never a strike.
+constexpr uint64_t kGpuGuardHoldMs = 30000;
+constexpr int kGpuGuardMaxStrikes = 2;
+struct GpuGuard {
+    uint64_t seenErrors = 0;
+    uint64_t holdUntilMs = 0;
+    int strikes = 0;
+    bool forGood = false;
+    bool held = false; // a hold is on (and its end not reported yet)
+    bool holding(uint64_t nowMs) const { return forGood || (held && nowMs < holdUntilMs); }
+};
+enum class GpuGuardEvent { None = 0, Held = 1, HeldForGood = 2, Released = 3 };
+// errors: the count of failed command buffers so far. Returns what changed with this call.
+inline GpuGuardEvent gpuGuardUpdate(GpuGuard& g, uint64_t errors, uint64_t nowMs, uint64_t holdMs = kGpuGuardHoldMs) {
+    if (g.forGood) return g.seenErrors = errors, GpuGuardEvent::None;
+    if (errors > g.seenErrors) {
+        g.seenErrors = errors;
+        if (g.holding(nowMs)) {
+            g.holdUntilMs = nowMs + holdMs; // the buffers queued behind the failed one: the same strike
+        } else {
+            ++g.strikes;
+            g.held = true;
+            g.holdUntilMs = nowMs + holdMs;
+            if (g.strikes >= kGpuGuardMaxStrikes) { g.forGood = true; return GpuGuardEvent::HeldForGood; }
+            return GpuGuardEvent::Held;
+        }
+    }
+    if (g.held && nowMs >= g.holdUntilMs) { g.held = false; return GpuGuardEvent::Released; }
+    return GpuGuardEvent::None;
+}
+
+// A moving object in the ray tracing scene (docs/render-enhanced.md "GPU errors"): its drawn-vertex box and its model-to-world
+// transform must be finite and of a size a model can have. Triangles spread over a huge range (a pose gone wrong, vertices read
+// from the wrong place) all overlap each other in the bottom-level structure, and every ray then tests nearly all of them: one
+// such object makes a frame's rays take seconds. Such an object is left out of the scene for that frame.
+constexpr float kRtItemMaxExtent = 8192.0f, kRtItemMaxCoord = 1.0e6f;
+inline bool rtItemSane(const float mins[3], const float maxs[3], const float* transform16) {
+    for (int a = 0; a < 3; ++a) {
+        if (!std::isfinite(mins[a]) || !std::isfinite(maxs[a])) return false;
+        if (maxs[a] < mins[a] || maxs[a] - mins[a] > kRtItemMaxExtent) return false;
+        if (std::abs(mins[a]) > kRtItemMaxCoord || std::abs(maxs[a]) > kRtItemMaxCoord) return false;
+    }
+    for (int k = 0; k < 16; ++k)
+        if (!std::isfinite(transform16[k]) || std::abs(transform16[k]) > kRtItemMaxCoord) return false;
+    return true;
+}
+
+// IW2_OFFSCREEN=WxH (docs/debug-flags.md): the size of the offscreen image live play is drawn into; off when unset or malformed.
+struct OffscreenSize {
+    bool on = false;
+    uint32_t w = 0, h = 0;
+};
+inline OffscreenSize parseOffscreenSize(const char* text) {
+    OffscreenSize o;
+    if (!text) return o;
+    unsigned w = 0, h = 0;
+    char x = 0, tail = 0;
+    if (std::sscanf(text, "%u%c%u%c", &w, &x, &h, &tail) != 3 || x != 'x') return o;
+    if (w < 64 || h < 64 || w > 16384 || h > 16384) return o;
+    o.on = true, o.w = w, o.h = h;
+    return o;
+}
+// A frame's GPU work above kGpuSlowMs is reported in the log (a report only: nothing is switched off for it).
+constexpr double kGpuSlowMs = 250.0;
+inline bool gpuTimeIsSlow(double gpuMs) { return gpuMs > kGpuSlowMs; }
+enum class GpuErrorKind { Other = 0, Stuck = 1, Ignored = 2 };
+inline GpuErrorKind gpuErrorKind(int code, const std::string& text) {
+    auto has = [&](const char* k) { return text.find(k) != std::string::npos; };
+    if (has("ErrorSubmissionsIgnored")) return GpuErrorKind::Ignored;
+    if (has("ErrorHang") || has("ErrorTimeout") || has("ErrorImpactingInteractivity")) return GpuErrorKind::Stuck;
+    if (has("kIOGPUCommandBufferCallbackError")) return GpuErrorKind::Other;
+    return code == 2 ? GpuErrorKind::Stuck : code == 4 ? GpuErrorKind::Ignored : GpuErrorKind::Other;
+}
 
 // ---- shadow-only player body (r_enhPlayerShadow, docs/render-enhanced.md "Player shadow") ---------------------------------------
 // Our own design: the first-person player has no body, so the sun shadow and the ray tracing get one that is never drawn in the

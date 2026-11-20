@@ -572,6 +572,56 @@ int main() {
         for (float c = 0.0f; c < 0.5f; c += 0.01f) mono = mono && taaShadowHistoryWeight(c + 0.01f) <= taaShadowHistoryWeight(c);
         chk(mono, __LINE__);
     }
+    // GPU errors: the driver's reason in Metal's text decides; without one the Metal code (2 timeout, 4 access revoked).
+    {
+        const char* pre = "Execution of the command buffer was aborted due to an error during execution. ";
+        auto kind = [&](const char* reason, int code) { return gpuErrorKind(code, std::string(pre) + reason); };
+        chk(kind("Caused GPU Hang Error (00000003:kIOGPUCommandBufferCallbackErrorHang)", 1) == GpuErrorKind::Stuck, __LINE__);
+        chk(kind("Caused GPU Timeout Error (00000002:kIOGPUCommandBufferCallbackErrorTimeout)", 2) == GpuErrorKind::Stuck, __LINE__);
+        chk(kind("Impacting Interactivity (0000000e:kIOGPUCommandBufferCallbackErrorImpactingInteractivity)", 1) == GpuErrorKind::Stuck, __LINE__);
+        chk(kind("Ignored (for causing prior/excessive GPU errors) (00000004:kIOGPUCommandBufferCallbackErrorSubmissionsIgnored)", 4) == GpuErrorKind::Ignored, __LINE__);
+        // a victim of another buffer's error is neither, whatever its Metal code
+        chk(kind("Discarded (victim of GPU error/recovery) (00000005:kIOGPUCommandBufferCallbackErrorInnocentVictim)", 2) == GpuErrorKind::Other, __LINE__);
+        chk(gpuErrorKind(2, "timed out") == GpuErrorKind::Stuck && gpuErrorKind(4, "") == GpuErrorKind::Ignored, __LINE__);
+        chk(gpuErrorKind(8, "out of memory") == GpuErrorKind::Other && gpuErrorKind(0, "") == GpuErrorKind::Other, __LINE__);
+        chk(!gpuTimeIsSlow(16.0) && !gpuTimeIsSlow(kGpuSlowMs) && gpuTimeIsSlow(kGpuSlowMs + 1.0), __LINE__);
+    }
+    // The GPU guard: an error holds the native Metal work, the errors that follow during the hold extend it and are no new
+    // strike, the hold ends, and the second strike holds for good.
+    {
+        GpuGuard g;
+        chk(gpuGuardUpdate(g, 0, 1000) == GpuGuardEvent::None && !g.holding(1000), __LINE__);
+        chk(gpuGuardUpdate(g, 1, 2000) == GpuGuardEvent::Held && g.holding(2000) && g.strikes == 1, __LINE__);
+        chk(gpuGuardUpdate(g, 40, 5000) == GpuGuardEvent::None && g.strikes == 1, __LINE__); // the flood behind the first error
+        chk(g.holding(5000 + kGpuGuardHoldMs - 1) && !g.holding(5000 + kGpuGuardHoldMs), __LINE__); // ... and the hold starts again
+        chk(gpuGuardUpdate(g, 40, 5000 + kGpuGuardHoldMs) == GpuGuardEvent::Released, __LINE__);
+        chk(gpuGuardUpdate(g, 40, 5001 + kGpuGuardHoldMs) == GpuGuardEvent::None && !g.holding(5001 + kGpuGuardHoldMs), __LINE__);
+        chk(gpuGuardUpdate(g, 41, 900000) == GpuGuardEvent::HeldForGood && g.holding(900000) && g.holding(~0ull), __LINE__);
+        chk(gpuGuardUpdate(g, 99, 990000) == GpuGuardEvent::None && g.holding(990000) && g.strikes == kGpuGuardMaxStrikes, __LINE__);
+        GpuGuard u; // a shorter hold (IW2_GPU_GUARD_MS)
+        chk(gpuGuardUpdate(u, 1, 100, 30) == GpuGuardEvent::Held && u.holding(129) && gpuGuardUpdate(u, 1, 130, 30) == GpuGuardEvent::Released, __LINE__);
+    }
+    // An object in the ray tracing scene: a finite box and transform of a size a model can have; anything else is left out.
+    {
+        const float id[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -6717, -11090, 176, 1};
+        const float lo[3] = {-155, -106, -9}, hi[3] = {172, 85, 141}; // a destroyed tank
+        chk(rtItemSane(lo, hi, id), __LINE__);
+        const float nanHi[3] = {172, std::nanf(""), 141}, infLo[3] = {-INFINITY, -106, -9}, hugeHi[3] = {172, 85, 2.0e9f}, wideHi[3] = {kRtItemMaxExtent, 85, 141};
+        chk(!rtItemSane(lo, nanHi, id) && !rtItemSane(infLo, hi, id) && !rtItemSane(lo, hugeHi, id) && !rtItemSane(lo, wideHi, id), __LINE__);
+        chk(!rtItemSane(hi, lo, id), __LINE__); // an empty box (no vertex gave a bound)
+        float bad1[16], bad2[16];
+        std::copy(id, id + 16, bad1), std::copy(id, id + 16, bad2);
+        bad1[12] = std::nanf(""), bad2[5] = 3.0e7f;
+        chk(!rtItemSane(lo, hi, bad1) && !rtItemSane(lo, hi, bad2), __LINE__);
+    }
+    // IW2_OFFSCREEN: WxH, nothing else.
+    {
+        const OffscreenSize a = parseOffscreenSize("3024x1708");
+        chk(a.on && a.w == 3024 && a.h == 1708, __LINE__);
+        chk(!parseOffscreenSize(nullptr).on && !parseOffscreenSize("").on && !parseOffscreenSize("1").on && !parseOffscreenSize("640").on, __LINE__);
+        chk(!parseOffscreenSize("640x").on && !parseOffscreenSize("640x480x2").on && !parseOffscreenSize("8x8").on && !parseOffscreenSize("640,480").on, __LINE__);
+        chk(!parseOffscreenSize("99999x480").on, __LINE__);
+    }
     if (bad) std::printf("%d failures\n", bad);
     else std::printf("ok\n");
     return bad ? 1 : 0;
