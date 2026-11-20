@@ -583,7 +583,7 @@ void Renderer::enhNanInject(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* img, uint
 // is long done); a count above 0 drops the TAA / MetalFX history, which a non-finite pixel would otherwise spread. Then this
 // frame's count is made on the GPU and its download queued.
 void Renderer::enhNanGuard(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* img, uint32_t w, uint32_t h) {
-    if (!enhNanCountPipe || !img || (nanInputMode && img != sceneTex)) return;
+    if (!enhNanCountPipe || !enhNanSumPipe || !img || (nanInputMode && img != sceneTex)) return;
     enhNanInject(cmd, img, w, h, true); // IW2_ENH_INJECT_NAN with history = 1
     static const bool report = std::getenv("IW2_ENH_NANCHECK") != nullptr;
     if (nanSeq >= kNanLag && nanTb[(nanSeq - kNanLag) % kNanSlots]) {
@@ -605,21 +605,28 @@ void Renderer::enhNanGuard(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* img, uint3
         ti.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
         ti.width = ti.height = kNanGrid, ti.layer_count_or_depth = 1, ti.num_levels = 1;
         nanTex = SDL_CreateGPUTexture(dev, &ti);
+        ti.width = ti.height = kNanTiles;
+        nanTiles = SDL_CreateGPUTexture(dev, &ti);
         SDL_GPUTransferBufferCreateInfo bi{};
         bi.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD, bi.size = kNanGrid * kNanGrid * 4;
         for (auto& t : nanTb) t = SDL_CreateGPUTransferBuffer(dev, &bi);
-        if (!nanTex) return;
+        if (!nanTex || !nanTiles) return;
     }
-    SDL_GPUColorTargetInfo ct{};
-    ct.texture = nanTex, ct.load_op = SDL_GPU_LOADOP_DONT_CARE, ct.store_op = SDL_GPU_STOREOP_STORE;
-    SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
-    SDL_BindGPUGraphicsPipeline(p, enhNanCountPipe);
-    const SDL_GPUTextureSamplerBinding tb{img, pointClampSampler};
-    SDL_BindGPUFragmentSamplers(p, 0, &tb, 1);
-    const float nu[4] = {float(w), float(h), float((w + kNanGrid - 1) / kNanGrid), float((h + kNanGrid - 1) / kNanGrid)};
-    SDL_PushGPUFragmentUniformData(cmd, 0, nu, sizeof nu);
-    SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
-    SDL_EndGPURenderPass(p);
+    // Two steps: the image's pixels into kNanTiles x kNanTiles tile counts, then those summed into the kNanGrid x kNanGrid image.
+    const auto pass = [&](SDL_GPUTexture* target, SDL_GPUGraphicsPipeline* pipe, SDL_GPUTexture* src, uint32_t sw, uint32_t sh, uint32_t cells) {
+        SDL_GPUColorTargetInfo ct{};
+        ct.texture = target, ct.load_op = SDL_GPU_LOADOP_DONT_CARE, ct.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass* p = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+        SDL_BindGPUGraphicsPipeline(p, pipe);
+        const SDL_GPUTextureSamplerBinding tb{src, pointClampSampler};
+        SDL_BindGPUFragmentSamplers(p, 0, &tb, 1);
+        const float nu[4] = {float(sw), float(sh), float((sw + cells - 1) / cells), float((sh + cells - 1) / cells)};
+        SDL_PushGPUFragmentUniformData(cmd, 0, nu, sizeof nu);
+        SDL_DrawGPUPrimitives(p, 3, 1, 0, 0);
+        SDL_EndGPURenderPass(p);
+    };
+    pass(nanTiles, enhNanCountPipe, img, w, h, kNanTiles);
+    pass(nanTex, enhNanSumPipe, nanTiles, kNanTiles, kNanTiles, kNanGrid);
     SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion region{};
     region.texture = nanTex, region.w = kNanGrid, region.h = kNanGrid, region.d = 1;

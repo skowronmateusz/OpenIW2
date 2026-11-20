@@ -3082,11 +3082,14 @@ struct Renderer {
     SDL_GPUTexture* mfxColor = nullptr; // the scene with non-finite values removed (fs_enh_finite_copy), MetalFX's colour input
     SDL_GPUGraphicsPipeline* enhFiniteCopyPipe = nullptr;
     // The non-finite guard (docs/render-enhanced.md "Non-finite values"): the resolved image's non-finite pixels counted on the GPU
-    // into a 32 x 32 image each frame, read back kNanLag frames later (no wait); a count resets the TAA / MetalFX history.
-    static constexpr uint32_t kNanSlots = 4, kNanLag = 3, kNanGrid = 32;
+    // into kNanTiles x kNanTiles tiles each frame (a few dozen pixels per fragment, so the count runs wide on the GPU), the tiles
+    // summed into a kNanGrid x kNanGrid image, read back kNanLag frames later (no wait); a count resets the TAA / MetalFX history.
+    static constexpr uint32_t kNanSlots = 4, kNanLag = 3, kNanGrid = 32, kNanTiles = 256;
     SDL_GPUGraphicsPipeline* enhNanCountPipe = nullptr;
+    SDL_GPUGraphicsPipeline* enhNanSumPipe = nullptr;
     SDL_GPUGraphicsPipeline* enhNanInjectPipe = nullptr;
     SDL_GPUTexture* nanTex = nullptr;
+    SDL_GPUTexture* nanTiles = nullptr;
     SDL_GPUTransferBuffer* nanTb[kNanSlots] = {};
     uint64_t nanSeq = 0;
     uint64_t nanResets = 0;
@@ -3358,6 +3361,7 @@ struct Renderer {
         enhMfxDepthPipe = mk("fs_enh_mfx_depth", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R32_FLOAT);
         enhFiniteCopyPipe = mk("fs_enh_finite_copy", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhNanCountPipe = mk("fs_enh_nan_count", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R32_FLOAT);
+        enhNanSumPipe = mk("fs_enh_nan_sum", 1, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R32_FLOAT);
         enhNanInjectPipe = mk("fs_enh_nan_inject", 0, 0, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);
         enhMfxReactivePipe = mk("fs_enh_mfx_reactive", 4, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
         enhGiResolvePipe = mk("fs_enh_gi_resolve", 2, 1, false, false, false, SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT);

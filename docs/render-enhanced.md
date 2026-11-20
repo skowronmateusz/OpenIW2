@@ -251,8 +251,10 @@ lockup in the ray tracing: "GPU errors" below. What follows keeps the history fi
   tangents are parallel or zero (a depth edge, geometry right at the camera); normalize of a zero vector is NaN.
 - The TAA resolve and MetalFX's inputs take finite values only: colour NaN / infinities become 0 and the HDR range is limited to
   30000 (MetalFX gets a sanitised copy of the scene), motion is limited to the screen, a non-finite depth is the far plane.
-- The non-finite guard counts the non-finite pixels of every resolved image on the GPU (a 32 x 32 grid of tile counts), reads the
-  count back three frames later without waiting, and resets the TAA / MetalFX history when there is one.
+- The non-finite guard counts the non-finite pixels of every resolved image on the GPU in two steps: 256 x 256 tile counts (a
+  few dozen pixels per fragment, so the count spreads over the whole GPU), then those summed into a 32 x 32 grid. It reads the
+  count back three frames later without waiting, and resets the TAA / MetalFX history when there is one. The two steps took 4.4 ms
+  a frame off the GPU time of a single 32 x 32 step (thousands of pixels per fragment) at 3024 x 1712 on an M4 Pro.
 
 `IW2_ENH_NANCHECK` and `IW2_ENH_INJECT_NAN` (docs/debug-flags.md) show and test it (tests/iw2view_nan.sh).
 

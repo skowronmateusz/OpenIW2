@@ -540,6 +540,18 @@ fragment float4 fs_enh_nan_count(GlowVOut in [[stage_in]], constant NanCountU& u
         }
     return float4(n);
 }
+// The second step: the tile counts of the first summed over a block (p.zw tiles per cell).
+fragment float4 fs_enh_nan_sum(GlowVOut in [[stage_in]], constant NanCountU& u [[buffer(0)]], texture2d<float> src [[texture(0)]],
+                               sampler s [[sampler(0)]]) {
+    const uint2 o = uint2(in.position.xy) * uint2(u.p.zw), size = uint2(u.p.xy);
+    float n = 0.0;
+    for (uint y = 0; y < uint(u.p.w); ++y)
+        for (uint x = 0; x < uint(u.p.z); ++x) {
+            const uint2 q = o + uint2(x, y);
+            if (q.x < size.x && q.y < size.y) n += src.read(q).r;
+        }
+    return float4(n);
+}
 // IW2_ENH_INJECT_NAN (docs/debug-flags.md): NaN into a rectangle of an image (the test of the guard and the sanitising).
 fragment float4 fs_enh_nan_inject(GlowVOut in [[stage_in]]) { return float4(as_type<float>(0x7fc00000u)); }
 
