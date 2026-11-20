@@ -86,7 +86,7 @@ std::string enhancedMenuSource() {
         "\tonOpen { setdvar ui_background_gradient_show \"1\"; }\n"
         "\tonESC { close " + std::string(kEnhancedPage) + "; open iw2_options; }\n"
         "\titemDef\n\t{\n\t\tname iw2_enh_title\n\t\ttype 0\n\t\ttext \"@IW2_ENH_TITLE\"\n\t\torigin 48 64\n\t\ttextscale .5\n\t\tforecolor 1 1 1 1\n\t\tvisible 1\n\t\tdecoration\n\t}\n";
-    const std::string presetOnOff = "\t\tdvarFloatList { \"@IW2_ENH_PRESET\" -1 \"@MENU_ON\" 1 \"@MENU_OFF\" 0 }\n";
+    const std::string onOff = "\t\tdvarFloatList { \"@MENU_ON\" 1 \"@MENU_OFF\" 0 }\n";
     // Row spacing: 15 units, closer when more rows are shown (the stage 5 rows) so the page ends no lower than it does without
     // them (above the bottom line): the gaps between the non-master rows take at most what the always-shown rows take at 15.
     int shown = 0, always = 0;
@@ -100,7 +100,7 @@ std::string enhancedMenuSource() {
     for (const EnhancedRow& r : enhancedRows()) {
         if (!enhancedRowAvailable(r)) continue;
         std::string list;
-        if (r.kind == EnhancedRow::PresetOnOff) list = presetOnOff;
+        if (r.kind == EnhancedRow::OnOff) list = onOff;
         else {
             list = "\t\tdvarFloatList {";
             for (const auto& [label, value] : r.choices) list += " \"" + label + "\" " + value;
@@ -120,33 +120,33 @@ const std::vector<EnhancedRow>& enhancedRows() {
     using C = std::vector<std::pair<std::string, std::string>>;
     static const std::vector<EnhancedRow> rows = {
         {"iw2_enh_master", "@IW2_ENH_MASTER", "r_enhanced", EnhancedRow::Choices, C{{"@MENU_OFF", "0"}, {"@MENU_ON", "1"}}, true},
-        {"iw2_enh_preset", "@IW2_ENH_QUALITY", "r_enhPreset", EnhancedRow::Choices, C{{"@MENU_LOW", "0"}, {"@MENU_MEDIUM", "1"}, {"@MENU_HIGH", "2"}, {"@IW2_ENH_ULTRA", "3"}}, false},
+        {"iw2_enh_preset", "@IW2_ENH_QUALITY", "r_enhPreset", EnhancedRow::Choices, C{{"@MENU_LOW", "0"}, {"@MENU_MEDIUM", "1"}, {"@MENU_HIGH", "2"}, {"@IW2_ENH_ULTRA", "3"}, {"@IW2_ENH_CUSTOM", "4"}}, false},
         {"iw2_enh_sun", "@IW2_ENH_SUN", "r_enhSunShadows", EnhancedRow::Choices,
-         C{{"@IW2_ENH_PRESET", "-1"}, {"@MENU_OFF", "0"}, {"@MENU_LOW", "1"}, {"@MENU_MEDIUM", "2"}, {"@MENU_HIGH", "3"}}, false},
+         C{{"@MENU_OFF", "0"}, {"@MENU_LOW", "1"}, {"@MENU_MEDIUM", "2"}, {"@MENU_HIGH", "3"}}, false},
         {"iw2_enh_world", "@IW2_ENH_WORLD", "r_enhWorldShadows", EnhancedRow::Choices,
-         C{{"@IW2_ENH_PRESET", "-1"}, {"@MENU_OFF", "0"}, {"@MENU_MEDIUM", "1"}, {"@MENU_HIGH", "2"}}, false},
+         C{{"@MENU_OFF", "0"}, {"@MENU_MEDIUM", "1"}, {"@MENU_HIGH", "2"}}, false},
         {"iw2_enh_rtshadow", "@IW2_ENH_RTSHADOW", "r_enhRTShadows", EnhancedRow::Choices, C{{"@MENU_ON", "1"}, {"@MENU_OFF", "0"}}, false, EnhancedRow::RayTracing},
-        {"iw2_enh_playershadow", "@IW2_ENH_PLAYERSHADOW", "r_enhPlayerShadow", EnhancedRow::PresetOnOff, {}, false},
-        {"iw2_enh_ao", "@IW2_ENH_AO", "r_enhAO", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_playershadow", "@IW2_ENH_PLAYERSHADOW", "r_enhPlayerShadow", EnhancedRow::OnOff, {}, false},
+        {"iw2_enh_ao", "@IW2_ENH_AO", "r_enhAO", EnhancedRow::OnOff, {}, false},
         {"iw2_enh_rtao", "@IW2_ENH_RTAO", "r_enhRTContactAO", EnhancedRow::Choices, C{{"@MENU_ON", "1"}, {"@MENU_OFF", "0"}}, false, EnhancedRow::RayTracing},
-        {"iw2_enh_contact", "@IW2_ENH_CONTACT", "r_enhContactShadows", EnhancedRow::PresetOnOff, {}, false},
-        {"iw2_enh_taa", "@IW2_ENH_TAA", "r_enhTAA", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_contact", "@IW2_ENH_CONTACT", "r_enhContactShadows", EnhancedRow::OnOff, {}, false},
+        {"iw2_enh_taa", "@IW2_ENH_TAA", "r_enhTAA", EnhancedRow::OnOff, {}, false},
         {"iw2_enh_metalfx", "@IW2_ENH_METALFX", "r_enhMetalFX", EnhancedRow::Choices, C{{"@MENU_OFF", "0"}, {"@MENU_ON", "1"}}, false, EnhancedRow::MetalFx},
         {"iw2_enh_scale", "@IW2_ENH_SCALE", "r_enhRenderScale", EnhancedRow::Choices,
          C{{"@IW2_ENH_SCALE_NATIVE", "1"}, {"@IW2_ENH_SCALE_Q", "0.77"}, {"@IW2_ENH_SCALE_B", "0.67"}, {"@IW2_ENH_SCALE_P", "0.5"}}, false, EnhancedRow::MetalFx},
-        {"iw2_enh_ggx", "@IW2_ENH_GGX", "r_enhGGX", EnhancedRow::PresetOnOff, {}, false},
-        {"iw2_enh_ssr", "@IW2_ENH_SSR", "r_enhSSR", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_ggx", "@IW2_ENH_GGX", "r_enhGGX", EnhancedRow::OnOff, {}, false},
+        {"iw2_enh_ssr", "@IW2_ENH_SSR", "r_enhSSR", EnhancedRow::OnOff, {}, false},
         {"iw2_enh_rtrefl", "@IW2_ENH_RTREFL", "r_enhRTReflections", EnhancedRow::Choices, C{{"@MENU_ON", "1"}, {"@MENU_OFF", "0"}}, false, EnhancedRow::RayTracing},
-        {"iw2_enh_lights", "@IW2_ENH_LIGHTS", "r_enhLightShadows", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_lights", "@IW2_ENH_LIGHTS", "r_enhLightShadows", EnhancedRow::OnOff, {}, false},
         {"iw2_enh_rtlights", "@IW2_ENH_RTLIGHTS", "r_enhRTLightShadows", EnhancedRow::Choices, C{{"@MENU_ON", "1"}, {"@MENU_OFF", "0"}}, false, EnhancedRow::RayTracing},
-        {"iw2_enh_rtgi", "@IW2_ENH_RTGI", "r_enhRTGI", EnhancedRow::Choices, C{{"@IW2_ENH_PRESET", "-1"}, {"@MENU_OFF", "0"}, {"@MENU_ON", "1"}}, false, EnhancedRow::RayTracing},
+        {"iw2_enh_rtgi", "@IW2_ENH_RTGI", "r_enhRTGI", EnhancedRow::Choices, C{{"@MENU_OFF", "0"}, {"@MENU_ON", "1"}}, false, EnhancedRow::RayTracing},
         {"iw2_enh_rtbehind", "@IW2_ENH_RTBEHIND", "r_enhRTBeyondView", EnhancedRow::Choices, C{{"@MENU_ON", "1"}, {"@MENU_OFF", "0"}}, false, EnhancedRow::RayTracing},
-        {"iw2_enh_lamps", "@IW2_ENH_LAMPS", "r_enhMapLightSpec", EnhancedRow::PresetOnOff, {}, false},
-        {"iw2_enh_probes", "@IW2_ENH_PROBES", "r_enhProbes", EnhancedRow::PresetOnOff, {}, false},
+        {"iw2_enh_lamps", "@IW2_ENH_LAMPS", "r_enhMapLightSpec", EnhancedRow::OnOff, {}, false},
+        {"iw2_enh_probes", "@IW2_ENH_PROBES", "r_enhProbes", EnhancedRow::OnOff, {}, false},
         {"iw2_enh_shafts", "@IW2_ENH_SHAFTS", "r_enhVolumetric", EnhancedRow::Choices,
-         C{{"@IW2_ENH_PRESET", "-1"}, {"@MENU_OFF", "0"}, {"@MENU_ON", "0.35"}, {"@IW2_ENH_STRONG", "0.7"}}, false},
-        {"iw2_enh_bloom", "@IW2_ENH_BLOOM", "r_enhBloom", EnhancedRow::PresetOnOff, {}, false},
-        {"iw2_enh_exposure", "@IW2_ENH_EXPOSURE", "r_enhAutoExposure", EnhancedRow::PresetOnOff, {}, false},
+         C{{"@MENU_OFF", "0"}, {"@MENU_ON", "0.35"}, {"@IW2_ENH_STRONG", "0.7"}}, false},
+        {"iw2_enh_bloom", "@IW2_ENH_BLOOM", "r_enhBloom", EnhancedRow::OnOff, {}, false},
+        {"iw2_enh_exposure", "@IW2_ENH_EXPOSURE", "r_enhAutoExposure", EnhancedRow::OnOff, {}, false},
         {"iw2_enh_grade", "@IW2_ENH_GRADE", "r_enhGrade", EnhancedRow::Choices, C{{"@IW2_ENH_NEUTRAL", "0"}, {"@IW2_ENH_FILM", "1"}}, false},
         {"iw2_enh_mblur", "@IW2_ENH_MBLUR", "r_enhMotionBlur", EnhancedRow::Choices, C{{"@MENU_OFF", "0"}, {"@MENU_ON", "1"}}, false},
         {"iw2_enh_dof", "@IW2_ENH_DOF", "r_enhDOF", EnhancedRow::Choices, C{{"@MENU_OFF", "0"}, {"@MENU_ON", "1"}}, false},
@@ -172,7 +172,7 @@ std::vector<std::pair<std::string, std::string>> openIw2Strings(const std::strin
         {"IW2_ENH_TITLE", "Enhanced graphics", "Enhanced graphics"},
         {"IW2_ENH_MASTER", "Enhanced graphics (next start)", "Enhanced graphics (next start)"},
         {"IW2_ENH_QUALITY", "Quality", "Quality"},
-        {"IW2_ENH_PRESET", "Preset", "Preset"},
+        {"IW2_ENH_CUSTOM", "Custom", "Custom"},
         {"IW2_ENH_STRONG", "Strong", "Strong"},
         {"IW2_ENH_SUN", "Shadows of moving objects", "Shadows of moving objects"},
         {"IW2_ENH_WORLD", "Sharp world shadows", "Sharp world shadows"},

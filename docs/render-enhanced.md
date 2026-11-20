@@ -16,56 +16,83 @@ colour), it uses the meaning given in docs/spec (material.md "Lightmaps", lightg
 | Cvar | Default | Meaning |
 |---|---|---|
 | `r_enhanced` | 0 | 1 = enhanced mode. Read when the renderer starts (like `r_aaSamples`), so it applies at the next start. |
-| `r_enhPreset` | 1 | Quality preset: 0 low, 1 medium, 2 high, 3 ultra (high plus ray-traced global illumination; on GPUs without hardware ray tracing it is the high preset). Fills the per-feature settings below. |
-| `r_enhSunShadows` | preset | Sun shadows of moving objects: 0 off, 1 low (1024², 4 taps), 2 medium (2048², 8 taps), 3 high (two 2048² cascades, 12 taps). |
+| `r_enhPreset` | 1 | Quality preset: 0 low, 1 medium, 2 high, 3 ultra (high plus ray-traced global illumination; on GPUs without hardware ray tracing it is the high preset), 4 custom. Picking 0..3 writes that preset's value into every option of the page (see "Presets"). |
+| `r_enhSunShadows` | 2 | Sun shadows of moving objects: 0 off, 1 low (1024², 4 taps), 2 medium (2048², 8 taps), 3 high (two 2048² cascades, 12 taps). |
 | `r_enhGridPerPixel` | 1 | Light-grid lattice per model instead of one sample per model. |
 | `r_enhTonemap` | 1 | Highlight shoulder instead of the clip at white. |
 | `r_enhBloom` | 1 | Bloom of the light above display white. |
 | `r_enhBloomIntensity` | 0.06 | Bloom strength (0..1). |
-| `r_enhAutoExposure` | preset | Mild auto exposure (off in the low preset). |
+| `r_enhAutoExposure` | 1 | Mild auto exposure (off in the low preset). |
 | `r_enhExposureBias` | 0 | Exposure offset in EV (-2..2). |
 | `r_enhEdr` | 1 | EDR output on displays that offer it (Liquid Retina XDR, HDR monitors). |
-| `r_enhWorldShadows` | preset | Sun shadow cascades of the world and static models: 0 off, 1 two cascades (1100 / 4500 units), 2 three (700 / 2400 / 8000). |
-| `r_enhAO` | preset | Ground-truth ambient occlusion on the baked and probe light. |
+| `r_enhWorldShadows` | 1 | Sun shadow cascades of the world and static models: 0 off, 1 two cascades (1100 / 4500 units), 2 three (700 / 2400 / 8000). |
+| `r_enhAO` | 1 | Ground-truth ambient occlusion on the baked and probe light. |
 | `r_enhAOStrength` | 0.7 | AO strength (0..1). |
-| `r_enhContactShadows` | preset | Short screen-space rays towards the sun (thin and near contact). |
-| `r_enhTAA` | preset | Temporal anti-aliasing. |
+| `r_enhContactShadows` | 1 | Short screen-space rays towards the sun (thin and near contact). |
+| `r_enhTAA` | 1 | Temporal anti-aliasing. |
 | `r_enhGGX` | 1 | GGX sun specular and reflections from the spec / gloss maps (else the original Phong). |
 | `r_enhSpecScale` | 1 | Sun specular scale (0..4). |
 | `r_enhEnvScale` | 0.35 | Reflection strength (0..2). |
-| `r_enhSSR` | preset | Screen-space reflections on water and the reflective surface classes (needs TAA). |
-| `r_enhLightShadows` | preset | Shadows of the dynamic (effect) lights, up to four lights. |
-| `r_enhVolumetric` | preset | Sun shafts: light scattered in the air through the sun's shadow (0 off .. 2; 0.35 in the high preset, else 0). |
+| `r_enhSSR` | 1 | Screen-space reflections on water and the reflective surface classes (needs TAA). |
+| `r_enhLightShadows` | 1 | Shadows of the dynamic (effect) lights, up to four lights. |
+| `r_enhVolumetric` | 0 | Sun shafts: light scattered in the air through the sun's shadow (0 off .. 2; 0.35 in the high preset, else 0). |
 | `r_enhGrade` | 0 | Colour grade: 0 neutral, 1 "period film" (contrast, desaturation, warm shadows, grain). |
-| `r_enhMapLightSpec` | preset | GGX specular from the map's light entities near the camera (their diffuse stays baked). |
+| `r_enhMapLightSpec` | 1 | GGX specular from the map's light entities near the camera (their diffuse stays baked). |
 | `r_enhMetalFX` | 0 | MetalFX temporal anti-aliasing instead of ours (needs TAA, a MetalFX GPU and the patched SDL; see "Stage 5"). |
 | `r_enhRTShadows` | 1 | Ray-traced sun and lamp shadows of the moving objects, soft (GPU family 9 and later; see "Stage 5"). |
 | `r_enhRTContactAO` | 1 | Ray-traced contact occlusion of the moving objects (GPU family 9 and later). |
 | `r_enhRTLightShadows` | 1 | Ray-traced shadows of the effect lights (muzzle flashes, explosions), with `r_enhLightShadows` (GPU family 9 and later). |
-| `r_enhRTGI` | -1 | Ray-traced global illumination of the moving objects (GPU family 9 and later; -1 = as the preset: on in ultra only; see "Ray-traced global illumination"). |
+| `r_enhRTGI` | 0 | Ray-traced global illumination of the moving objects (GPU family 9 and later; on in the ultra preset only; see "Ray-traced global illumination"). |
 | `r_enhRTBeyondView` | 1 | Objects outside the view but within 1500 units in the ray tracing (reflections, shadows); costs their CPU skinning. |
 | `r_enhRTReflections` | 1 | Ray-traced reflections on water and the reflective surface classes (GPU family 9 and later: M3 and later; see "Stage 5"). |
 | `r_enhRenderScale` | 1 | With MetalFX: the scene's resolution as a fraction of the window (0.5..1; the page offers 1, 0.77, 0.67, 0.5), upscaled by MetalFX. |
-| `r_enhProbes` | preset | Reflection probes captured when the map loads: rooms reflect themselves instead of the sky (off in the low preset). |
+| `r_enhProbes` | 1 | Reflection probes captured when the map loads: rooms reflect themselves instead of the sky (off in the low preset). |
 | `r_enhDOF` | 0 | Depth of field while aiming down the sights (0 off .. 2). |
-| `r_enhPlayerShadow` | -1 | The player's shadow-only body (sun shadows, ray tracing); never drawn in the view. On in every preset. |
+| `r_enhPlayerShadow` | 1 | The player's shadow-only body (sun shadows, ray tracing); never drawn in the view. On in every preset. |
 | `r_enhMotionBlur` | 0 | Motion blur amount (0 off, 1 = one frame of motion; needs TAA). |
-| `r_enhRebake` | 0 | Our own lighting re-bake instead of the shipped lightmaps (-1 = as the preset, which never turns it on; no menu row yet; needs the patched SDL and Metal ray tracing, read when a level loads; see docs/render-rebake.md). |
+| `r_enhRebake` | 0 | Our own lighting re-bake instead of the shipped lightmaps (no preset turns it on; no menu row yet; needs the patched SDL and Metal ray tracing, read when a level loads; see docs/render-rebake.md). |
 | `r_enhMotionDebug` | 0 | Debug views instead of the frame: 1 the motion vectors, 2 AO (red) and contact shadow (green). |
 
-All are read once when the renderer starts, from the profile's config or `--cvar name=value` (case-insensitive). A per-feature
-cvar that is set overrides the preset. Presets: low = moving-caster shadows 1, no world cascades, no auto exposure, AO, contact
-shadows, TAA, screen-space reflections or light shadows; medium = shadows 2, two world cascades; high = shadows 3, three world cascades. The other features are on in
-every preset. Gameplay, the server and the network are not affected; it is render-only.
+The defaults are the medium preset's values. All are read from the profile's config or `--cvar name=value` (case-insensitive).
+Gameplay, the server and the network are not affected; it is render-only.
+
+## Presets
+
+Our own design. `r_enhPreset` is Low, Medium, High, Ultra or Custom, and every option of the Enhanced graphics page holds a
+concrete value of its own (there is no "as the preset" value):
+- picking Low, Medium, High or Ultra writes that preset's value into every option of the page;
+- changing an option of the page by hand to a value other than the preset's makes the preset Custom; the options keep their
+  values (picking Custom changes no option, picking a preset again replaces them);
+- the cvars without a row (`r_enhTonemap`, `r_enhAOStrength`, `r_enhBloomIntensity`, ...) are not part of a preset;
+- on the command line a `--cvar r_enhPreset` is applied first, like picking it on the page, then the other `--cvar` options, so
+  `--cvar r_enhPreset=2 --cvar r_enhAO=0` is the high preset with AO off (Custom) in either order.
+
+| Option | Low | Medium | High | Ultra |
+|---|---|---|---|---|
+| Sun shadows of moving objects (`r_enhSunShadows`) | 1 | 2 | 3 | 3 |
+| World shadow cascades (`r_enhWorldShadows`) | 0 | 1 | 2 | 2 |
+| AO, contact shadows, TAA, screen-space reflections, light shadows, lamp highlights, probes, auto exposure | off | on | on | on |
+| Sun shafts (`r_enhVolumetric`) | 0 | 0 | 0.35 | 0.35 |
+| RT global illumination (`r_enhRTGI`) | off | off | off | on |
+| Highlights and reflections (GGX), bloom, player shadow, the other ray tracing rows, HDR output | on | on | on | on |
+| MetalFX, colour grade, motion blur, depth of field | off / neutral | off / neutral | off / neutral | off / neutral |
+| MetalFX render resolution | 1 | 1 | 1 | 1 |
+
+The table is `game::enhPresetOptions` (src/game/renderenhanced.h). Rows of features the machine lacks (MetalFX, ray tracing) are
+not shown, but a preset still writes their cvars.
+
+A profile saved before this design may hold -1 ("as the preset") or no value for an option. When the profile is loaded each
+such option takes the value of the preset saved with it, so its picture does not change; when an option then differs from that
+preset (a choice made by hand), the preset becomes Custom. An old `r_enhRebake` -1 becomes 0. The resolved values are written
+to the profile with the next change of a saved option. Tests: tests/test_enhpresets.cpp, tests/iw2view_enhpreset.sh.
 
 ## Menu
 
 Options > OpenIW2 > Enhanced graphics (an OpenIW2 page added in memory to the game's own menus, src/ui/iw2options.cpp). The mode is
 experimental and may cause visual glitches and bugs; a note at the top of the page says so.
 - the master row (`r_enhanced`, Off / On, applies at the next start) is always shown; every other row only while it is On;
-- Quality (`r_enhPreset`: Low / Medium / High / Ultra);
-- one row per feature cvar; the on/off features offer Preset / On / Off, where Preset is the value -1 and leaves the feature to the
-  quality choice (`game::enhancedSettings` ignores negative per-feature values); Sun shafts Preset / Off / On / Strong; Colour
+- Quality (`r_enhPreset`: Low / Medium / High / Ultra / Custom; see "Presets");
+- one row per feature cvar, with concrete values only: the on/off features On / Off; Sun shafts Off / On / Strong; Colour
   grade Neutral / Period film; Motion blur, Depth of field and HDR output Off / On;
 - all values are saved in the profile (archived like the shipped options) and, while the mode is on, read every frame and
   applied at once (the shadow maps are made again at a new size), except the master row and HDR output, which change the
@@ -494,7 +521,7 @@ Our own design; nothing here is taken from the shipped game. The lightmaps and t
 bounce light, so a ray-traced one-bounce term must not add that again. What the baked light cannot hold is what moves: the
 objects block the sky and the bounce around them, and they send their own lit colour onto their surroundings. Two terms, both
 only for the moving objects (instance mask `kMaskDynamic`), on GPUs with hardware ray tracing and with TAA on, in the ultra
-preset (`r_enhPreset 3` = high plus this) or with `r_enhRTGI 1`; everywhere else ultra is the high preset, unchanged:
+preset (`r_enhPreset 3` = high plus this) or with `r_enhRTGI 1` (Custom); everywhere else ultra is the high preset, unchanged:
 - Bounce (`metal::SceneRT::giPass`, our kernel `rt_gi`): at the AO's half size, from the surface point and a normal from
   `$floatz` (the same texel-centre rule as the shadow pass), one cosine-weighted ray a frame (`game::cosineHemisphereDir`)
   up to `game::kRtGiRange` (300 units) against the moving objects. A hit that is the visible surface on screen

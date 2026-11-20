@@ -11,7 +11,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace iw2::game {
@@ -73,7 +75,7 @@ inline float casterReachForBounds(const float towardsSun[3], const float centre[
 
 struct EnhancedSettings {
     bool enabled = false;    // r_enhanced (latched when the renderer starts)
-    int preset = 1;          // r_enhPreset: 0 low, 1 medium, 2 high, 3 ultra (high plus ray-traced global illumination)
+    int preset = 1;          // r_enhPreset: 0 low, 1 medium, 2 high, 3 ultra (high plus ray-traced global illumination), 4 custom
     bool tonemap = true;     // r_enhTonemap: highlight shoulder instead of the clip at 1
     bool bloom = true;       // r_enhBloom: bloom of the light above display white (the original glow chain stays)
     bool autoExposure = true; // r_enhAutoExposure
@@ -111,11 +113,160 @@ struct EnhancedSettings {
     float exposureBias = 0.0f;    // r_enhExposureBias (EV)
 };
 
-// Reads the settings from a cvar lookup that returns "" for an unset cvar. The preset fills every feature; a per-feature cvar that
-// is set overrides it.
-inline EnhancedSettings enhancedSettings(const std::function<std::string(const char*)>& get) {
+// ---- quality presets (r_enhPreset, docs/render-enhanced.md "Presets") -------------------------------------------------------------
+// Our own design. r_enhPreset is 0 low, 1 medium, 2 high, 3 ultra or 4 custom. Every option of the Enhanced graphics page holds a
+// concrete value: picking low..ultra writes that preset's value into each of them, and changing one of them by hand makes the preset
+// custom (the options keep their values). A config written before this design may hold -1 ("as the preset") or nothing: on load
+// such an option takes the value of the preset saved with it, so the picture of that config stays the same.
+constexpr int kEnhPresetCustom = 4;
+constexpr int kEnhPresetDefault = 1; // medium
+struct EnhPresetOption {
+    const char* cvar;
+    std::array<const char*, 4> values; // low, medium, high, ultra
+};
+inline const std::vector<EnhPresetOption>& enhPresetOptions() {
+    static const std::vector<EnhPresetOption> options = {
+        {"r_enhSunShadows", {"1", "2", "3", "3"}},
+        {"r_enhWorldShadows", {"0", "1", "2", "2"}},
+        {"r_enhRTShadows", {"1", "1", "1", "1"}},
+        {"r_enhPlayerShadow", {"1", "1", "1", "1"}},
+        {"r_enhAO", {"0", "1", "1", "1"}},
+        {"r_enhRTContactAO", {"1", "1", "1", "1"}},
+        {"r_enhContactShadows", {"0", "1", "1", "1"}},
+        {"r_enhTAA", {"0", "1", "1", "1"}},
+        {"r_enhMetalFX", {"0", "0", "0", "0"}},
+        {"r_enhRenderScale", {"1", "1", "1", "1"}},
+        {"r_enhGGX", {"1", "1", "1", "1"}},
+        {"r_enhSSR", {"0", "1", "1", "1"}},
+        {"r_enhRTReflections", {"1", "1", "1", "1"}},
+        {"r_enhLightShadows", {"0", "1", "1", "1"}},
+        {"r_enhRTLightShadows", {"1", "1", "1", "1"}},
+        {"r_enhRTGI", {"0", "0", "0", "1"}}, // ultra = high + ray-traced global illumination (where the GPU has ray tracing)
+        {"r_enhRTBeyondView", {"1", "1", "1", "1"}},
+        {"r_enhMapLightSpec", {"0", "1", "1", "1"}},
+        {"r_enhProbes", {"0", "1", "1", "1"}},
+        {"r_enhVolumetric", {"0", "0", "0.35", "0.35"}},
+        {"r_enhBloom", {"1", "1", "1", "1"}},
+        {"r_enhAutoExposure", {"0", "1", "1", "1"}},
+        {"r_enhGrade", {"0", "0", "0", "0"}},
+        {"r_enhMotionBlur", {"0", "0", "0", "0"}},
+        {"r_enhDOF", {"0", "0", "0", "0"}},
+        {"r_enhEdr", {"1", "1", "1", "1"}},
+    };
+    return options;
+}
+inline bool enhNameIs(const char* a, const char* b) {
+    for (; *a && *b; ++a, ++b)
+        if (std::tolower(static_cast<unsigned char>(*a)) != std::tolower(static_cast<unsigned char>(*b))) return false;
+    return *a == *b;
+}
+inline const EnhPresetOption* enhPresetOption(const char* cvar) {
+    for (const EnhPresetOption& o : enhPresetOptions())
+        if (enhNameIs(o.cvar, cvar)) return &o;
+    return nullptr;
+}
+// A value that holds a number of 0 or more (an option's own value); "", -1 and text do not.
+inline bool enhConcrete(const std::string& v) {
+    if (v.empty()) return false;
+    char* end = nullptr;
+    const double d = std::strtod(v.c_str(), &end);
+    return end != v.c_str() && d >= 0.0;
+}
+// The preset a value of r_enhPreset names: 0..4; unset, negative or text = medium.
+inline int enhPresetFrom(const std::string& v) {
+    if (!enhConcrete(v)) return kEnhPresetDefault;
+    return std::clamp(int(std::atof(v.c_str())), 0, kEnhPresetCustom);
+}
+// The values an option takes from the preset (custom: medium's, for an option with no value of its own).
+inline const char* enhPresetValue(int preset, const EnhPresetOption& o) {
+    return o.values[size_t(preset >= 0 && preset < kEnhPresetCustom ? preset : kEnhPresetDefault)];
+}
+using EnhCvarWrites = std::vector<std::pair<std::string, std::string>>;
+using EnhCvarGet = std::function<std::string(const char*)>;
+// Picking preset 0..3: every option gets its value (custom writes nothing).
+inline EnhCvarWrites enhPresetPick(int preset) {
+    EnhCvarWrites w;
+    if (preset < 0 || preset >= kEnhPresetCustom) return w;
+    for (const EnhPresetOption& o : enhPresetOptions()) w.emplace_back(o.cvar, o.values[size_t(preset)]);
+    return w;
+}
+// Every option holds the preset's value (compared as numbers, so "1" and "1.0" match).
+inline bool enhPresetMatches(int preset, const EnhCvarGet& get) {
+    if (preset < 0 || preset >= kEnhPresetCustom) return false;
+    for (const EnhPresetOption& o : enhPresetOptions()) {
+        const std::string v = get(o.cvar);
+        if (!enhConcrete(v) || std::fabs(std::atof(v.c_str()) - std::atof(o.values[size_t(preset)])) > 1e-4) return false;
+    }
+    return true;
+}
+// A loaded config (migration): an option without a concrete value takes the saved preset's value; then, when a preset 0..3 is
+// saved but an option differs from it, the preset becomes custom. r_enhRebake (no row, no preset) -1 becomes 0.
+inline EnhCvarWrites enhPresetResolve(const EnhCvarGet& get) {
+    EnhCvarWrites w;
+    const int preset = enhPresetFrom(get("r_enhPreset"));
+    if (!enhConcrete(get("r_enhPreset"))) w.emplace_back("r_enhPreset", std::to_string(preset));
+    for (const EnhPresetOption& o : enhPresetOptions())
+        if (!enhConcrete(get(o.cvar))) w.emplace_back(o.cvar, enhPresetValue(preset, o));
+    if (const std::string r = get("r_enhRebake"); !r.empty() && !enhConcrete(r)) w.emplace_back("r_enhRebake", "0");
+    const auto after = [&](const char* n) {
+        for (auto it = w.rbegin(); it != w.rend(); ++it)
+            if (enhNameIs(it->first.c_str(), n)) return it->second;
+        return get(n);
+    };
+    if (preset != kEnhPresetCustom && !enhPresetMatches(preset, after)) w.emplace_back("r_enhPreset", std::to_string(kEnhPresetCustom));
+    return w;
+}
+// After `name` was set (the menu page, a --cvar): r_enhPreset 0..3 writes the preset's values; an option set to a value other than
+// the preset's makes the preset custom. `get` sees the new value.
+inline EnhCvarWrites enhPresetAfterSet(const std::string& name, const EnhCvarGet& get) {
+    if (enhNameIs(name.c_str(), "r_enhPreset")) return enhPresetPick(enhPresetFrom(get("r_enhPreset")));
+    if (!enhPresetOption(name.c_str())) return {};
+    const int preset = enhPresetFrom(get("r_enhPreset"));
+    if (preset == kEnhPresetCustom || enhPresetMatches(preset, get)) return {};
+    return {{"r_enhPreset", std::to_string(kEnhPresetCustom)}};
+}
+
+// The same on a cvar map whose names may differ in case (a profile's config.cfg, the menu store): a write replaces the entry of
+// any case under the written name.
+inline std::string enhMapGet(const std::map<std::string, std::string>& m, const char* n) {
+    if (const auto it = m.find(n); it != m.end()) return it->second;
+    for (const auto& [k, v] : m)
+        if (enhNameIs(k.c_str(), n)) return v;
+    return {};
+}
+inline void enhMapSet(std::map<std::string, std::string>& m, const std::string& n, const std::string& v) {
+    for (auto it = m.begin(); it != m.end();) it = (it->first != n && enhNameIs(it->first.c_str(), n.c_str())) ? m.erase(it) : std::next(it);
+    m[n] = v;
+}
+inline void enhMapApply(std::map<std::string, std::string>& m, const EnhCvarWrites& w) {
+    for (const auto& [k, v] : w) enhMapSet(m, k, v);
+}
+// A loaded config: enhPresetResolve on the map.
+inline void enhMapResolve(std::map<std::string, std::string>& m) {
+    enhMapApply(m, enhPresetResolve([&](const char* n) { return enhMapGet(m, n); }));
+    for (const char* n : {"r_enhPreset", "r_enhRebake"}) // the page's spelling for every entry it reads
+        if (const std::string v = enhMapGet(m, n); !v.empty()) enhMapSet(m, n, v);
+    for (const EnhPresetOption& o : enhPresetOptions()) enhMapSet(m, o.cvar, enhMapGet(m, o.cvar));
+}
+// Setting `name` on the map, then what the preset rules write after it (enhPresetAfterSet).
+inline void enhMapSetOption(std::map<std::string, std::string>& m, const std::string& name, const std::string& value) {
+    const EnhPresetOption* o = enhPresetOption(name.c_str());
+    const std::string canonical = o ? o->cvar : enhNameIs(name.c_str(), "r_enhPreset") ? "r_enhPreset" : name; // the page's spelling
+    enhMapSet(m, canonical, value);
+    enhMapApply(m, enhPresetAfterSet(canonical, [&](const char* n) { return enhMapGet(m, n); }));
+}
+
+// Reads the settings from a cvar lookup that returns "" for an unset cvar. An option without a concrete value (unset, or the -1 of
+// an old config that was not resolved) has the preset's value; custom counts as medium there.
+inline EnhancedSettings enhancedSettings(const std::function<std::string(const char*)>& rawGet) {
     EnhancedSettings s;
-    // A negative value of a per-feature cvar means "as the preset" (the menu's Preset choice, docs/render-enhanced.md "Menu").
+    const int base = enhPresetFrom(rawGet("r_enhPreset"));
+    const auto get = [&](const char* n) {
+        std::string v = rawGet(n);
+        if (enhConcrete(v)) return v;
+        if (const EnhPresetOption* o = enhPresetOption(n)) return std::string(enhPresetValue(base, *o));
+        return v;
+    };
     auto num = [&](const char* n, float& out) {
         const std::string v = get(n);
         if (v.empty()) return false;
@@ -124,13 +275,7 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     };
     float f = 0.0f;
     s.enabled = num("r_enhanced", f) && f != 0.0f;
-    if (num("r_enhPreset", f)) s.preset = std::clamp(int(f), 0, 3);
-    switch (s.preset) {
-        case 0: s.sunShadows = 1, s.worldShadows = 0, s.bloom = true, s.autoExposure = false, s.gridPerPixel = true, s.ao = false, s.contactShadows = false, s.taa = false, s.ssr = false, s.lightShadows = false, s.volumetric = 0.0f, s.mapLightSpec = false, s.probes = false; break;
-        case 3: s.rtGI = true; [[fallthrough]]; // ultra = high + ray-traced global illumination (where the GPU has ray tracing)
-        case 2: s.volumetric = 0.35f, s.sunShadows = 3, s.worldShadows = 2, s.bloom = true, s.autoExposure = true, s.gridPerPixel = true; break;
-        default: break;
-    }
+    s.preset = base;
     if (num("r_enhTonemap", f)) s.tonemap = f != 0.0f;
     if (num("r_enhBloom", f)) s.bloom = f != 0.0f;
     if (num("r_enhAutoExposure", f)) s.autoExposure = f != 0.0f;
@@ -162,7 +307,7 @@ inline EnhancedSettings enhancedSettings(const std::function<std::string(const c
     if (num("r_enhRTBeyondView", f)) s.rtBeyondView = f != 0.0f;
     if (num("r_enhRTGI", f)) s.rtGI = f != 0.0f;
     if (num("r_enhPlayerShadow", f)) s.playerShadow = f != 0.0f;
-    if (num("r_enhRebake", f)) s.rebake = f != 0.0f; // -1: as the preset, which never turns it on
+    if (num("r_enhRebake", f)) s.rebake = f != 0.0f; // no preset turns it on
     if (num("r_enhMotionDebug", f)) s.motionDebug = std::clamp(int(f), 0, 2);
     if (num("r_enhBloomIntensity", f)) s.bloomIntensity = std::clamp(f, 0.0f, 1.0f);
     if (const std::string v = get("r_enhExposureBias"); !v.empty()) s.exposureBias = std::clamp(float(std::atof(v.c_str())), -2.0f, 2.0f); // signed

@@ -257,15 +257,15 @@ void checkSet(bool multiplayer) {
             if (r.master) CHECK(it->dvarTest.empty() && lb->dvarTest.empty());
             else
                 CHECK(it->dvarTest == "r_enhanced" && it->showDvar.size() == 1 && it->showDvar[0] == "1" && lb->dvarTest == "r_enhanced" && lb->showDvar.size() == 1);
-            if (r.kind == EnhancedRow::PresetOnOff)
-                CHECK(it->floatList.size() == 3 && it->floatList[0].second == -1.0f && it->floatList[1].second == 1.0f && it->floatList[2].second == 0.0f);
+            if (r.kind == EnhancedRow::OnOff)
+                CHECK(it->floatList.size() == 2 && it->floatList[0].second == 1.0f && it->floatList[1].second == 0.0f);
             else CHECK(it->floatList.size() == r.choices.size());
             CHECK(!registeredDefault(r.cvar).empty() && isArchivedCvar(r.cvar)); // saved in the profile, with a default
             CHECK(it->rect.x + it->rect.w <= enh->rect.w);
         }
         const Item* note = byName(*enh, "iw2_enh_note"); // the experimental warning, always visible
         CHECK(note && note->decoration && note->dvarTest.empty() && note->text == "@IW2_ENH_NOTE" && note->rect.x + note->rect.w <= enh->rect.w);
-        CHECK(registeredDefault("r_enhanced") == "0" && registeredDefault("r_enhSunShadows") == "-1" && registeredDefault("r_enhPreset") == "1");
+        CHECK(registeredDefault("r_enhanced") == "0" && registeredDefault("r_enhSunShadows") == "2" && registeredDefault("r_enhPreset") == "1");
         // With MetalFX available its row is on the page; ray tracing rows stay out until that is available too.
         CHECK(enhancedMenuSource().find("iw2_enh_metalfx") == std::string::npos);
         setEnhancedAvailability(true, false);
@@ -281,15 +281,16 @@ void checkSet(bool multiplayer) {
         for (const EnhancedRow& r : enhancedRows()) CHECK(enhancedRowAvailable(r) == (r.needs != EnhancedRow::RayTracing));
         setEnhancedAvailability(true, true);
         CHECK(enhancedMenuSource().find("iw2_enh_rtrefl") != std::string::npos);
-        {   // the Ultra preset (3) is the Preset row's last choice; RT global illumination (needs ray tracing) leaves itself to the preset by default
+        {   // Ultra (3) then Custom (4) end the Quality row; RT global illumination (needs ray tracing) is off by default (the medium preset)
             const EnhancedRow *preset = nullptr, *gi = nullptr;
             for (const EnhancedRow& r : enhancedRows()) {
                 if (std::string(r.cvar) == "r_enhPreset") preset = &r;
                 if (std::string(r.cvar) == "r_enhRTGI") gi = &r;
             }
-            CHECK(preset && preset->choices.size() == 4 && preset->choices.back().second == "3" && preset->choices.back().first == "@IW2_ENH_ULTRA");
-            CHECK(gi && gi->needs == EnhancedRow::RayTracing && gi->choices.size() == 3 && gi->choices[0].second == "-1");
-            CHECK(registeredDefault("r_enhRTGI") == "-1" && isArchivedCvar("r_enhRTGI"));
+            CHECK(preset && preset->choices.size() == 5 && preset->choices[3].second == "3" && preset->choices[3].first == "@IW2_ENH_ULTRA" &&
+                  preset->choices[4].second == "4" && preset->choices[4].first == "@IW2_ENH_CUSTOM");
+            CHECK(gi && gi->needs == EnhancedRow::RayTracing && gi->choices.size() == 2 && gi->choices[0].second == "0");
+            CHECK(registeredDefault("r_enhRTGI") == "0" && isArchivedCvar("r_enhRTGI"));
             CHECK(enhancedMenuSource().find("iw2_enh_rtgi") != std::string::npos);
         }
         {   // every row shown: the page still ends where the shorter one does (above the bottom line)
@@ -339,7 +340,7 @@ int main() {
             CHECK(has(r.label));
             for (const auto& [label, value] : r.choices) CHECK(label.rfind("@MENU_", 0) == 0 || has(label));
         }
-        CHECK(has("@IW2_ENH_TITLE") && has("@IW2_ENH_PRESET"));
+        CHECK(has("@IW2_ENH_TITLE") && has("@IW2_ENH_CUSTOM") && !has("@IW2_ENH_PRESET"));
     }
     for (size_t i = 0; i < en.size() && i < pl.size(); ++i) CHECK(en[i].first == pl[i].first && !en[i].second.empty() && !pl[i].second.empty());
     CHECK(en[2].second == "Red on kill" && pl[2].second != en[2].second);

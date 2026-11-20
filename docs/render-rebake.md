@@ -67,7 +67,7 @@ direction stays the same.
 
 ## Runtime
 
-- `r_enhRebake` (0 off by default, -1 = as the preset, and no preset turns it on; to become an opt-in "Remastered lighting" choice once
+- `r_enhRebake` (0 off by default, and no preset turns it on; to become an opt-in "Remastered lighting" choice once
   it is accepted, no menu row yet). With it on, the world shader samples the re-baked RGBA16F coefficient arrays and the re-baked sun
   mask instead of the shipped ones. The light grid will use the re-baked points (stage 4). Implemented: needs `r_enhanced 1`, is read
   when a level loads (the textures are replaced then), and has no effect in a build without the Metal handles patch.

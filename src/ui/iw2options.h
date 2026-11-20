@@ -24,7 +24,7 @@ struct EnhancedRow {
     const char* name;  // item name
     const char* label; // string key
     const char* cvar;
-    enum Kind { PresetOnOff, Choices } kind;
+    enum Kind { OnOff, Choices } kind; // OnOff: On 1 / Off 0
     std::vector<std::pair<std::string, std::string>> choices; // (label key, value) for Choices
     bool master;       // the r_enhanced row: always shown; the others only while it is 1
     enum Needs { Always, MetalFx, RayTracing } needs = Always; // rows of stage 5 features: only where the build and GPU have them

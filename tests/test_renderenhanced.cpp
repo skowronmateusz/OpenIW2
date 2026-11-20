@@ -34,11 +34,11 @@ int main() {
         cv["r_enhBloom"] = "0";
         s = enhancedSettings(get);
         chk(s.preset == 2 && s.sunShadows == 0 && !s.bloom && s.autoExposure, __LINE__);
-        cv["r_enhPreset"] = "9";
+        cv["r_enhPreset"] = "9"; // clamped to custom (4), whose unset options are medium's
         cv["r_enhSunShadows"] = "7";
         cv["r_enhExposureBias"] = "-5";
         s = enhancedSettings(get);
-        chk(s.preset == 3 && s.sunShadows == 3 && s.exposureBias == -2.0f, __LINE__);
+        chk(s.preset == 4 && s.sunShadows == 3 && s.worldShadows == 1 && s.exposureBias == -2.0f, __LINE__);
         cv["r_enhanced"] = "0";
         chk(!enhancedSettings(get).enabled, __LINE__);
     }
@@ -54,16 +54,16 @@ int main() {
                 u.rtShadows == h.rtShadows && u.rtReflections == h.rtReflections && u.probes == h.probes, __LINE__); // ultra = high otherwise
         cv["r_enhPreset"] = "3", cv["r_enhRTGI"] = "0";
         chk(!enhancedSettings(get).rtGI, __LINE__);
-        cv["r_enhRTGI"] = "-1"; // the menu's "Preset"
+        cv["r_enhRTGI"] = "-1"; // an old config's "as the preset", not resolved yet
         chk(enhancedSettings(get).rtGI, __LINE__);
         cv["r_enhPreset"] = "1", cv["r_enhRTGI"] = "1";
         chk(enhancedSettings(get).rtGI, __LINE__);
         cv["r_enhPreset"] = "7", cv.erase("r_enhRTGI");
-        chk(enhancedSettings(get).preset == 3, __LINE__); // clamped
+        chk(enhancedSettings(get).preset == 4 && !enhancedSettings(get).rtGI, __LINE__); // clamped to custom: medium where unset
         cv["r_enhPreset"] = "0";
         chk(!enhancedSettings(get).rtGI, __LINE__);
     }
-    // The menu's "Preset" value -1 leaves a feature to the preset.
+    // An old config's -1 ("as the preset", before docs/render-enhanced.md "Presets") reads as the preset's value.
     {
         std::map<std::string, std::string> cv{{"r_enhanced", "1"}, {"r_enhPreset", "0"}, {"r_enhSunShadows", "-1"}, {"r_enhTAA", "-1"}, {"r_enhAO", "1"}};
         auto get = [&](const char* n) { const auto it = cv.find(n); return it == cv.end() ? std::string() : it->second; };

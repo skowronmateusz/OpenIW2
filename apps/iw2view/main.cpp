@@ -6175,6 +6175,7 @@ int main(int argc, char** argv) {
             const std::string cfgText(std::istreambuf_iterator<char>(cf), {});
             uiCvars = ui::parseConfig(cfgText);
         }
+        game::enhMapResolve(uiCvars); // an older config's "as the preset" values (docs/render-enhanced.md "Presets")
         profileKeys.load(input, playersDir / profileName); // saved key bindings replace the defaults
         logProfileCvars("profile loaded", uiCvars, input.bindings().size());
         // Key defaults of OpenIW2 that the shipped default.cfg lacks, and the return of the screenshot key to F12 for profiles saved by
@@ -6192,7 +6193,14 @@ int main(int argc, char** argv) {
         };
         upgradeKeyBindings();
         // renderer dvars live in the menu store; r_texturemode / r_anisotropy are not passed on: the filter is forced (applyTextureFilter)
-        for (const auto& [k, v] : extraCvars) if (k == "r_gamma" || k == "r_ignorehwgamma" || k == "r_aasamples" || k.rfind("r_enh", 0) == 0) uiCvars[k] = v;
+        // A --cvar r_enhPreset is applied first, like picking it on the page, then the other --cvar options (which may make it custom).
+        for (const bool presetPass : {true, false})
+            for (const auto& [k, v] : extraCvars) {
+                const bool preset = game::enhNameIs(k.c_str(), "r_enhPreset");
+                if (preset != presetPass) continue;
+                if (preset || k.rfind("r_enh", 0) == 0) game::enhMapSetOption(uiCvars, k, v);
+                else if (k == "r_gamma" || k == "r_ignorehwgamma" || k == "r_aasamples") uiCvars[k] = v;
+            }
         // Enhanced rendering mode (docs/render-enhanced.md): read once, when the renderer starts (cvar names are case-insensitive).
         const auto enhancedSettings = [&] {
             return game::enhancedSettings([&](const char* n) {
@@ -7777,12 +7785,16 @@ int main(int argc, char** argv) {
             return ui::registeredDefault(n);
         };
         menuEnv.setCvar = [&](const std::string& n, const std::string& v) {
-            const auto store = [&](const std::string& name) {
-                if (ui::isArchivedCvar(name) && uiCvars[name] != v) profileDirty = true;
-                uiCvars[name] = v;
-                if (world) world->cvars[name] = v;
+            const auto store = [&](const std::string& name, const std::string& value) {
+                if (ui::isArchivedCvar(name) && uiCvars[name] != value) profileDirty = true;
+                uiCvars[name] = value;
+                if (world) world->cvars[name] = value;
             };
-            store(n);
+            store(n, v);
+            // The Enhanced graphics presets (docs/render-enhanced.md "Presets"): a picked preset fills the options, an option changed
+            // by hand makes the preset custom.
+            if (n.rfind("r_enh", 0) == 0)
+                for (const auto& [wk, wv] : game::enhPresetAfterSet(n, [&](const char* c) { return menuEnv.getCvar(c); })) store(wk, wv);
             // Switching the Cheats option in a running single-player mission takes effect at once (sv_cheats follows it; a --cvar sv_cheats stays).
             if (world && !world->multiplayer() && !mpFrontEnd && !netClient && n == "iw2_cheats")
                 world->cvars["sv_cheats"] = ui::cheatKeysAllowed(std::atoi(v.c_str()) != 0, cheatsOn(), false) ? "1" : "0";
@@ -8213,6 +8225,7 @@ int main(int argc, char** argv) {
                     fresh[keep] = uiCvars[keep];
                 fresh["com_playerProfile"] = profileName;
                 uiCvars = fresh;
+                game::enhMapResolve(uiCvars);
                 logProfileCvars("profile switched", uiCvars, input.bindings().size());
                 upgradeKeyBindings();
                 loadFavorites();

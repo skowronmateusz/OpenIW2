@@ -1066,6 +1066,8 @@ if(EXISTS "${IW2_TEST_MAIN}/iw_00.iwd")
   set_tests_properties(iw2viewnan_e2e PROPERTIES PASS_REGULAR_EXPRESSION "iw2view nan: ok" TIMEOUT 300)
   # GPU errors (docs/render-enhanced.md "GPU errors"): the ray tracing kernels build, a command buffer counted as hung holds
   # the ray tracing and MetalFX (the GPU guard), and live play drawn offscreen runs without a GPU error.
+  add_test(NAME iw2viewenhpreset_e2e COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2view_enhpreset.sh $<TARGET_FILE:iw2view> ${IW2_TEST_MAIN} elalamein)
+  set_tests_properties(iw2viewenhpreset_e2e PROPERTIES PASS_REGULAR_EXPRESSION "iw2view enhanced presets: ok" TIMEOUT 300)
   add_test(NAME iw2viewgpuguard_e2e COMMAND sh ${CMAKE_SOURCE_DIR}/tests/iw2view_gpuguard.sh $<TARGET_FILE:iw2view> ${IW2_TEST_MAIN} elalamein)
   set_tests_properties(iw2viewgpuguard_e2e PROPERTIES PASS_REGULAR_EXPRESSION "iw2view gpu guard: ok" TIMEOUT 400)
   # The server's session log (docs/logging.md); the log folder is a temp folder, never the real one.
@@ -1256,6 +1258,9 @@ add_test(NAME gammaramp COMMAND test_gammaramp)
 add_executable(test_renderenhanced tests/test_renderenhanced.cpp)
 target_link_libraries(test_renderenhanced PRIVATE iw2_game)
 add_test(NAME renderenhanced COMMAND test_renderenhanced)
+add_executable(test_enhpresets tests/test_enhpresets.cpp)
+target_link_libraries(test_enhpresets PRIVATE iw2_ui iw2_game)
+add_test(NAME enhpresets COMMAND test_enhpresets)
 # The lighting re-bake's pure parts (docs/render-rebake.md).
 add_executable(test_rebake tests/test_rebake.cpp)
 target_link_libraries(test_rebake PRIVATE iw2_game)
