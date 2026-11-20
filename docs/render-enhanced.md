@@ -184,10 +184,13 @@ atlas never draw it.
 - Pose: the multiplayer anim tree and `mp/playeranim.script`, driven by `game::PlayerShadowBody` (`src/game/playershadowbody.*`) the
   way a third-person multiplayer player is (`docs/spec/mp-players.md`; it shares `game::playPaCommand` and the event rule with
   the multiplayer driver). The caller gathers the player's state: the stance (view height target), the velocity, the view
-  angles, the weapon with its anim type, class, state and clip, and the aim fraction. Single-player weapon files
+  angles, the weapon with its anim type, class, state and clip, and whether the aim is held. Single-player weapon files
   say `none` for the anim type, so it comes from the multiplayer file of the same weapon (`<name>_mp`), else from the weapon
   class (`game::playerBodyAnimType`). The move type (idle, walk, run, back, crouched, prone, strafing) picks the legs animation
-  with the rate from the speed; the aim picks the aim idle. Events come from changes of the state: the weapon drop (the torso
+  with the rate from the speed; the aim picks the aim idle and slows the body to the aim walk. The aim pose follows the held aim
+  (the view model's aim intent, `PlayerWeapon::viewAiming`) at the press and at the release, over `game::kShadowAimBlendMs`
+  (60 ms), not the view model's aim fraction and the script's default blend (our own choice: with those it came half the aim time plus a 200 ms blend
+  late). Events come from changes of the state: the weapon drop (the torso
   pose is held while the weapon drops and rises), a reload, a melee swing, a shot (the clip falls), and the crouch / prone
   transitions. The torso takes part of the view pitch on the spine and neck bones (our own rule). No jump, land, lean or ladder
   poses, and no offhand throw.

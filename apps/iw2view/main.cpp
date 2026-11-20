@@ -7352,7 +7352,7 @@ int main(int argc, char** argv) {
                 pi.mpAnimType = mt->second;
                 pi.weaponClass = pweapon.field("weaponClass");
             }
-            pi.weaponState = pweapon.stateNumber(), pi.clip = pweapon.clip(), pi.adsFrac = pweapon.adsFrac();
+            pi.weaponState = pweapon.stateNumber(), pi.clip = pweapon.clip(), pi.adsFrac = pweapon.adsFrac(), pi.aiming = pweapon.viewAiming();
             return b.body->update(pi);
         };
         auto addShadowBody = [&](const ShadowBodyInput& in) {

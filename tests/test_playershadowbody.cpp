@@ -161,19 +161,38 @@ void strafeTests(Fixture& f) {
 
 void aimTests(Fixture& f) {
     Rig hip(f), ads(f);
-    ads.in.adsFrac = 1.0f;
+    ads.in.aiming = true, ads.in.adsFrac = 1.0f;
     hip.step(500), ads.step(500);
     check(hip.legs() != ads.legs(), "aiming down the sights picks the aim idle");
     check(dist(hip.at("tag_weapon_right"), ads.at("tag_weapon_right")) > 1.0f, "the weapon hand moves with the aim");
-    // The change is a blend: the aim raised mid-way is between the two poses, then reaches the aim pose.
+    // The change is a short blend from the press (the held aim), not from the view model's aim fraction: one frame in, the pose is
+    // between the two; within kShadowAimBlendMs (and a frame) it is the aim pose, while the view model is still raising the weapon.
     Rig change(f);
     change.step(500);
-    change.in.adsFrac = 1.0f;
-    change.step(60);
+    change.in.aiming = true, change.in.adsFrac = 0.0f;
+    change.step(16);
     const float mid = dist(change.at("tag_weapon_right"), hip.at("tag_weapon_right"));
-    change.step(600);
-    const float end = dist(change.at("tag_weapon_right"), hip.at("tag_weapon_right"));
-    check(mid > 0.01f && mid < end, "the aim blends in over time");
+    change.in.adsFrac = 0.3f;
+    change.step(game::kShadowAimBlendMs);
+    const float settled = dist(change.at("tag_weapon_right"), ads.at("tag_weapon_right"));
+    const float full = dist(ads.at("tag_weapon_right"), hip.at("tag_weapon_right"));
+    check(mid > 0.01f && mid < full, "the aim blends in");
+    check(settled < 0.05f * full, "the aim pose is reached within the aim blend, from the press");
+    check(change.legs() == ads.legs(), "the aim idle is chosen at the press");
+    // Letting go: back to the hip pose as fast, while the view model's aim fraction is still high.
+    change.in.aiming = false, change.in.adsFrac = 0.9f;
+    change.step(game::kShadowAimBlendMs + 16);
+    check(dist(change.at("tag_weapon_right"), hip.at("tag_weapon_right")) < 0.05f * full && change.legs() == hip.legs(), "the hip pose returns within the aim blend");
+    // Walking while aiming: the aim walk at once, back to the run when the aim is let go.
+    Rig run(f), aimRun(f);
+    run.in.vx = aimRun.in.vx = 190.0f;
+    run.step(500), aimRun.step(500);
+    aimRun.in.aiming = true;
+    aimRun.step(16);
+    check(aimRun.legs() != run.legs(), "aiming while running switches to the aim walk at once");
+    aimRun.in.aiming = false;
+    aimRun.step(16);
+    check(aimRun.legs() == run.legs(), "letting go of the aim runs again at once");
     // The torso follows the view pitch (our own rule): looking down bends it forward and down, not sideways (yaw 0: forward is +x).
     Rig level(f), down(f), up(f);
     down.in.pitch = 50.0f, up.in.pitch = -50.0f;

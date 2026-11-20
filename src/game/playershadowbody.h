@@ -31,7 +31,11 @@ struct PlayerShadowInput {
     int weaponState = 0;        // PM_Weapon state: 1 raising, 2 dropping, 3 firing, 5 / 7 reloading, 10 / 11 melee
     int clip = 0;               // rounds in the clip: a fall is a shot
     float adsFrac = 0;          // aim fraction 0..1
+    bool aiming = false;        // the aim is held (the weapon's view aim, PlayerWeapon::viewAiming): the body's weapon position
 };
+// The blend of the body's animation when the aim changes (our own choice: the aim pose follows the press at once, like the stance
+// transitions, instead of after half the view model's aim time and the script's default blend).
+constexpr int kShadowAimBlendMs = 60;
 
 class PlayerShadowBody {
 public:
@@ -71,6 +75,7 @@ private:
     // The previous frame's state, for the events.
     std::string prevWeapon_;
     int prevWeaponState_ = 0, prevClip_ = 0, prevViewHeight_ = 60;
+    bool prevAiming_ = false;
 };
 
 } // namespace iw2::game

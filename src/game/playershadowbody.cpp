@@ -93,10 +93,12 @@ bool PlayerShadowBody::update(const PlayerShadowInput& in) {
     mv.viewHeightTarget = in.viewHeightTarget;
     mv.xySpeed = std::sqrt(in.vx * in.vx + in.vy * in.vy);
     playerBodyMoves(in.vx, in.vy, in.yaw, mv.forwardMove, mv.rightMove);
-    mv.slow = in.adsFrac >= 0.5f; // aiming slows the body to a walk
+    mv.slow = in.aiming; // aiming slows the body to a walk
     ctx.moveType = paMoveType(mv);
     ctx.strafing = strafing_ = paStrafing(mv);
-    ctx.weaponPosition = in.adsFrac >= 0.5f ? "ads" : "hip";
+    ctx.weaponPosition = in.aiming ? "ads" : "hip";
+    const bool aimChanged = !fresh && in.aiming != prevAiming_;
+    prevAiming_ = in.aiming;
 
     // Events, from the changes of the state since the last frame (the player's own weapon and stance code does not call the
     // animation driver as the multiplayer server's does). The move type of the previous step is the one they see.
@@ -143,12 +145,14 @@ bool PlayerShadowBody::update(const PlayerShadowInput& in) {
 
     // The move type's animation, re-chosen when its item changes; it waits for the legs' hold to run out to its last 49 ms. The
     // first pose is taken at once (no blend from the empty state).
-    if (now + 49 >= st_.legsHeldUntilMs) {
+    // A change of the aim takes the new item at once, with a short blend (kShadowAimBlendMs).
+    if (aimChanged || now + 49 >= st_.legsHeldUntilMs) {
         const PaItem* item = script_.animation(ctx.moveType, ctx);
         if (item && item != st_.legsItem && !item->commands.empty()) {
             seed_ = seed_ * 1103515245u + 12345u;
             PaCommand cmd = item->commands[size_t((seed_ >> 16) % item->commands.size())];
             if (fresh) cmd.blendMs = 0;
+            else if (aimChanged) cmd.blendMs = cmd.blendMs >= 0 ? std::min(cmd.blendMs, kShadowAimBlendMs) : kShadowAimBlendMs;
             playPaCommand(*anim_, lib_, &st_, cmd, false, now);
             st_.legsItem = item;
         }
